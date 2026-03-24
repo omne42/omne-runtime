@@ -1,0 +1,156 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-binaries:
+    name: Build binaries (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+
+      - name: Build (release)
+        run: cargo build --locked --release -p omne-systems-fs-cli
+
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          bin_name="omne-systems-fs"
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          if [[ "$os" == "darwin" ]]; then os="macos"; fi
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64) arch="x64" ;;
+            aarch64|arm64) arch="arm64" ;;
+          esac
+
+          asset="omne-systems-fs-${os}-${arch}.tar.gz"
+          stage_root="dist/stage"
+          stage_dir="${stage_root}/omne-systems-fs-${os}-${arch}"
+          rm -rf "${stage_root}"
+          mkdir -p "${stage_dir}"
+          cp "target/release/${bin_name}" "${stage_dir}/${bin_name}"
+          cp "crates/omne-systems-fs/README.md" "${stage_dir}/README.md"
+          cp "crates/omne-systems-fs/policy.example.toml" "${stage_dir}/policy.example.toml"
+          tar -C "${stage_root}" -czf "dist/${asset}" "omne-systems-fs-${os}-${arch}"
+          (
+            cd dist
+            shasum -a 256 "${asset}" | awk '{print $1 "  " $2}' >"${asset}.sha256"
+          )
+
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $os = "windows"
+          $arch = $env:RUNNER_ARCH.ToLower()
+          if ($arch -eq "x64") { $arch = "x64" }
+          elseif ($arch -eq "arm64") { $arch = "arm64" }
+          $asset = "omne-systems-fs-$os-$arch.zip"
+          $stage = Join-Path "dist" ("omne-systems-fs-" + $os + "-" + $arch)
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target\\release\\omne-systems-fs.exe" -Destination (Join-Path $stage "omne-systems-fs.exe") -Force
+          Copy-Item "crates\\omne-systems-fs\\README.md" -Destination (Join-Path $stage "README.md") -Force
+          Copy-Item "crates\\omne-systems-fs\\policy.example.toml" -Destination (Join-Path $stage "policy.example.toml") -Force
+          Compress-Archive -Path $stage -DestinationPath ("dist\\" + $asset) -Force
+          $hash = (Get-FileHash ("dist\\" + $asset) -Algorithm SHA256).Hash.ToLower()
+          "$hash  $asset" | Out-File -Encoding utf8NoBOM ("dist\\" + $asset + ".sha256")
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets-${{ matrix.os }}
+          path: dist/*
+
+  publish:
+    name: Publish (GitHub Release)
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - name: Run workspace tests
+        run: cargo test --locked --workspace
+
+      - name: Verify tag matches crate versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata_json="$(mktemp)"
+          cargo metadata --locked --no-deps --format-version 1 >"$metadata_json"
+          python3 - "$metadata_json" <<'PY'
+          import json
+          import os
+          import sys
+
+          metadata_path = sys.argv[1]
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          version = tag[1:] if tag.startswith("v") else tag
+          with open(metadata_path, "r", encoding="utf-8") as f:
+            m = json.load(f)
+          versions = {p["name"]: p["version"] for p in m.get("packages", [])}
+          expected = ("omne-systems-fs", "omne-systems-fs-cli")
+
+          missing = [name for name in expected if name not in versions]
+          if missing:
+            print(f"Missing packages in cargo metadata: {missing}", file=sys.stderr)
+            sys.exit(1)
+
+          mismatched = [(name, versions[name]) for name in expected if versions[name] != version]
+          if mismatched:
+            for name, v in mismatched:
+              print(f"Tag version ({version}) does not match {name} version ({v})", file=sys.stderr)
+            sys.exit(1)
+          PY
+          rm -f "$metadata_json"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create SHA256SUMS.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -la
+          cat *.sha256 >SHA256SUMS.txt
+
+      - name: Create GitHub release (attach binaries)
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
+        with:
+          files: |
+            dist/*
+          generate_release_notes: true

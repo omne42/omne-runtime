@@ -1,0 +1,29 @@
+# Security Notes
+
+`omne-execution-gateway` improves execution safety, but it is one control layer in a broader security stack.
+
+## What It Enforces
+
+- request/policy-default isolation provenance consistency,
+- isolation capability checks,
+- workspace boundary checks,
+- mutation allowlist for caller-declared mutating requests.
+
+On Linux, `best_effort` also attempts to apply a Landlock ruleset opportunistically.
+
+## What It Does Not Enforce Alone
+
+- command intent semantics,
+- network isolation,
+- secret isolation across subprocesses,
+- binary provenance verification,
+- generic mutation detection when callers do not declare mutation.
+
+## Operational Recommendations
+
+- run under least-privilege OS accounts,
+- keep workspace roots narrow,
+- enable audit logging in production,
+- monitor runtime audit records for degraded Linux `best_effort` Landlock outcomes,
+- pair with dedicated filesystem safety tooling,
+- treat `none` isolation as exceptional.

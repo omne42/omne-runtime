@@ -1,0 +1,6 @@
+[package]
+name = "omne-host-info-primitives"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Low-level Omne host platform and home-directory primitives."

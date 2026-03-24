@@ -1,0 +1,94 @@
+[[roots]]
+id = "workspace"
+# Replace this placeholder with a real absolute path before using this policy (for example `/home/user/repo`).
+# Use an absolute path. Example (Windows): "C:\\work\\repo"
+path = "<ABSOLUTE_PATH>"
+write_scope = "read_only" # or "workspace_write"
+
+[permissions]
+read = true
+glob = true
+grep = true
+list_dir = true
+stat = true
+edit = false
+patch = false
+delete = false
+mkdir = false
+write = false
+move = false
+copy_file = false
+
+[paths]
+# When false, tool request paths must be root-relative (absolute paths are rejected).
+allow_absolute = false
+
+[limits]
+max_read_bytes = 1048576
+# Optional cap for patch input (unified diff, bytes). Omit to default to max_read_bytes.
+# max_patch_bytes = 1048576
+max_write_bytes = 1048576
+max_results = 2000
+max_walk_entries = 500000
+max_walk_files = 200000
+# Optional wall-clock traversal budget for `glob`/`grep` (ms). Omit for no budget.
+max_walk_ms = 1000 # recommended starting point for untrusted inputs
+# `max_line_bytes` clips returned text lines and also scales default response-byte estimate
+# budgets (`max_results * max_line_bytes`) for `glob`/`grep`/`list_dir`.
+max_line_bytes = 4096
+# Linux/Android only: preserve source xattrs during atomic overwrite writes.
+# Disable only in performance-priority environments where xattr fidelity is not required.
+preserve_unix_xattrs = true
+
+# Suggested tighter budgets for server / untrusted workloads (example only):
+# max_read_bytes = 262144
+# max_write_bytes = 262144
+# max_results = 500
+# max_walk_entries = 50000
+# max_walk_files = 10000
+# max_walk_ms = 500
+
+[secrets]
+# Glob patterns are root-relative (relative to the selected root). Do not start with '/' and do not include '..' segments.
+deny_globs = [
+  ".git/**",
+  "**/.git/**",
+  ".env",
+  ".env.*",
+  "**/.env",
+  "**/.env.*",
+  "**/*.pem",
+  "**/id_rsa*",
+  "**/*.p12",
+]
+redact_regexes = [
+  "(?i)\\bOPENAI_API_KEY\\s*[:=]\\s*['\"]?[A-Za-z0-9_\\-]{16,}",
+  # More generic example (tune to your environment; avoid overly-broad patterns):
+  # "(?i)\\b(token|api[_-]?key)=[A-Za-z0-9_\\-]{16,}\\b",
+]
+replacement = "***REDACTED***"
+
+[traversal]
+# Keep directory traversal order stable across filesystems (deterministic truncation/order).
+# Set false to reduce CPU/memory in very large directories at the cost of non-deterministic
+# traversal order when limits are hit.
+stable_sort = true
+# For traversal performance only: skipped in `glob`/`grep` but still readable directly.
+# Glob patterns are root-relative (relative to the selected root). Do not start with '/' and do not include '..' segments.
+skip_globs = [
+  ".git/**",
+  "**/.git/**",
+  "node_modules/**",
+  "target/**",
+  "dist/**",
+]
+
+# Optional shared/descriptive metadata for other tools.
+# omne-fs parses and preserves this section but does not use it for authorization,
+# limits, or root write access. In particular, this does not override `[[roots]].write_scope`.
+# [metadata.policy_meta]
+# version = 1
+# risk_profile = "standard"
+# write_scope = "workspace_write"
+# execution_isolation = "best_effort"
+# decision = "prompt"

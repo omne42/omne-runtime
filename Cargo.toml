@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/omne-archive-primitives",
+  "crates/omne-fs",
+  "crates/omne-fs/cli",
+  "crates/omne-fs-primitives",
+  "crates/omne-host-info-primitives",
+  "crates/omne-integrity-primitives",
+  "crates/omne-process-primitives",
+  "crates/omne-system-package-primitives",
+  "crates/omne-execution-gateway",
+]
+default-members = [
+  "crates/omne-fs",
+  "crates/omne-process-primitives",
+  "crates/omne-execution-gateway",
+]

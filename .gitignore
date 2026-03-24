@@ -1,0 +1,13 @@
+# Rust workspace outputs
+/target/
+**/target/
+
+# Release and docs artifacts
+/dist/
+/_site/
+/crates/omne-systems-exec-gateway/site/
+
+# Tooling and local machine noise
+.DS_Store
+.github-agent-data/
+.codex/

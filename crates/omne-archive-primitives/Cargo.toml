@@ -1,0 +1,12 @@
+[package]
+name = "omne-archive-primitives"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Low-level Omne archive/compression primitives."
+
+[dependencies]
+flate2 = "1"
+tar = "0.4"
+xz2 = "0.1"
+zip = "0.6"

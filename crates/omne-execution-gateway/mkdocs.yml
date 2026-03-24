@@ -1,0 +1,45 @@
+site_name: omne-execution-gateway
+site_description: Cross-platform command execution gateway with fail-closed isolation policy.
+site_url: https://omne42.github.io/omne-runtime/exec-gateway/
+repo_url: https://github.com/omne42/omne-runtime
+repo_name: omne42/omne-runtime
+edit_uri: edit/main/crates/omne-execution-gateway/docs/
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+
+nav:
+  - Introduction: index.md
+  - Getting Started:
+      - getting-started/index.md
+      - Quickstart: getting-started/quickstart.md
+  - Guides:
+      - guides/index.md
+      - Policy Model: guides/policy-model.md
+      - Isolation Semantics: guides/isolation-semantics.md
+      - Audit Events: guides/audit-events.md
+      - AI and Agent Integration: guides/ai-agent-integration.md
+      - Security Notes: guides/security-notes.md
+  - Reference:
+      - reference/index.md
+      - API Reference: reference/api-reference.md
+      - CLI Usage: reference/cli-usage.md
+      - Governance and Versioning: reference/governance-versioning.md

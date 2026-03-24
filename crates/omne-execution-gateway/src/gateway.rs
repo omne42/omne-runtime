@@ -1,0 +1,874 @@
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus};
+
+use crate::audit::{ExecDecision, ExecEvent, requested_policy_meta};
+use crate::audit_log::AuditLogger;
+use crate::error::{ExecError, ExecResult};
+use crate::policy::GatewayPolicy;
+use crate::sandbox;
+use crate::types::{ExecRequest, IsolationLevel, RequestResolution, RequestedIsolationSource};
+
+#[derive(Debug)]
+struct ResolvedRequestPaths {
+    workspace_root: PathBuf,
+    cwd: PathBuf,
+}
+
+#[derive(Debug)]
+struct PreparedExecRequest {
+    event: ExecEvent,
+    required_isolation: IsolationLevel,
+    resolved_paths: ResolvedRequestPaths,
+}
+
+#[derive(Debug)]
+pub struct PreflightError {
+    event: ExecEvent,
+    error: ExecError,
+}
+
+impl PreflightError {
+    pub fn event(&self) -> &ExecEvent {
+        &self.event
+    }
+
+    pub fn error(&self) -> &ExecError {
+        &self.error
+    }
+
+    pub fn into_parts(self) -> (ExecEvent, ExecError) {
+        (self.event, self.error)
+    }
+}
+
+#[derive(Debug)]
+pub struct ExecGateway {
+    supported_isolation: IsolationLevel,
+    policy: GatewayPolicy,
+    audit: Option<AuditLogger>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapabilityReport {
+    pub supported_isolation: IsolationLevel,
+    pub policy_default_isolation: IsolationLevel,
+}
+
+#[derive(Debug)]
+#[must_use = "execution outcomes carry policy, audit, and sandbox metadata"]
+pub struct ExecutionOutcome {
+    pub event: ExecEvent,
+    pub result: ExecResult<ExitStatus>,
+}
+
+impl ExecutionOutcome {
+    pub fn into_parts(self) -> (ExecEvent, ExecResult<ExitStatus>) {
+        (self.event, self.result)
+    }
+}
+
+impl CapabilityReport {
+    pub fn supported_policy_meta(&self) -> policy_meta::PolicyMetaV1 {
+        requested_policy_meta(self.supported_isolation)
+    }
+
+    pub fn policy_default_policy_meta(&self) -> policy_meta::PolicyMetaV1 {
+        requested_policy_meta(self.policy_default_isolation)
+    }
+}
+
+impl Default for ExecGateway {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExecGateway {
+    pub fn new() -> Self {
+        let policy = GatewayPolicy::default();
+        Self::with_policy_and_supported_isolation(policy, sandbox::detect_supported_isolation())
+    }
+
+    pub fn with_policy(policy: GatewayPolicy) -> Self {
+        Self::with_policy_and_supported_isolation(policy, sandbox::detect_supported_isolation())
+    }
+
+    pub fn with_policy_and_supported_isolation(
+        policy: GatewayPolicy,
+        supported_isolation: IsolationLevel,
+    ) -> Self {
+        let audit = policy.audit_log_path.as_ref().map(AuditLogger::new);
+        Self {
+            supported_isolation,
+            policy,
+            audit,
+        }
+    }
+
+    pub fn with_supported_isolation(supported_isolation: IsolationLevel) -> Self {
+        Self::with_policy_and_supported_isolation(GatewayPolicy::default(), supported_isolation)
+    }
+
+    pub fn supported_isolation(&self) -> IsolationLevel {
+        self.supported_isolation
+    }
+
+    pub fn policy(&self) -> &GatewayPolicy {
+        &self.policy
+    }
+
+    pub fn capability_report(&self) -> CapabilityReport {
+        CapabilityReport {
+            supported_isolation: self.supported_isolation,
+            policy_default_isolation: self.policy.default_isolation,
+        }
+    }
+
+    /// Project a request into the gateway's canonical pre-execution view.
+    pub fn resolve_request(&self, request: &ExecRequest) -> RequestResolution {
+        RequestResolution::from_request(request, self.policy.default_isolation)
+    }
+
+    pub fn evaluate(&self, request: &ExecRequest) -> ExecEvent {
+        match self.prepare_request(request) {
+            Ok(prepared) => prepared.event,
+            Err(err) => err.event,
+        }
+    }
+
+    /// Execute a request and retain the authoritative policy/audit event.
+    pub fn execute(&self, request: &ExecRequest) -> ExecutionOutcome {
+        let mut command = Command::new(&request.program);
+        command.args(&request.args);
+
+        let (event, result) = match self.prepare_request(request) {
+            Ok(prepared) => {
+                let result = self
+                    .apply_prepared_request(&prepared, &mut command)
+                    .and_then(|monitor| {
+                        let mut child = command.spawn().map_err(ExecError::Spawn)?;
+                        let sandbox_runtime = monitor.observe_after_spawn();
+                        let status = child.wait().map_err(ExecError::Spawn)?;
+                        Ok((sandbox_runtime, status))
+                    });
+                match result {
+                    Ok((sandbox_runtime, status)) => {
+                        let mut event = prepared.event;
+                        event.sandbox_runtime = sandbox_runtime;
+                        (event, Ok(status))
+                    }
+                    Err(err) => (prepared.event, Err(err)),
+                }
+            }
+            Err(err) => {
+                let (event, err) = err.into_parts();
+                (event, Err(err))
+            }
+        };
+        if let Some(audit) = &self.audit {
+            audit.write_execution_record(&event, &result);
+        }
+        ExecutionOutcome { event, result }
+    }
+
+    /// Convenience helper for callers that intentionally discard policy/audit metadata.
+    pub fn execute_status(&self, request: &ExecRequest) -> ExecResult<ExitStatus> {
+        self.execute(request).result
+    }
+
+    pub fn execute_status_with_event(
+        &self,
+        request: &ExecRequest,
+    ) -> (ExecEvent, ExecResult<ExitStatus>) {
+        self.execute(request).into_parts()
+    }
+
+    /// Apply validated cwd/sandbox settings to an existing command.
+    ///
+    /// The command's program and args must exactly match the supplied request.
+    pub fn prepare_command(
+        &self,
+        request: &ExecRequest,
+        command: &mut Command,
+    ) -> (ExecEvent, ExecResult<()>) {
+        let (event, result) = match self.prepare_request(request) {
+            Ok(prepared) => match validate_prepared_command_matches_request(request, command) {
+                Ok(()) => {
+                    let result = self.apply_prepared_request(&prepared, command).map(|_| ());
+                    (prepared.event, result)
+                }
+                Err(err) => {
+                    let event = self.deny_event(prepared.event, "prepared_command_mismatch");
+                    (event, Err(err))
+                }
+            },
+            Err(err) => {
+                let (event, err) = err.into_parts();
+                (event, Err(err))
+            }
+        };
+        if let Some(audit) = &self.audit {
+            audit.write_prepare_record(&event, &result);
+        }
+        (event, result)
+    }
+
+    pub fn preflight(&self, request: &ExecRequest) -> Result<ExecEvent, PreflightError> {
+        self.prepare_request(request).map(|prepared| prepared.event)
+    }
+
+    fn prepare_request(
+        &self,
+        request: &ExecRequest,
+    ) -> Result<PreparedExecRequest, PreflightError> {
+        let mut event = self.preflight_event(request);
+
+        if matches!(
+            request.requested_isolation_source,
+            RequestedIsolationSource::PolicyDefault
+        ) && request.required_isolation != self.policy.default_isolation
+        {
+            return Err(self.deny_preflight(
+                event,
+                "policy_default_isolation_mismatch",
+                ExecError::PolicyDefaultIsolationMismatch {
+                    requested: request.required_isolation,
+                    policy_default: self.policy.default_isolation,
+                },
+            ));
+        }
+
+        if matches!(request.required_isolation, IsolationLevel::None)
+            && !self.policy.allow_isolation_none
+        {
+            return Err(self.deny_preflight(
+                event,
+                "isolation_none_forbidden",
+                ExecError::PolicyDenied("isolation none is forbidden by policy".to_string()),
+            ));
+        }
+
+        if request.declared_mutation && self.policy.enforce_fs_tool_for_mutation {
+            let program = request.program.to_string_lossy();
+            if !self.policy.is_fs_tool_program(&program) {
+                return Err(self.deny_preflight(
+                    event,
+                    "mutation_requires_fs_tool",
+                    ExecError::PolicyDenied(
+                        "declared mutating command must use omne-fs".to_string(),
+                    ),
+                ));
+            }
+        }
+
+        if request.required_isolation > self.supported_isolation {
+            return Err(self.deny_preflight(
+                event,
+                "isolation_not_supported",
+                ExecError::IsolationNotSupported {
+                    requested: request.required_isolation,
+                    supported: self.supported_isolation,
+                },
+            ));
+        }
+
+        match resolve_request_paths(&request.cwd, &request.workspace_root) {
+            Ok(resolved_paths) => {
+                event.cwd = resolved_paths.cwd.clone();
+                event.workspace_root = resolved_paths.workspace_root.clone();
+                Ok(PreparedExecRequest {
+                    event,
+                    required_isolation: request.required_isolation,
+                    resolved_paths,
+                })
+            }
+            Err(err @ ExecError::WorkspaceRootInvalid { .. }) => {
+                Err(self.deny_preflight(event, "workspace_root_invalid", err))
+            }
+            Err(err @ ExecError::CwdOutsideWorkspace { .. }) => {
+                Err(self.deny_preflight(event, "cwd_outside_workspace", err))
+            }
+            Err(err) => unreachable!("resolve_request_paths returned unexpected error: {err}"),
+        }
+    }
+
+    fn preflight_event(&self, request: &ExecRequest) -> ExecEvent {
+        ExecEvent {
+            decision: ExecDecision::Run,
+            requested_isolation: request.required_isolation,
+            requested_policy_meta: requested_policy_meta(request.required_isolation),
+            supported_isolation: self.supported_isolation,
+            program: request.program.clone(),
+            cwd: request.cwd.clone(),
+            workspace_root: request.workspace_root.clone(),
+            declared_mutation: request.declared_mutation,
+            reason: None,
+            sandbox_runtime: None,
+        }
+    }
+
+    fn deny_event(&self, mut event: ExecEvent, reason: &str) -> ExecEvent {
+        let _ = self;
+        event.decision = ExecDecision::Deny;
+        event.reason = Some(reason.to_string());
+        event
+    }
+
+    fn deny_preflight(&self, event: ExecEvent, reason: &str, err: ExecError) -> PreflightError {
+        PreflightError {
+            event: self.deny_event(event, reason),
+            error: err,
+        }
+    }
+
+    fn apply_prepared_request(
+        &self,
+        prepared: &PreparedExecRequest,
+        command: &mut Command,
+    ) -> ExecResult<sandbox::SandboxMonitor> {
+        command.current_dir(&prepared.resolved_paths.cwd);
+        sandbox::apply_sandbox(
+            command,
+            prepared.required_isolation,
+            &prepared.resolved_paths.workspace_root,
+        )
+    }
+}
+
+fn canonicalize_workspace_root(path: &Path) -> ExecResult<PathBuf> {
+    path.canonicalize()
+        .map_err(|_| ExecError::WorkspaceRootInvalid {
+            path: path.to_path_buf(),
+        })
+}
+
+fn resolve_request_paths(cwd: &Path, workspace_root: &Path) -> ExecResult<ResolvedRequestPaths> {
+    let workspace_root = canonicalize_workspace_root(workspace_root)?;
+    let cwd = canonicalize_cwd_within_workspace(cwd, &workspace_root)?;
+    Ok(ResolvedRequestPaths {
+        workspace_root,
+        cwd,
+    })
+}
+
+fn canonicalize_cwd_within_workspace(cwd: &Path, workspace_root: &Path) -> ExecResult<PathBuf> {
+    let cwd = cwd
+        .canonicalize()
+        .map_err(|_| ExecError::CwdOutsideWorkspace {
+            cwd: cwd.to_path_buf(),
+            workspace_root: workspace_root.to_path_buf(),
+        })?;
+
+    if !cwd.starts_with(workspace_root) {
+        return Err(ExecError::CwdOutsideWorkspace {
+            cwd,
+            workspace_root: workspace_root.to_path_buf(),
+        });
+    }
+
+    Ok(cwd)
+}
+
+fn validate_prepared_command_matches_request(
+    request: &ExecRequest,
+    command: &Command,
+) -> ExecResult<()> {
+    let actual_program = command.get_program();
+    let actual_args = command.get_args().collect::<Vec<&OsStr>>();
+    let requested_args = request
+        .args
+        .iter()
+        .map(OsString::as_os_str)
+        .collect::<Vec<_>>();
+
+    if actual_program != request.program.as_os_str() || actual_args != requested_args {
+        return Err(ExecError::PreparedCommandMismatch {
+            requested_program: request.program.to_string_lossy().into_owned(),
+            requested_args: request
+                .args
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+            actual_program: actual_program.to_string_lossy().into_owned(),
+            actual_args: actual_args
+                .into_iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::policy::GatewayPolicy;
+
+    #[test]
+    fn fail_closed_when_required_isolation_exceeds_supported() {
+        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            IsolationLevel::Strict,
+            workspace.path(),
+        );
+
+        let err = gateway
+            .execute_status(&request)
+            .expect_err("strict request should fail closed");
+
+        match err {
+            ExecError::IsolationNotSupported {
+                requested,
+                supported,
+            } => {
+                assert_eq!(requested, IsolationLevel::Strict);
+                assert_eq!(supported, IsolationLevel::BestEffort);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn rejects_cwd_outside_workspace() {
+        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let outside = tempdir().expect("create outside cwd");
+
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            outside.path(),
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        );
+
+        let err = gateway
+            .execute_status(&request)
+            .expect_err("outside cwd should be blocked");
+
+        match err {
+            ExecError::CwdOutsideWorkspace { .. } => {}
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn supports_none_even_when_host_is_none() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            ..GatewayPolicy::default()
+        };
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::None);
+        let workspace = tempdir().expect("create temp workspace");
+
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            IsolationLevel::None,
+            workspace.path(),
+        );
+
+        let err = gateway.execute_status(&request);
+        assert!(err.is_ok() || matches!(err, Err(ExecError::Spawn(_))));
+    }
+
+    #[test]
+    fn evaluate_denies_with_reason_for_unsupported_isolation() {
+        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            dummy_program(),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            IsolationLevel::Strict,
+            workspace.path(),
+        );
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("isolation_not_supported"));
+        assert_eq!(
+            event.requested_policy_meta,
+            crate::audit::requested_policy_meta(IsolationLevel::Strict)
+        );
+    }
+
+    #[test]
+    fn capability_report_matches_supported_isolation() {
+        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let report = gateway.capability_report();
+        assert_eq!(report.supported_isolation, IsolationLevel::BestEffort);
+        assert_eq!(report.policy_default_isolation, IsolationLevel::BestEffort);
+        assert_eq!(
+            report.supported_policy_meta(),
+            crate::audit::requested_policy_meta(IsolationLevel::BestEffort)
+        );
+        assert_eq!(
+            report.policy_default_policy_meta(),
+            crate::audit::requested_policy_meta(IsolationLevel::BestEffort)
+        );
+    }
+
+    #[test]
+    fn execute_with_event_preserves_deny_reason() {
+        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            dummy_program(),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            IsolationLevel::Strict,
+            workspace.path(),
+        );
+
+        let (event, result) = gateway.execute_status_with_event(&request);
+        assert_eq!(event.reason.as_deref(), Some("isolation_not_supported"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn prepare_command_denial_matches_evaluate_for_outside_workspace() {
+        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let outside = tempdir().expect("create outside cwd");
+
+        let request = ExecRequest::new(
+            dummy_program(),
+            Vec::<OsString>::new(),
+            outside.path(),
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        );
+
+        let evaluated = gateway.evaluate(&request);
+        let mut command = Command::new(dummy_program());
+        let (event, result) = gateway.prepare_command(&request, &mut command);
+
+        assert_eq!(event.reason, evaluated.reason);
+        assert_eq!(event.decision, evaluated.decision);
+        assert!(matches!(result, Err(ExecError::CwdOutsideWorkspace { .. })));
+    }
+
+    #[test]
+    fn denies_mutation_for_non_fs_tool_program() {
+        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            dummy_program(),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("mutation_requires_fs_tool"));
+    }
+
+    #[test]
+    fn allows_mutation_for_allowlisted_fs_tool_program() {
+        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "omne-fs",
+            Vec::<OsString>::new(),
+            workspace.path(),
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
+        assert_eq!(
+            event.requested_policy_meta,
+            crate::audit::requested_policy_meta(IsolationLevel::BestEffort)
+        );
+    }
+
+    #[test]
+    fn denies_policy_default_isolation_mismatch() {
+        let policy = GatewayPolicy {
+            default_isolation: IsolationLevel::Strict,
+            ..GatewayPolicy::default()
+        };
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::Strict);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::with_policy_default_isolation(
+            "echo",
+            vec!["hello"],
+            workspace.path(),
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        );
+
+        let (event, result) = gateway.execute_status_with_event(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("policy_default_isolation_mismatch")
+        );
+        assert!(matches!(
+            result,
+            Err(ExecError::PolicyDefaultIsolationMismatch {
+                requested: IsolationLevel::BestEffort,
+                policy_default: IsolationLevel::Strict,
+            })
+        ));
+    }
+
+    #[test]
+    fn denies_none_isolation_by_default_policy() {
+        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "omne-fs",
+            Vec::<OsString>::new(),
+            workspace.path(),
+            IsolationLevel::None,
+            workspace.path(),
+        );
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("isolation_none_forbidden"));
+    }
+
+    #[test]
+    fn prepare_command_sets_current_dir() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            ..GatewayPolicy::default()
+        };
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            workspace.path(),
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        );
+        let mut command = Command::new("echo");
+        command.arg("hello");
+        let (_event, result) = gateway.prepare_command(&request, &mut command);
+        assert!(result.is_ok());
+        assert_eq!(command.get_current_dir(), Some(workspace.path()));
+    }
+
+    #[test]
+    fn prepare_command_denies_mismatched_command_identity() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            ..GatewayPolicy::default()
+        };
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            workspace.path(),
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        );
+        let mut command = Command::new("printf");
+        command.arg("hello");
+
+        let (event, result) = gateway.prepare_command(&request, &mut command);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("prepared_command_mismatch"));
+        assert!(matches!(
+            result,
+            Err(ExecError::PreparedCommandMismatch { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_command_canonicalizes_symlink_cwd() {
+        use std::os::unix::fs::symlink;
+
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            ..GatewayPolicy::default()
+        };
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let real_dir = workspace.path().join("real");
+        let link_dir = workspace.path().join("link");
+        fs::create_dir_all(&real_dir).expect("create real dir");
+        symlink(&real_dir, &link_dir).expect("create symlink");
+
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            &link_dir,
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        );
+        let mut command = Command::new("echo");
+        command.arg("hello");
+        let (event, result) = gateway.prepare_command(&request, &mut command);
+        assert!(result.is_ok());
+        assert_eq!(event.cwd, real_dir);
+        assert_eq!(command.get_current_dir(), Some(real_dir.as_path()));
+    }
+
+    #[test]
+    fn execute_status_audit_records_nonzero_exit() {
+        let workspace = tempdir().expect("create temp workspace");
+        let audit_path = workspace.path().join("audit.jsonl");
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            audit_log_path: Some(audit_path.clone()),
+            ..GatewayPolicy::default()
+        };
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let (program, args) = shell_exit_nonzero_command();
+        let request = ExecRequest::new(
+            program,
+            args,
+            workspace.path(),
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        );
+
+        let status = gateway
+            .execute_status(&request)
+            .expect("command should execute");
+        assert!(!status.success());
+
+        let content = fs::read_to_string(audit_path).expect("read audit");
+        assert!(content.contains("\"status\":\"exited\""));
+        assert!(content.contains("\"exit_code\":1"));
+        assert!(content.contains("\"success\":false"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn execute_status_reports_best_effort_landlock_runtime() {
+        let workspace = tempdir().expect("create temp workspace");
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            ..GatewayPolicy::default()
+        };
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let request = ExecRequest::new(
+            "sh",
+            vec!["-c", "exit 0"],
+            workspace.path(),
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        );
+
+        let (event, result) = gateway.execute_status_with_event(&request);
+        let status = result.expect("command should execute");
+        assert!(status.success());
+
+        let observation = event
+            .sandbox_runtime
+            .expect("best_effort execution should record landlock runtime state");
+        assert_eq!(
+            observation.mechanism,
+            crate::audit::SandboxRuntimeMechanism::Landlock
+        );
+        assert!(matches!(
+            observation.outcome,
+            crate::audit::SandboxRuntimeOutcome::FullyEnforced
+                | crate::audit::SandboxRuntimeOutcome::PartiallyEnforced
+                | crate::audit::SandboxRuntimeOutcome::NotEnforced
+                | crate::audit::SandboxRuntimeOutcome::Error
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn execute_status_allows_runtime_device_rw_for_dev_null() {
+        let workspace = tempdir().expect("create temp workspace");
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            ..GatewayPolicy::default()
+        };
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let request = ExecRequest::new(
+            "sh",
+            vec!["-c", "exec 3<>/dev/null"],
+            workspace.path(),
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        );
+
+        let status = gateway
+            .execute_status(&request)
+            .expect("/dev/null should remain available under sandbox");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn execute_status_audit_records_spawn_failure() {
+        let workspace = tempdir().expect("create temp workspace");
+        let audit_path = workspace.path().join("audit.jsonl");
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            audit_log_path: Some(audit_path.clone()),
+            ..GatewayPolicy::default()
+        };
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let request = ExecRequest::new(
+            "__omne_exec_gateway_missing_program__",
+            Vec::<OsString>::new(),
+            workspace.path(),
+            IsolationLevel::BestEffort,
+            workspace.path(),
+        );
+
+        let err = gateway
+            .execute_status(&request)
+            .expect_err("spawn should fail");
+        assert!(matches!(err, ExecError::Spawn(_)));
+
+        let content = fs::read_to_string(audit_path).expect("read audit");
+        assert!(content.contains("\"status\":\"spawn_error\""));
+    }
+
+    #[cfg(windows)]
+    fn dummy_program() -> &'static str {
+        "cmd"
+    }
+
+    #[cfg(not(windows))]
+    fn dummy_program() -> &'static str {
+        "sh"
+    }
+
+    #[cfg(windows)]
+    fn shell_exit_nonzero_command() -> (&'static str, Vec<&'static str>) {
+        ("cmd", vec!["/C", "exit 1"])
+    }
+
+    #[cfg(not(windows))]
+    fn shell_exit_nonzero_command() -> (&'static str, Vec<&'static str>) {
+        ("sh", vec!["-c", "exit 1"])
+    }
+}
