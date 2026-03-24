@@ -5,7 +5,8 @@
 # Release and docs artifacts
 /dist/
 /_site/
-/crates/omne-systems-exec-gateway/site/
+/crates/omne-execution-gateway/site/
+/crates/omne-fs/rust_out*.o
 
 # Tooling and local machine noise
 .DS_Store
