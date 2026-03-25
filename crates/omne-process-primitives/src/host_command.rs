@@ -21,18 +21,8 @@ pub struct HostCommandRequest<'a> {
     pub program: &'a OsStr,
     pub args: &'a [String],
     pub env: &'a [(String, String)],
+    pub working_directory: Option<&'a Path>,
     pub sudo_mode: HostCommandSudoMode,
-}
-
-impl<'a> HostCommandRequest<'a> {
-    pub const fn new(program: &'a OsStr, args: &'a [String]) -> Self {
-        Self {
-            program,
-            args,
-            env: &[],
-            sudo_mode: HostCommandSudoMode::Never,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -116,7 +106,7 @@ pub fn command_exists(command: &str) -> bool {
     command_exists_os(OsStr::new(command))
 }
 
-pub fn command_exists_os(command: &OsStr) -> bool {
+fn command_exists_os(command: &OsStr) -> bool {
     let mut cmd = Command::new(command);
     cmd.arg("--version")
         .stdin(Stdio::null())
@@ -155,6 +145,9 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
     }
     for (name, value) in request.env {
         cmd.env(name, value);
+    }
+    if let Some(working_directory) = request.working_directory {
+        cmd.current_dir(working_directory);
     }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -236,6 +229,7 @@ mod tests {
             program: command_path.as_os_str(),
             args: &args,
             env: &env,
+            working_directory: None,
             sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
         };
 
@@ -275,6 +269,27 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn run_host_command_uses_working_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_pwd_command(temp.path(), "pwd");
+        let working_directory = temp.path().join("cwd");
+        std::fs::create_dir_all(&working_directory).expect("create working directory");
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &args,
+            env: &[],
+            working_directory: Some(&working_directory),
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let output = run_host_command(&request).expect("run host command");
+        assert!(output.output.status.success());
+        let stdout = String::from_utf8_lossy(&output.output.stdout);
+        assert!(stdout.contains(&working_directory.display().to_string()));
+    }
+
     #[cfg(unix)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -293,6 +308,20 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
+    fn write_pwd_command(dir: &Path, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\npwd\n").expect("write unix pwd command");
+        let mut perms = std::fs::metadata(&path)
+            .expect("stat unix pwd command")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).expect("chmod unix pwd command");
+        path
+    }
+
     #[cfg(windows)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(format!("{name}.cmd"));
@@ -301,6 +330,13 @@ mod tests {
             "@echo off\r\necho arg=%1\r\necho env=%OMNE_TEST_VALUE%\r\n",
         )
         .expect("write windows command");
+        path
+    }
+
+    #[cfg(windows)]
+    fn write_pwd_command(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.cmd"));
+        std::fs::write(&path, "@echo off\r\ncd\r\n").expect("write windows pwd command");
         path
     }
 }

@@ -20,12 +20,13 @@ use std::io;
 #[cfg(windows)]
 use std::sync::{Mutex, MutexGuard};
 
+mod command_path;
 mod host_command;
 
+pub use command_path::{resolve_command_path, resolve_command_path_or_standard_location};
 pub use host_command::{
     HostCommandError, HostCommandExecution, HostCommandOutput, HostCommandRequest,
-    HostCommandSudoMode, command_available, command_exists, command_exists_os, command_path_exists,
-    run_host_command,
+    HostCommandSudoMode, command_available, command_exists, command_path_exists, run_host_command,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
