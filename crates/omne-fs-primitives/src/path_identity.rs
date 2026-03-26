@@ -74,19 +74,13 @@ fn case_variant_component(component: &std::ffi::OsStr) -> Option<std::ffi::OsStr
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
-    #[cfg(unix)]
     use super::filesystem_is_case_sensitive;
-    #[cfg(unix)]
     use std::fs;
-    #[cfg(unix)]
     use std::os::unix::fs::symlink;
-
-    #[cfg(unix)]
     use tempfile::TempDir;
 
-    #[cfg(unix)]
     #[test]
     fn filesystem_is_case_sensitive_when_probe_path_is_distinct() {
         let temp = TempDir::new().expect("temp dir");
@@ -102,7 +96,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn filesystem_is_case_insensitive_when_probe_hits_same_inode() {
         let temp = TempDir::new().expect("temp dir");
