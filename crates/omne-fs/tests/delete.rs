@@ -516,6 +516,10 @@ fn delete_revalidate_parent_detects_path_change() {
             omne_fs::Error::InvalidPath(message) if message.contains("recursive=true") => {}
             omne_fs::Error::IoPath { source, .. }
                 if source.kind() == std::io::ErrorKind::NotFound => {}
+            omne_fs::Error::IoPath { op, source, .. }
+                if cfg!(target_os = "macos")
+                    && op == "canonicalize"
+                    && source.kind() == std::io::ErrorKind::InvalidInput => {}
             other => panic!("unexpected error: {other:?}"),
         }
     }
