@@ -178,13 +178,6 @@ impl Error {
         }
     }
 
-    /// Stable reason code for audit/telemetry pipelines.
-    ///
-    /// Currently aligned with `code()` for backward compatibility.
-    pub fn reason_code(&self) -> &'static str {
-        self.code()
-    }
-
     /// Coarse-grained risk tag for fast policy/audit grouping.
     pub fn risk_tag(&self) -> &'static str {
         match self {
@@ -371,9 +364,9 @@ mod tests {
     }
 
     #[test]
-    fn reason_code_is_stable_alias_of_code() {
+    fn code_is_used_as_stable_reason_code() {
         let err = Error::NotPermitted("x".to_string());
-        assert_eq!(err.reason_code(), err.code());
+        assert_eq!(err.code(), Error::CODE_NOT_PERMITTED);
     }
 
     #[test]

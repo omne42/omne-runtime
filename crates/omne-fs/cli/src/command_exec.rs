@@ -10,12 +10,13 @@ use omne_fs::ops::{
     MovePathRequest, MovePathResponse, PatchRequest, PatchResponse, ReadRequest, ReadResponse,
     ScanLimitReason, StatRequest, StatResponse, WriteFileRequest, WriteFileResponse,
 };
+use omne_fs::policy::SandboxPolicy;
 
 use crate::error::CliError;
 use crate::input::load_text_limited;
 use crate::{Cli, Command};
 
-pub(crate) fn run_with_policy(cli: Cli, policy: omne_fs::SandboxPolicy) -> Result<(), CliError> {
+pub(crate) fn run_with_policy(cli: Cli, policy: SandboxPolicy) -> Result<(), CliError> {
     let max_patch_bytes = effective_max_patch_bytes(&cli, &policy);
     let max_write_bytes = policy.limits.max_write_bytes;
     let ctx = Context::new(policy)?;
@@ -55,7 +56,7 @@ fn ensure_mutating_confirmation(command: &Command, confirmed: bool) -> Result<()
     Ok(())
 }
 
-fn effective_max_patch_bytes(cli: &Cli, policy: &omne_fs::SandboxPolicy) -> u64 {
+fn effective_max_patch_bytes(cli: &Cli, policy: &SandboxPolicy) -> u64 {
     let policy_patch_limit = policy
         .limits
         .max_patch_bytes
@@ -90,8 +91,7 @@ fn scan_limit_reason_str(reason: ScanLimitReason) -> &'static str {
 #[derive(Debug, Serialize)]
 struct JsonReadResponse<'a> {
     path: LossyPath<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_path: Option<LossyPath<'a>>,
+    requested_path: LossyPath<'a>,
     truncated: bool,
     bytes_read: u64,
     content: &'a str,
@@ -105,7 +105,7 @@ impl<'a> From<&'a ReadResponse> for JsonReadResponse<'a> {
     fn from(response: &'a ReadResponse) -> Self {
         Self {
             path: LossyPath(&response.path),
-            requested_path: response.requested_path.as_deref().map(LossyPath),
+            requested_path: LossyPath(&response.requested_path),
             truncated: response.truncated,
             bytes_read: response.bytes_read,
             content: response.content.as_str(),
@@ -118,8 +118,7 @@ impl<'a> From<&'a ReadResponse> for JsonReadResponse<'a> {
 #[derive(Debug, Serialize)]
 struct JsonListDirResponse<'a> {
     path: LossyPath<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_path: Option<LossyPath<'a>>,
+    requested_path: LossyPath<'a>,
     entries: JsonListDirEntries<'a>,
     truncated: bool,
     skipped_io_errors: u64,
@@ -129,7 +128,7 @@ impl<'a> From<&'a ListDirResponse> for JsonListDirResponse<'a> {
     fn from(response: &'a ListDirResponse) -> Self {
         Self {
             path: LossyPath(&response.path),
-            requested_path: response.requested_path.as_deref().map(LossyPath),
+            requested_path: LossyPath(&response.requested_path),
             entries: JsonListDirEntries(response.entries.as_slice()),
             truncated: response.truncated,
             skipped_io_errors: response.skipped_io_errors,
@@ -295,8 +294,7 @@ impl<'a> From<&'a omne_fs::ops::GrepMatch> for JsonGrepMatch<'a> {
 #[derive(Debug, Serialize)]
 struct JsonStatResponse<'a> {
     path: LossyPath<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_path: Option<LossyPath<'a>>,
+    requested_path: LossyPath<'a>,
     #[serde(rename = "type")]
     kind: omne_fs::ops::StatKind,
     size_bytes: u64,
@@ -313,7 +311,7 @@ impl<'a> From<&'a StatResponse> for JsonStatResponse<'a> {
     fn from(response: &'a StatResponse) -> Self {
         Self {
             path: LossyPath(&response.path),
-            requested_path: response.requested_path.as_deref().map(LossyPath),
+            requested_path: LossyPath(&response.requested_path),
             kind: response.kind,
             size_bytes: response.size_bytes,
             modified_ms: response.modified_ms,
@@ -327,8 +325,7 @@ impl<'a> From<&'a StatResponse> for JsonStatResponse<'a> {
 #[derive(Debug, Serialize)]
 struct JsonEditResponse<'a> {
     path: LossyPath<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_path: Option<LossyPath<'a>>,
+    requested_path: LossyPath<'a>,
     bytes_written: u64,
 }
 
@@ -336,7 +333,7 @@ impl<'a> From<&'a EditResponse> for JsonEditResponse<'a> {
     fn from(response: &'a EditResponse) -> Self {
         Self {
             path: LossyPath(&response.path),
-            requested_path: response.requested_path.as_deref().map(LossyPath),
+            requested_path: LossyPath(&response.requested_path),
             bytes_written: response.bytes_written,
         }
     }
@@ -345,8 +342,7 @@ impl<'a> From<&'a EditResponse> for JsonEditResponse<'a> {
 #[derive(Debug, Serialize)]
 struct JsonPatchResponse<'a> {
     path: LossyPath<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_path: Option<LossyPath<'a>>,
+    requested_path: LossyPath<'a>,
     bytes_written: u64,
 }
 
@@ -354,7 +350,7 @@ impl<'a> From<&'a PatchResponse> for JsonPatchResponse<'a> {
     fn from(response: &'a PatchResponse) -> Self {
         Self {
             path: LossyPath(&response.path),
-            requested_path: response.requested_path.as_deref().map(LossyPath),
+            requested_path: LossyPath(&response.requested_path),
             bytes_written: response.bytes_written,
         }
     }
@@ -363,8 +359,7 @@ impl<'a> From<&'a PatchResponse> for JsonPatchResponse<'a> {
 #[derive(Debug, Serialize)]
 struct JsonMkdirResponse<'a> {
     path: LossyPath<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_path: Option<LossyPath<'a>>,
+    requested_path: LossyPath<'a>,
     created: bool,
 }
 
@@ -372,7 +367,7 @@ impl<'a> From<&'a MkdirResponse> for JsonMkdirResponse<'a> {
     fn from(response: &'a MkdirResponse) -> Self {
         Self {
             path: LossyPath(&response.path),
-            requested_path: response.requested_path.as_deref().map(LossyPath),
+            requested_path: LossyPath(&response.requested_path),
             created: response.created,
         }
     }
@@ -381,8 +376,7 @@ impl<'a> From<&'a MkdirResponse> for JsonMkdirResponse<'a> {
 #[derive(Debug, Serialize)]
 struct JsonWriteFileResponse<'a> {
     path: LossyPath<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_path: Option<LossyPath<'a>>,
+    requested_path: LossyPath<'a>,
     bytes_written: u64,
     created: bool,
 }
@@ -391,7 +385,7 @@ impl<'a> From<&'a WriteFileResponse> for JsonWriteFileResponse<'a> {
     fn from(response: &'a WriteFileResponse) -> Self {
         Self {
             path: LossyPath(&response.path),
-            requested_path: response.requested_path.as_deref().map(LossyPath),
+            requested_path: LossyPath(&response.requested_path),
             bytes_written: response.bytes_written,
             created: response.created,
         }
@@ -401,8 +395,7 @@ impl<'a> From<&'a WriteFileResponse> for JsonWriteFileResponse<'a> {
 #[derive(Debug, Serialize)]
 struct JsonDeleteResponse<'a> {
     path: LossyPath<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_path: Option<LossyPath<'a>>,
+    requested_path: LossyPath<'a>,
     deleted: bool,
     #[serde(rename = "type")]
     kind: omne_fs::ops::DeleteKind,
@@ -412,7 +405,7 @@ impl<'a> From<&'a DeleteResponse> for JsonDeleteResponse<'a> {
     fn from(response: &'a DeleteResponse) -> Self {
         Self {
             path: LossyPath(&response.path),
-            requested_path: response.requested_path.as_deref().map(LossyPath),
+            requested_path: LossyPath(&response.requested_path),
             deleted: response.deleted,
             kind: response.kind,
         }
@@ -423,10 +416,8 @@ impl<'a> From<&'a DeleteResponse> for JsonDeleteResponse<'a> {
 struct JsonMovePathResponse<'a> {
     from: LossyPath<'a>,
     to: LossyPath<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_from: Option<LossyPath<'a>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_to: Option<LossyPath<'a>>,
+    requested_from: LossyPath<'a>,
+    requested_to: LossyPath<'a>,
     moved: bool,
     #[serde(rename = "type")]
     kind: &'a str,
@@ -437,8 +428,8 @@ impl<'a> From<&'a MovePathResponse> for JsonMovePathResponse<'a> {
         Self {
             from: LossyPath(&response.from),
             to: LossyPath(&response.to),
-            requested_from: response.requested_from.as_deref().map(LossyPath),
-            requested_to: response.requested_to.as_deref().map(LossyPath),
+            requested_from: LossyPath(&response.requested_from),
+            requested_to: LossyPath(&response.requested_to),
             moved: response.moved,
             kind: response.kind.as_str(),
         }
@@ -449,10 +440,8 @@ impl<'a> From<&'a MovePathResponse> for JsonMovePathResponse<'a> {
 struct JsonCopyFileResponse<'a> {
     from: LossyPath<'a>,
     to: LossyPath<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_from: Option<LossyPath<'a>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    requested_to: Option<LossyPath<'a>>,
+    requested_from: LossyPath<'a>,
+    requested_to: LossyPath<'a>,
     copied: bool,
     bytes: u64,
 }
@@ -462,8 +451,8 @@ impl<'a> From<&'a CopyFileResponse> for JsonCopyFileResponse<'a> {
         Self {
             from: LossyPath(&response.from),
             to: LossyPath(&response.to),
-            requested_from: response.requested_from.as_deref().map(LossyPath),
-            requested_to: response.requested_to.as_deref().map(LossyPath),
+            requested_from: LossyPath(&response.requested_from),
+            requested_to: LossyPath(&response.requested_to),
             copied: response.copied,
             bytes: response.bytes,
         }
@@ -737,8 +726,8 @@ fn preflight_mutating_target(
 
     let root = ctx.policy().root(root_id)?;
     if !matches!(
-        root.mode,
-        omne_fs::RootMode::WorkspaceWrite | omne_fs::RootMode::FullAccess
+        root.write_scope,
+        policy_meta::WriteScope::WorkspaceWrite | policy_meta::WriteScope::FullAccess
     ) {
         return Err(omne_fs::Error::NotPermitted(format!(
             "{operation_name} is not allowed: root {root_id} is read_only"
@@ -776,7 +765,7 @@ mod tests {
         let path = non_utf8_path();
         let response = omne_fs::ops::ListDirResponse {
             path: PathBuf::from("."),
-            requested_path: Some(PathBuf::from(".")),
+            requested_path: PathBuf::from("."),
             entries: vec![omne_fs::ops::ListDirEntry {
                 path: path.clone(),
                 name: "x".to_string(),

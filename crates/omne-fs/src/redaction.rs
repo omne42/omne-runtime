@@ -17,13 +17,13 @@ const MAX_REDACTED_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const REDACTION_OUTPUT_LIMIT_MARKER: &str = "[REDACTION_OUTPUT_LIMIT_EXCEEDED]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RedactionOutcome<'a> {
+pub(crate) enum RedactionOutcome<'a> {
     Text(Cow<'a, str>),
     OutputLimitExceeded,
 }
 
 #[derive(Debug)]
-pub struct SecretRedactor {
+pub(crate) struct SecretRedactor {
     deny: GlobSet,
     deny_delete_scan: Vec<DenyDeleteScanPattern>,
     redact: Vec<Regex>,
@@ -38,7 +38,7 @@ enum DenyDeleteScanPattern {
 }
 
 impl SecretRedactor {
-    pub fn from_rules(rules: &SecretRules) -> Result<Self> {
+    pub(crate) fn from_rules(rules: &SecretRules) -> Result<Self> {
         if rules.deny_globs.len() > MAX_DENY_GLOBS {
             return Err(Error::InvalidPolicy(format!(
                 "invalid secrets.deny_globs: too many patterns ({} > {MAX_DENY_GLOBS})",
@@ -127,7 +127,7 @@ impl SecretRedactor {
     /// Returns `true` if a **root-relative** path is denied by `secrets.deny_globs`.
     ///
     /// Non-root-relative paths are denied defensively to avoid silent allow-on-mismatch behavior.
-    pub fn is_path_denied(&self, relative: &Path) -> bool {
+    pub(crate) fn is_path_denied(&self, relative: &Path) -> bool {
         if !is_root_relative(relative) {
             return true;
         }
@@ -160,25 +160,7 @@ impl SecretRedactor {
         false
     }
 
-    /// Compatibility helper: returns a marker string when output hits the hard limit.
-    /// Use `redact_text_outcome` when callers must distinguish state from content.
-    pub fn redact_text(&self, input: &str) -> String {
-        match self.redact_text_outcome(input) {
-            RedactionOutcome::Text(text) => text.into_owned(),
-            RedactionOutcome::OutputLimitExceeded => REDACTION_OUTPUT_LIMIT_MARKER.to_string(),
-        }
-    }
-
-    /// Compatibility helper: returns a marker when output hits the hard limit.
-    /// Use `redact_text_outcome` when callers must distinguish state from content.
-    pub fn redact_text_cow<'a>(&self, input: &'a str) -> Cow<'a, str> {
-        match self.redact_text_outcome(input) {
-            RedactionOutcome::Text(text) => text,
-            RedactionOutcome::OutputLimitExceeded => Cow::Borrowed(REDACTION_OUTPUT_LIMIT_MARKER),
-        }
-    }
-
-    pub fn redact_text_outcome<'a>(&self, input: &'a str) -> RedactionOutcome<'a> {
+    pub(crate) fn redact_text_outcome<'a>(&self, input: &'a str) -> RedactionOutcome<'a> {
         if self.redact.is_empty() || input.is_empty() {
             return RedactionOutcome::Text(Cow::Borrowed(input));
         }
@@ -569,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn redact_text_cow_returns_borrowed_when_no_regex_configured() {
+    fn redact_text_outcome_returns_borrowed_when_no_regex_configured() {
         let redactor = SecretRedactor::from_rules(&SecretRules {
             deny_globs: vec![".git/**".to_string()],
             redact_regexes: Vec::new(),
@@ -578,13 +560,16 @@ mod tests {
         .expect("redactor");
 
         let input = "no secrets here";
-        let redacted = redactor.redact_text_cow(input);
-        assert!(matches!(&redacted, Cow::Borrowed(_)));
-        assert_eq!(redacted.as_ref(), input);
+        let redacted = redactor.redact_text_outcome(input);
+        assert!(matches!(
+            &redacted,
+            RedactionOutcome::Text(Cow::Borrowed(_))
+        ));
+        assert!(matches!(redacted, RedactionOutcome::Text(ref text) if text.as_ref() == input));
     }
 
     #[test]
-    fn redact_text_cow_returns_borrowed_when_regex_configured_but_no_match() {
+    fn redact_text_outcome_returns_borrowed_when_regex_configured_but_no_match() {
         let redactor = SecretRedactor::from_rules(&SecretRules {
             deny_globs: vec![".git/**".to_string()],
             redact_regexes: vec!["token".to_string()],
@@ -593,13 +578,16 @@ mod tests {
         .expect("redactor");
 
         let input = "no secrets here";
-        let redacted = redactor.redact_text_cow(input);
-        assert!(matches!(&redacted, Cow::Borrowed(_)));
-        assert_eq!(redacted.as_ref(), input);
+        let redacted = redactor.redact_text_outcome(input);
+        assert!(matches!(
+            &redacted,
+            RedactionOutcome::Text(Cow::Borrowed(_))
+        ));
+        assert!(matches!(redacted, RedactionOutcome::Text(ref text) if text.as_ref() == input));
     }
 
     #[test]
-    fn redact_text_cow_returns_borrowed_for_empty_input_with_regexes() {
+    fn redact_text_outcome_returns_borrowed_for_empty_input_with_regexes() {
         let redactor = SecretRedactor::from_rules(&SecretRules {
             deny_globs: vec![".git/**".to_string()],
             redact_regexes: vec!["token".to_string(), "secret".to_string()],
@@ -607,9 +595,12 @@ mod tests {
         })
         .expect("redactor");
 
-        let redacted = redactor.redact_text_cow("");
-        assert!(matches!(&redacted, Cow::Borrowed(_)));
-        assert_eq!(redacted.as_ref(), "");
+        let redacted = redactor.redact_text_outcome("");
+        assert!(matches!(
+            &redacted,
+            RedactionOutcome::Text(Cow::Borrowed(_))
+        ));
+        assert!(matches!(redacted, RedactionOutcome::Text(ref text) if text.as_ref() == ""));
     }
 
     #[test]
@@ -621,12 +612,12 @@ mod tests {
         })
         .expect("redactor");
 
-        let redacted = redactor.redact_text_cow("foo");
-        assert_eq!(redacted.as_ref(), "");
+        let redacted = redactor.redact_text_outcome("foo");
+        assert!(matches!(redacted, RedactionOutcome::Text(ref text) if text.as_ref() == ""));
     }
 
     #[test]
-    fn redact_text_cow_applies_regexes_in_order() {
+    fn redact_text_outcome_applies_regexes_in_order() {
         let redactor = SecretRedactor::from_rules(&SecretRules {
             deny_globs: vec![".git/**".to_string()],
             redact_regexes: vec!["ab".to_string(), "b.".to_string()],
@@ -634,8 +625,8 @@ mod tests {
         })
         .expect("redactor");
 
-        let redacted = redactor.redact_text_cow("abc");
-        assert_eq!(redacted.as_ref(), "Xc");
+        let redacted = redactor.redact_text_outcome("abc");
+        assert!(matches!(redacted, RedactionOutcome::Text(ref text) if text.as_ref() == "Xc"));
     }
 
     #[test]
@@ -647,8 +638,8 @@ mod tests {
         })
         .expect("redactor");
 
-        let redacted = redactor.redact_text_cow("foo");
-        assert_eq!(redacted.as_ref(), "XYY");
+        let redacted = redactor.redact_text_outcome("foo");
+        assert!(matches!(redacted, RedactionOutcome::Text(ref text) if text.as_ref() == "XYY"));
     }
 
     #[test]
@@ -782,8 +773,8 @@ mod tests {
         .expect("redactor");
 
         let input = "a".repeat((MAX_REDACTED_OUTPUT_BYTES / MAX_REPLACEMENT_BYTES) + 1);
-        let redacted = redactor.redact_text_cow(&input);
-        assert_eq!(redacted.as_ref(), REDACTION_OUTPUT_LIMIT_MARKER);
+        let redacted = redactor.redact_text_outcome(&input);
+        assert!(matches!(redacted, RedactionOutcome::OutputLimitExceeded));
     }
 
     #[test]

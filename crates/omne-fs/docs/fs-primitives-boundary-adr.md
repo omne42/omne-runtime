@@ -89,10 +89,10 @@ Those behaviors belong in a dedicated runtime/process crate, not in `omne-fs`.
 
 ## Downstream Adapters That Stay Local
 
-- `runtime-assets-kit::secure_fs`
+- `text-assets-kit::secure_fs`
   - stays local because it owns resource-specific path validation, UTF-8 naming rules, backslash
     rejection, bootstrap/write semantics, and resource error messages
-- `i18n::dynamic::secure_fs`
+- `i18n-runtime-kit` directory loader
   - stays local because it owns catalog-specific traversal, `.json` filtering, source-count/byte
     limits, and `DynamicCatalogError` mapping
 - `omne-process-primitives`

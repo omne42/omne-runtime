@@ -10,7 +10,7 @@ use omne_fs::ops::{
     MkdirRequest, MovePathRequest, ReadRequest, StatRequest, WriteFileRequest, copy_file, delete,
     edit_range, glob_paths, grep, list_dir, mkdir, move_path, read_file, stat, write_file,
 };
-use omne_fs::policy::RootMode;
+use policy_meta::WriteScope;
 
 #[cfg(feature = "patch")]
 use omne_fs::ops::{PatchRequest, apply_unified_patch};
@@ -56,7 +56,7 @@ fn read_is_disabled_by_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("file.txt"), "hello\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.read = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -79,7 +79,7 @@ fn glob_is_disabled_by_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("file.txt"), "hello\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.glob = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -101,7 +101,7 @@ fn glob_is_disabled_by_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("file.txt"), "hello\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.glob = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -127,7 +127,7 @@ fn grep_is_disabled_by_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("file.txt"), "hello\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.grep = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -151,7 +151,7 @@ fn grep_is_disabled_by_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("file.txt"), "hello\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.grep = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -178,7 +178,7 @@ fn list_dir_is_disabled_by_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("file.txt"), "hello\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.list_dir = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -200,7 +200,7 @@ fn stat_is_disabled_by_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("file.txt"), "hello\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.stat = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -224,7 +224,7 @@ fn edit_is_disabled_by_policy() {
     let before = std::fs::read_to_string(&file_path).expect("read baseline");
     let before_meta = std::fs::metadata(&file_path).expect("metadata baseline");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.edit = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -260,7 +260,7 @@ fn patch_is_disabled_by_policy() {
     let before = std::fs::read_to_string(&file_path).expect("read baseline");
     let before_meta = std::fs::metadata(&file_path).expect("metadata baseline");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.patch = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -289,7 +289,7 @@ fn patch_is_disabled_by_policy() {
 fn mkdir_is_disabled_by_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.mkdir = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -319,7 +319,7 @@ fn write_is_disabled_by_policy() {
     let before = std::fs::read_to_string(&file_path).expect("read baseline");
     let before_meta = std::fs::metadata(&file_path).expect("metadata baseline");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.write = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -351,7 +351,7 @@ fn delete_is_disabled_by_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("file.txt"), "hello\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.delete = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -384,7 +384,7 @@ fn move_is_disabled_by_policy() {
     std::fs::write(&from, "from\n").expect("write from");
     std::fs::write(&to, "to\n").expect("write to");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.move_path = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -421,7 +421,7 @@ fn copy_is_disabled_by_policy() {
     std::fs::write(&from, "from\n").expect("write from");
     std::fs::write(&to, "to\n").expect("write to");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.copy_file = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -455,7 +455,7 @@ fn edit_is_disallowed_on_readonly_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file_path = dir.path().join("file.txt");
     std::fs::write(&file_path, "hello\n").expect("write baseline");
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let err = edit_range(
         &ctx,
@@ -482,7 +482,7 @@ fn patch_is_disallowed_on_readonly_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file_path = dir.path().join("file.txt");
     std::fs::write(&file_path, "hello\n").expect("write baseline");
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let err = apply_unified_patch(
         &ctx,
@@ -506,7 +506,7 @@ fn delete_is_disallowed_on_readonly_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file_path = dir.path().join("file.txt");
     std::fs::write(&file_path, "hello\n").expect("write baseline");
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let err = delete(
         &ctx,
@@ -531,7 +531,7 @@ fn delete_recursive_is_disallowed_on_readonly_root() {
     let sub_dir = dir.path().join("sub");
     std::fs::create_dir_all(&sub_dir).expect("create sub");
     std::fs::write(sub_dir.join("child.txt"), "hello\n").expect("write child");
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let err = delete(
         &ctx,
@@ -553,7 +553,7 @@ fn delete_recursive_is_disallowed_on_readonly_root() {
 #[test]
 fn mkdir_is_disallowed_on_readonly_root() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let err = mkdir(
         &ctx,
@@ -577,7 +577,7 @@ fn write_is_disallowed_on_readonly_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file_path = dir.path().join("file.txt");
     std::fs::write(&file_path, "baseline\n").expect("write baseline");
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let err = write_file(
         &ctx,
@@ -605,7 +605,7 @@ fn move_is_disallowed_on_readonly_root() {
     let to = dir.path().join("b.txt");
     std::fs::write(&from, "from\n").expect("write from");
     std::fs::write(&to, "to\n").expect("write to");
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let err = move_path(
         &ctx,
@@ -638,7 +638,7 @@ fn copy_is_disallowed_on_readonly_root() {
     let to = dir.path().join("b.txt");
     std::fs::write(&from, "from\n").expect("write from");
     std::fs::write(&to, "to\n").expect("write to");
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let err = copy_file(
         &ctx,

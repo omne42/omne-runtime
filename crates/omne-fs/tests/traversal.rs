@@ -8,7 +8,7 @@ use common::test_policy;
 #[cfg(any(feature = "glob", feature = "grep"))]
 use omne_fs::ops::Context;
 #[cfg(any(feature = "glob", feature = "grep"))]
-use omne_fs::policy::RootMode;
+use policy_meta::WriteScope;
 
 #[cfg(any(feature = "glob", feature = "grep"))]
 fn setup_skip_glob_fixture() -> tempfile::TempDir {
@@ -34,7 +34,7 @@ fn assert_skip_glob_applies_to_grep_but_not_direct_read(skip_pattern: &str) {
 
     let dir = setup_skip_glob_fixture();
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.read = true;
     policy.permissions.grep = true;
     policy.traversal.skip_globs = vec![skip_pattern.to_string()];
@@ -85,7 +85,7 @@ fn assert_skip_glob_applies_to_glob_paths(skip_pattern: &str) {
 
     let dir = setup_skip_glob_fixture();
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.read = true;
     policy.permissions.glob = true;
     policy.traversal.skip_globs = vec![skip_pattern.to_string()];
@@ -131,7 +131,7 @@ fn traversal_skip_globs_support_leading_dot_slash() {
 fn assert_skip_glob_pattern_rejected(pattern: &str, expected_message_fragment: &str) {
     let dir = tempfile::tempdir().expect("tempdir");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.traversal.skip_globs = vec![pattern.to_string()];
     let err = Context::new(policy).expect_err("should reject");
 

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use common::test_policy;
 use omne_fs::ops::{Context, GrepRequest, grep};
-use omne_fs::policy::RootMode;
+use policy_meta::WriteScope;
 
 #[cfg(all(feature = "glob", unix))]
 use omne_fs::ops::{GlobRequest, glob_paths};
@@ -108,7 +108,7 @@ fn grep_globs_support_leading_dot_slash() {
     std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
     std::fs::write(dir.path().join("src").join("a.txt"), "needle\n").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let resp = grep(
         &ctx,
         GrepRequest {
@@ -127,7 +127,7 @@ fn grep_globs_support_leading_dot_slash() {
 #[test]
 fn grep_globs_reject_absolute_and_parent_segments() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     for (pattern, expected_message_fragment) in [
         ("/src/*.txt", "must not start with '/'"),
@@ -162,7 +162,7 @@ fn grep_glob_file_prefix_is_not_filtered_by_directory_probe_skip_glob() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "needle\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.traversal.skip_globs = vec!["a.txt/*".to_string()];
     let ctx = Context::new(policy).expect("ctx");
 
@@ -186,7 +186,7 @@ fn grep_rejects_empty_query() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "needle\n").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     for query in ["", "   \t"] {
         let err = grep(
             &ctx,
@@ -216,7 +216,7 @@ fn grep_rejects_oversized_query() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "needle\n").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let oversized = "a".repeat((8 * 1024) + 1);
     for regex in [false, true] {
         let err = grep(
@@ -251,7 +251,7 @@ fn grep_multiple_matches_keep_relative_path() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "needle one\nneedle two\n").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let resp = grep(
         &ctx,
         GrepRequest {
@@ -273,7 +273,7 @@ fn grep_splits_bare_cr_lines_and_reports_line_numbers() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), b"alpha\rneedle\romega\r").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let resp = grep(
         &ctx,
         GrepRequest {
@@ -302,7 +302,7 @@ fn grep_skips_dangling_symlink_targets() {
     let missing = dir.path().join("missing.txt");
     symlink(&missing, dir.path().join("b.txt")).expect("symlink");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let resp = grep(
         &ctx,
         GrepRequest {
@@ -329,7 +329,7 @@ fn grep_does_not_follow_symlink_root_prefix() {
     std::fs::write(outside.path().join("a.txt"), "needle\n").expect("write");
     symlink(outside.path(), dir.path().join("sub")).expect("symlink dir");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let result = grep(
         &ctx,
         GrepRequest {
@@ -379,7 +379,7 @@ fn grep_skips_walkdir_errors() {
     std::fs::write(blocked.join("b.txt"), "needle\n").expect("write");
     let _chmod_guard = chmod_000_blocks_read_dir(&blocked);
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let resp = grep(
         &ctx,
         GrepRequest {
@@ -416,7 +416,7 @@ fn grep_root_walkdir_error_does_not_leak_absolute_paths() {
     std::fs::write(blocked.join("b.txt"), "needle\n").expect("write");
     let _chmod_guard = chmod_000_blocks_read_dir(&blocked);
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let err = grep(
         &ctx,
         GrepRequest {
@@ -459,7 +459,7 @@ fn grep_skips_unreadable_files() {
     std::fs::write(&unreadable, "needle\n").expect("write");
     let _chmod_guard = chmod_000_blocks_file_read(&unreadable);
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let resp = grep(
         &ctx,
         GrepRequest {
@@ -481,7 +481,7 @@ fn grep_respects_max_walk_ms_time_budget() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "needle\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     // Contract: max_walk_ms=0 means "immediate time limit", not "disabled".
     policy.limits.max_walk_ms = Some(0);
 
@@ -510,7 +510,7 @@ fn grep_redacts_sensitive_match_text() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "API_KEY=abc123 hello\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_read_bytes = 64;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -535,7 +535,7 @@ fn grep_marks_truncated_when_redaction_output_exceeds_limit() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("huge.txt"), "a".repeat(8_200)).expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.secrets.redact_regexes = vec!["a".to_string()];
     policy.secrets.replacement = "x".repeat(1024);
     policy.limits.max_line_bytes = 1024 * 1024;
@@ -565,7 +565,7 @@ fn grep_skips_non_utf8_files() {
     std::fs::write(dir.path().join("a.txt"), "API_KEY=abc123 hello\n").expect("write");
     std::fs::write(dir.path().join("bin.dat"), [0xff, 0xfe, 0xfd]).expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_read_bytes = 64;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -591,7 +591,7 @@ fn grep_skips_too_large_files() {
     std::fs::write(dir.path().join("a.txt"), "API_KEY=abc123 hello\n").expect("write");
     std::fs::write(dir.path().join("large.txt"), "x".repeat(200)).expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_read_bytes = 64;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -618,7 +618,7 @@ fn grep_skips_non_utf8_and_too_large_files() {
     std::fs::write(dir.path().join("large.txt"), "x".repeat(200)).expect("write");
     std::fs::write(dir.path().join("bin.dat"), [0xff, 0xfe, 0xfd]).expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_read_bytes = 64;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -646,7 +646,7 @@ fn grep_honors_max_walk_files() {
     std::fs::write(dir.path().join("a.txt"), "hello\n").expect("write");
     std::fs::write(dir.path().join("b.txt"), "world\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_walk_files = 1;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -673,7 +673,7 @@ fn grep_honors_max_walk_entries() {
     std::fs::create_dir(dir.path().join("sub")).expect("mkdir");
     std::fs::write(dir.path().join("sub").join("a.txt"), "hello\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_walk_entries = 1;
     // Keep policy valid (files <= entries), and rely on directory-first entry consumption
     // to isolate the Entries cap from the Files cap.
@@ -706,7 +706,7 @@ fn grep_reports_line_truncation() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("long.txt"), "0123456789\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_line_bytes = 5;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -733,7 +733,7 @@ fn grep_handles_long_single_line_without_unbounded_buffer_growth() {
     let long_line = format!("needle-{}", "a".repeat(256 * 1024));
     std::fs::write(dir.path().join("long.txt"), long_line).expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_line_bytes = 64;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -759,7 +759,7 @@ fn grep_matches_tail_of_long_line_for_plain_query() {
     let long_line = format!("{}needle-tail\n", "a".repeat(256 * 1024));
     std::fs::write(dir.path().join("long.txt"), long_line).expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_line_bytes = 64;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -785,7 +785,7 @@ fn grep_matches_tail_of_long_line_for_regex_query() {
     let long_line = format!("{}needle-tail\n", "a".repeat(256 * 1024));
     std::fs::write(dir.path().join("long.txt"), long_line).expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_line_bytes = 64;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -811,7 +811,7 @@ fn grep_regex_skips_single_line_above_regex_memory_cap() {
     let long_line = format!("{}needle-tail\n", "a".repeat((8 * 1024 * 1024) + 1));
     std::fs::write(dir.path().join("long.txt"), long_line).expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_read_bytes = 16 * 1024 * 1024;
     policy.limits.max_line_bytes = 64;
     let ctx = Context::new(policy).expect("ctx");
@@ -840,7 +840,7 @@ fn glob_and_grep_include_symlink_files() {
     std::fs::write(dir.path().join("target.txt"), "hello\n").expect("write");
     symlink(dir.path().join("target.txt"), dir.path().join("link.txt")).expect("symlink");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let glob = glob_paths(
         &ctx,
@@ -875,7 +875,7 @@ fn glob_and_grep_include_symlink_files_when_absolute_paths_are_disallowed() {
     std::fs::write(dir.path().join("target.txt"), "hello\n").expect("write");
     symlink(dir.path().join("target.txt"), dir.path().join("link.txt")).expect("symlink");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.paths.allow_absolute = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -909,7 +909,7 @@ fn grep_truncation_is_deterministic_under_max_results() {
     std::fs::write(dir.path().join("b.txt"), "needle\n").expect("write");
     std::fs::write(dir.path().join("a.txt"), "needle\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_results = 1;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -940,7 +940,7 @@ fn grep_truncation_is_deterministic_under_response_byte_budget() {
     std::fs::write(dir.path().join("a-long-name.txt"), "needle\n").expect("write");
     std::fs::write(dir.path().join("b-long-name.txt"), "needle\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_results = 2;
     policy.limits.max_line_bytes = 16;
     let ctx = Context::new(policy).expect("ctx");
@@ -977,7 +977,7 @@ fn grep_response_budget_accounts_for_lossy_non_utf8_paths() {
     let non_utf8_name = OsString::from_vec(vec![0xff, b'.', b't', b'x', b't']);
     std::fs::write(dir.path().join(PathBuf::from(non_utf8_name)), "needle\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_results = 2;
     policy.limits.max_line_bytes = 11;
     let ctx = Context::new(policy).expect("ctx");
@@ -1008,7 +1008,7 @@ fn grep_truncates_on_utf8_boundary() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("utf8.txt"), "€€€\n").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_line_bytes = 4;
     let ctx = Context::new(policy).expect("ctx");
 

@@ -32,8 +32,7 @@ pub enum DeleteKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteResponse {
     pub path: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_path: Option<PathBuf>,
+    pub requested_path: PathBuf,
     pub deleted: bool,
     #[serde(rename = "type")]
     pub kind: DeleteKind,
@@ -43,7 +42,7 @@ fn missing_response(requested_path: &Path) -> DeleteResponse {
     let requested_path = requested_path.to_path_buf();
     DeleteResponse {
         path: requested_path.clone(),
-        requested_path: Some(requested_path),
+        requested_path,
         deleted: false,
         kind: DeleteKind::Missing,
     }
@@ -481,7 +480,7 @@ pub fn delete(ctx: &Context, request: DeleteRequest) -> Result<DeleteResponse> {
 
     Ok(DeleteResponse {
         path: relative,
-        requested_path: Some(requested_path),
+        requested_path,
         deleted: true,
         kind,
     })

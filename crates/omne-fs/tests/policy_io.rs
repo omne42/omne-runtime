@@ -9,14 +9,15 @@ mod policy_io {
     const SYMLINK_FRAGMENT: &str = "symlink";
 
     use omne_fs::ops::Context;
-    use omne_fs::policy::{Permissions, Root, RootMode, SandboxPolicy};
+    use omne_fs::policy::{Permissions, Root, SandboxPolicy};
+    use policy_meta::WriteScope;
     use serde::Serialize;
 
     #[derive(Serialize)]
     struct TomlRoot {
         id: String,
         path: String,
-        mode: String,
+        write_scope: String,
     }
 
     #[derive(Serialize)]
@@ -35,7 +36,7 @@ mod policy_io {
             roots: vec![TomlRoot {
                 id: "workspace".to_string(),
                 path: root_path.display().to_string(),
-                mode: "read_only".to_string(),
+                write_scope: "read_only".to_string(),
             }],
             permissions: TomlPermissions { read: true },
         };
@@ -91,7 +92,7 @@ mod policy_io {
         assert_eq!(toml_policy.roots.len(), 1);
         assert_eq!(toml_policy.roots[0].id, "workspace");
         assert_eq!(toml_policy.roots[0].path, root_path);
-        assert_eq!(toml_policy.roots[0].mode, RootMode::ReadOnly);
+        assert_eq!(toml_policy.roots[0].write_scope, WriteScope::ReadOnly);
         assert!(toml_policy.permissions.read);
         assert!(!toml_policy.paths.allow_absolute);
     }
@@ -109,7 +110,7 @@ mod policy_io {
                 roots: vec![Root {
                     id: "workspace".to_string(),
                     path: root_path.clone(),
-                    mode: RootMode::ReadOnly,
+                    write_scope: WriteScope::ReadOnly,
                 }],
                 permissions: Permissions {
                     read: true,
@@ -129,7 +130,7 @@ mod policy_io {
         assert_eq!(json_policy.roots.len(), 1);
         assert_eq!(json_policy.roots[0].id, "workspace");
         assert_eq!(json_policy.roots[0].path, root_path);
-        assert_eq!(json_policy.roots[0].mode, RootMode::ReadOnly);
+        assert_eq!(json_policy.roots[0].write_scope, WriteScope::ReadOnly);
         assert!(json_policy.permissions.read);
         assert!(!json_policy.paths.allow_absolute);
     }
@@ -147,7 +148,7 @@ mod policy_io {
         assert_eq!(policy.roots.len(), 1);
         assert_eq!(policy.roots[0].id, "workspace");
         assert_eq!(policy.roots[0].path, root_path);
-        assert_eq!(policy.roots[0].mode, RootMode::ReadOnly);
+        assert_eq!(policy.roots[0].write_scope, WriteScope::ReadOnly);
         assert!(policy.permissions.read);
     }
 
@@ -164,7 +165,7 @@ mod policy_io {
                 roots: vec![Root {
                     id: "workspace".to_string(),
                     path: root_path.clone(),
-                    mode: RootMode::ReadOnly,
+                    write_scope: WriteScope::ReadOnly,
                 }],
                 permissions: Permissions {
                     read: true,
@@ -184,7 +185,7 @@ mod policy_io {
         assert_eq!(json_policy.roots.len(), 1);
         assert_eq!(json_policy.roots[0].id, "workspace");
         assert_eq!(json_policy.roots[0].path, root_path);
-        assert_eq!(json_policy.roots[0].mode, RootMode::ReadOnly);
+        assert_eq!(json_policy.roots[0].write_scope, WriteScope::ReadOnly);
         assert!(json_policy.permissions.read);
         assert!(!json_policy.paths.allow_absolute);
     }
@@ -202,7 +203,7 @@ mod policy_io {
         assert_eq!(toml_policy.roots.len(), 1);
         assert_eq!(toml_policy.roots[0].id, "workspace");
         assert_eq!(toml_policy.roots[0].path, root_path);
-        assert_eq!(toml_policy.roots[0].mode, RootMode::ReadOnly);
+        assert_eq!(toml_policy.roots[0].write_scope, WriteScope::ReadOnly);
         assert!(toml_policy.permissions.read);
         assert!(!toml_policy.paths.allow_absolute);
     }
@@ -220,7 +221,7 @@ mod policy_io {
         assert_eq!(toml_policy.roots.len(), 1);
         assert_eq!(toml_policy.roots[0].id, "workspace");
         assert_eq!(toml_policy.roots[0].path, root_path);
-        assert_eq!(toml_policy.roots[0].mode, RootMode::ReadOnly);
+        assert_eq!(toml_policy.roots[0].write_scope, WriteScope::ReadOnly);
         assert!(toml_policy.permissions.read);
 
         let json_path = dir.path().join("policy.JSON");
@@ -230,7 +231,7 @@ mod policy_io {
                 roots: vec![Root {
                     id: "workspace".to_string(),
                     path: root_path.clone(),
-                    mode: RootMode::ReadOnly,
+                    write_scope: WriteScope::ReadOnly,
                 }],
                 permissions: Permissions {
                     read: true,
@@ -250,7 +251,7 @@ mod policy_io {
         assert_eq!(json_policy.roots.len(), 1);
         assert_eq!(json_policy.roots[0].id, "workspace");
         assert_eq!(json_policy.roots[0].path, root_path);
-        assert_eq!(json_policy.roots[0].mode, RootMode::ReadOnly);
+        assert_eq!(json_policy.roots[0].write_scope, WriteScope::ReadOnly);
         assert!(json_policy.permissions.read);
     }
 
@@ -394,8 +395,8 @@ write_scope = "read_only"
 
         let raw = serde_json::json!({
             "roots": [
-                {"id": "dup", "path": root_path, "mode": "read_only"},
-                {"id": "dup", "path": other_root_path, "mode": "read_only"}
+                {"id": "dup", "path": root_path, "write_scope": "read_only"},
+                {"id": "dup", "path": other_root_path, "write_scope": "read_only"}
             ],
             "permissions": {"read": true}
         })
@@ -404,34 +405,5 @@ write_scope = "read_only"
         let err = omne_fs::policy_io::parse_policy(&raw, omne_fs::policy_io::PolicyFormat::Json)
             .expect_err("should validate");
         assert_invalid_policy(err);
-    }
-
-    #[test]
-    fn parse_policy_unvalidated_preserves_raw_parse_behavior() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root_path = dir.path().join("root");
-        std::fs::create_dir_all(&root_path).expect("mkdir");
-
-        let raw = serde_json::json!({
-            "roots": [
-                {"id": "dup", "path": root_path, "mode": "read_only"},
-                {"id": "dup", "path": dir.path().join("other"), "mode": "read_only"}
-            ],
-            "permissions": {"read": true}
-        })
-        .to_string();
-
-        let parsed = omne_fs::policy_io::parse_policy_unvalidated(
-            &raw,
-            omne_fs::policy_io::PolicyFormat::Json,
-        )
-        .expect("raw parse");
-        assert_eq!(parsed.roots.len(), 2);
-        assert_eq!(parsed.roots[0].id, "dup");
-        assert_eq!(parsed.roots[1].id, "dup");
-        assert_eq!(parsed.roots[0].path, root_path);
-        assert_eq!(parsed.roots[1].path, dir.path().join("other"));
-        assert_eq!(parsed.roots[0].mode, RootMode::ReadOnly);
-        assert_eq!(parsed.roots[1].mode, RootMode::ReadOnly);
     }
 }

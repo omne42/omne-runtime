@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 use common::test_policy;
 use omne_fs::ops::{Context, ReadRequest, ReadResponse, read_file};
-use omne_fs::policy::RootMode;
+use policy_meta::WriteScope;
 
-fn read_enabled_policy(root: &std::path::Path, mode: RootMode) -> omne_fs::policy::SandboxPolicy {
+fn read_enabled_policy(root: &std::path::Path, mode: WriteScope) -> omne_fs::policy::SandboxPolicy {
     let mut policy = test_policy(root, mode);
     policy.permissions.read = true;
     policy
@@ -64,13 +64,13 @@ fn read_redacts_matches() {
     let path = dir.path().join("hello.txt");
     std::fs::write(&path, "API_KEY=abc123\nhello\n").expect("write");
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.secrets.redact_regexes = vec!["API_KEY=([A-Za-z0-9_]+)".to_string()];
     let ctx = Context::new(policy).expect("ctx");
     let response = read_ok(&ctx, "hello.txt", None, None);
 
     assert_eq!(response.path, PathBuf::from("hello.txt"));
-    assert_eq!(response.requested_path, Some(PathBuf::from("hello.txt")));
+    assert_eq!(response.requested_path, PathBuf::from("hello.txt"));
     assert!(!response.truncated);
     assert_eq!(response.bytes_read, 21);
     assert!(response.content.contains("***REDACTED***"));
@@ -83,7 +83,7 @@ fn read_rejects_sensitive_env_variants() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join(".env.local"), "SECRET=1\n").expect("write");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let err = read_err(&ctx, ".env.local", None, None);
     match err {
         omne_fs::Error::NotPermitted(message) => {
@@ -102,7 +102,7 @@ fn read_allows_env_example_and_template_variants() {
     std::fs::write(dir.path().join(".env.example"), "SECRET=example\n").expect("write");
     std::fs::write(dir.path().join(".env.template"), "SECRET=template\n").expect("write");
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.secrets.deny_globs.clear();
     let ctx = Context::new(policy).expect("ctx");
 
@@ -119,7 +119,7 @@ fn read_fails_when_redaction_output_exceeds_limit() {
     let path = dir.path().join("huge-redacted.txt");
     std::fs::write(&path, "a".repeat(8_200)).expect("write");
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.secrets.redact_regexes = vec!["a".to_string()];
     policy.secrets.replacement = "x".repeat(1024);
     let ctx = Context::new(policy).expect("ctx");
@@ -140,13 +140,13 @@ fn read_absolute_paths_return_root_relative_requested_path() {
     let abs_path = dir.path().join("hello.txt");
     std::fs::write(&abs_path, "hello\n").expect("write");
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.paths.allow_absolute = true;
     let ctx = Context::new(policy).expect("ctx");
     let response = read_ok(&ctx, abs_path, None, None);
 
     assert_eq!(response.path, PathBuf::from("hello.txt"));
-    assert_eq!(response.requested_path, Some(PathBuf::from("hello.txt")));
+    assert_eq!(response.requested_path, PathBuf::from("hello.txt"));
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn absolute_paths_can_be_disabled_by_policy() {
     let abs_path = dir.path().join("hello.txt");
     std::fs::write(&abs_path, "hello\n").expect("write");
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.paths.allow_absolute = false;
     let ctx = Context::new(policy).expect("ctx");
     let message = invalid_path_message(read_err(&ctx, abs_path, None, None));
@@ -168,7 +168,7 @@ fn read_redacts_literal_replacement_without_expanding_capture_groups() {
     let path = dir.path().join("hello.txt");
     std::fs::write(&path, "API_KEY=abc123\nhello\n").expect("write");
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.secrets.redact_regexes = vec!["API_KEY=([A-Za-z0-9_]+)".to_string()];
     policy.secrets.replacement = "***$1***".to_string();
 
@@ -186,7 +186,7 @@ fn read_rejects_outside_root() {
     let outside = tempfile::NamedTempFile::new().expect("tmp");
     std::fs::write(outside.path(), "hello").expect("write");
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.paths.allow_absolute = true;
     let ctx = Context::new(policy).expect("ctx");
     let err = read_err(&ctx, outside.path().to_path_buf(), None, None);
@@ -206,7 +206,7 @@ fn read_rejects_missing_absolute_paths_outside_root_as_outside_root() {
     let outside = tempfile::tempdir().expect("outside");
     let missing = outside.path().join("missing.txt");
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.paths.allow_absolute = true;
     let ctx = Context::new(policy).expect("ctx");
     let err = read_err(&ctx, missing, None, None);
@@ -230,7 +230,7 @@ fn read_rejects_dangling_symlink_escape() {
     let link_target = outside.path().join("missing.txt");
     symlink(&link_target, dir.path().join("link.txt")).expect("symlink");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let err = read_err(&ctx, "link.txt", None, None);
 
     match err {
@@ -247,7 +247,7 @@ fn read_supports_line_ranges() {
     let path = dir.path().join("lines.txt");
     std::fs::write(&path, "one\ntwo\nthree\nfour\n").expect("write");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let response = read_ok(&ctx, "lines.txt", Some(2), Some(3));
 
     assert_eq!(response.content, "two\nthree\n");
@@ -263,7 +263,7 @@ fn read_supports_line_ranges_without_trailing_newline() {
     let path = dir.path().join("lines.txt");
     std::fs::write(&path, "one\ntwo\nthree").expect("write");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let response = read_ok(&ctx, "lines.txt", Some(3), Some(3));
 
     assert_eq!(response.content, "three");
@@ -279,7 +279,7 @@ fn read_supports_line_ranges_with_bare_cr_line_endings() {
     let path = dir.path().join("lines.txt");
     std::fs::write(&path, "one\rtwo\rthree\rfour\r").expect("write");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let response = read_ok(&ctx, "lines.txt", Some(2), Some(3));
 
     assert_eq!(response.content, "two\rthree\r");
@@ -296,7 +296,7 @@ fn read_line_ranges_skip_large_prefix_line_without_retaining_scratch_buffer() {
     let large_prefix = "x".repeat(512 * 1024);
     std::fs::write(&path, format!("{large_prefix}\nkeep\n")).expect("write");
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_read_bytes = (large_prefix.len() as u64).saturating_add(8);
     let ctx = Context::new(policy).expect("ctx");
 
@@ -314,7 +314,7 @@ fn read_rejects_non_utf8_file_full_read() {
     let path = dir.path().join("invalid.txt");
     std::fs::write(&path, b"fo\x80").expect("write");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let err = read_err(&ctx, "invalid.txt", None, None);
 
     match err {
@@ -331,7 +331,7 @@ fn read_rejects_non_utf8_file_line_range_read() {
     let path = dir.path().join("invalid.txt");
     std::fs::write(&path, b"ok\n\xff\n").expect("write");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let err = read_err(&ctx, "invalid.txt", Some(2), Some(2));
 
     match err {
@@ -348,7 +348,7 @@ fn read_rejects_non_utf8_bytes_before_selected_line_range() {
     let path = dir.path().join("invalid-prefix.txt");
     std::fs::write(&path, b"\xff\nok\n").expect("write");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let err = read_err(&ctx, "invalid-prefix.txt", Some(2), Some(2));
 
     match err {
@@ -365,7 +365,7 @@ fn read_line_ranges_respects_max_read_bytes() {
     let path = dir.path().join("bigline.txt");
     std::fs::write(&path, "x".repeat(200)).expect("write");
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_read_bytes = 64;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -392,7 +392,7 @@ fn read_line_ranges_accept_file_at_max_read_bytes_boundary() {
     let content = "x".repeat(64);
     std::fs::write(&path, &content).expect("write");
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_read_bytes = 64;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -410,7 +410,7 @@ fn read_rejects_fifo_special_files() {
     let fifo = dir.path().join("pipe");
     unix_helpers::create_fifo(&fifo);
 
-    let mut policy = read_enabled_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_read_bytes = 8;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -426,7 +426,7 @@ fn read_line_ranges_reject_fifo_special_files() {
     let fifo = dir.path().join("pipe");
     unix_helpers::create_fifo(&fifo);
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let message = invalid_path_message(read_err(&ctx, "pipe", Some(1), Some(1)));
     assert!(message.contains(MSG_NOT_REGULAR_FILE));
@@ -438,7 +438,7 @@ fn read_rejects_incomplete_line_ranges() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("file.txt"), "one\ntwo\n").expect("write");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let message = invalid_path_message(read_err(&ctx, "file.txt", Some(1), None));
     assert!(message.contains(MSG_LINE_RANGE_TOGETHER));
@@ -452,7 +452,7 @@ fn read_rejects_invalid_line_ranges() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("file.txt"), "one\ntwo\n").expect("write");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let message = invalid_path_message(read_err(&ctx, "file.txt", Some(0), Some(1)));
     assert!(message.contains(MSG_INVALID_LINE_RANGE));
@@ -466,7 +466,7 @@ fn read_line_ranges_reject_out_of_bounds_requests() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("file.txt"), "one\ntwo\n").expect("write");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
 
     let message = invalid_path_message(read_err(&ctx, "file.txt", Some(1), Some(3)));
     assert!(message.contains(MSG_LINE_RANGE));

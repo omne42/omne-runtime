@@ -1,5 +1,7 @@
 use std::path::{Component, Path, PathBuf};
 
+use omne_fs::policy::SandboxPolicy;
+
 pub(crate) const CLI_ERROR_CODE_INVALID_CLI_ARGS: &str = "invalid_cli_args";
 const CLI_ERROR_CODE_JSON: &str = "json";
 
@@ -125,7 +127,7 @@ pub(crate) struct PathRedaction {
 }
 
 impl PathRedaction {
-    pub(crate) fn from_policy(policy: &omne_fs::SandboxPolicy) -> Self {
+    pub(crate) fn from_policy(policy: &SandboxPolicy) -> Self {
         let mut roots = Vec::<RedactionRoot>::with_capacity(policy.roots.len());
         let mut canonical_roots = Vec::<RedactionRoot>::with_capacity(policy.roots.len());
 
@@ -674,6 +676,8 @@ fn format_root_id_for_error(root_id: &str, mode: RedactionMode) -> String {
 
 #[cfg(test)]
 mod tests {
+    use omne_fs::policy::SandboxPolicy;
+
     use super::{
         PathRedaction, RedactionMode, RedactionRoot, format_path_for_error_with_mode,
         most_specific_matching_root, normalized_component_depth, render_tool_error,
@@ -770,7 +774,7 @@ mod tests {
         assert!(!missing_root.exists());
 
         let policy =
-            omne_fs::SandboxPolicy::single_root("root", &missing_root, omne_fs::RootMode::ReadOnly);
+            SandboxPolicy::single_root("root", &missing_root, policy_meta::WriteScope::ReadOnly);
         let redaction = PathRedaction::from_policy(&policy);
 
         let absolute_under_root = missing_root.join("secret.txt");
@@ -821,7 +825,7 @@ mod tests {
     fn canonical_root_duplicate_is_skipped_when_equal_to_declared_root() {
         let dir = tempfile::tempdir().expect("tempdir");
         let policy =
-            omne_fs::SandboxPolicy::single_root("root", dir.path(), omne_fs::RootMode::ReadOnly);
+            SandboxPolicy::single_root("root", dir.path(), policy_meta::WriteScope::ReadOnly);
 
         let redaction = PathRedaction::from_policy(&policy);
         assert_eq!(redaction.roots.len(), 1);
@@ -832,10 +836,10 @@ mod tests {
     fn canonical_root_duplicate_is_skipped_when_lexically_equivalent_to_declared_root() {
         let dir = tempfile::tempdir().expect("tempdir");
         let declared_with_curdir = dir.path().join(".");
-        let policy = omne_fs::SandboxPolicy::single_root(
+        let policy = SandboxPolicy::single_root(
             "root",
             &declared_with_curdir,
-            omne_fs::RootMode::ReadOnly,
+            policy_meta::WriteScope::ReadOnly,
         );
 
         let redaction = PathRedaction::from_policy(&policy);

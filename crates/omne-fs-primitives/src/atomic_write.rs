@@ -168,16 +168,8 @@ fn normalize_staged_file_name(raw: &str) -> Option<String> {
 }
 
 impl StagedAtomicFile {
-    pub fn file(&self) -> &fs::File {
-        self.staged.as_file()
-    }
-
     pub fn file_mut(&mut self) -> &mut fs::File {
         self.staged.as_file_mut()
-    }
-
-    pub fn path(&self) -> &Path {
-        self.staged.path()
     }
 
     pub fn commit(mut self) -> Result<(), AtomicWriteError> {
@@ -376,6 +368,7 @@ mod tests {
         .expect("stage file");
 
         let name = staged
+            .staged
             .path()
             .file_name()
             .and_then(|value| value.to_str())

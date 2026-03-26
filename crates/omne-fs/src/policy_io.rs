@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use crate::{Error, Result, SandboxPolicy};
+use crate::policy::SandboxPolicy;
+use crate::{Error, Result};
 
 const DEFAULT_MAX_POLICY_BYTES: u64 = 4 * 1024 * 1024;
 const HARD_MAX_POLICY_BYTES: u64 = 64 * 1024 * 1024;
@@ -14,8 +15,8 @@ pub enum PolicyFormat {
 }
 
 fn open_policy_file(path: &Path) -> Result<std::fs::File> {
-    let file = crate::platform_open::open_readonly_nofollow(path).map_err(|err| {
-        if crate::platform_open::is_symlink_open_error(&err) {
+    let file = omne_fs_primitives::open_readonly_nofollow(path).map_err(|err| {
+        if omne_fs_primitives::is_symlink_or_reparse_open_error(&err) {
             return Error::InvalidPath(format!(
                 "path {} encountered a symlink or symlink resolution loop while opening policy path",
                 path.display()
@@ -54,7 +55,7 @@ pub fn parse_policy(raw: &str, format: PolicyFormat) -> Result<SandboxPolicy> {
 ///
 /// The returned value may violate policy safety constraints. Prefer [`parse_policy`]
 /// unless you explicitly need a partially validated intermediate value.
-pub fn parse_policy_unvalidated(raw: &str, format: PolicyFormat) -> Result<SandboxPolicy> {
+pub(crate) fn parse_policy_unvalidated(raw: &str, format: PolicyFormat) -> Result<SandboxPolicy> {
     match format {
         PolicyFormat::Json => serde_json::from_str(raw)
             .map_err(|err| Error::InvalidPolicy(format!("invalid json policy: {err}"))),
@@ -95,8 +96,7 @@ fn detect_policy_format(path: &Path) -> Result<(PolicyFormat, bool)> {
 /// - `.toml` or no extension => TOML
 /// - hidden file names `.json` / `.toml` are also recognized explicitly
 ///
-/// For no-extension paths, TOML is inferred by default. Use
-/// [`load_policy_limited_with_format`] to disable format inference.
+/// For no-extension paths, TOML is inferred by default.
 ///
 /// This rejects symlink targets for the final path component and non-regular files
 /// (FIFOs, sockets, device nodes) to avoid blocking behavior and related DoS risks.
@@ -104,18 +104,6 @@ pub fn load_policy_limited(path: impl AsRef<Path>, max_bytes: u64) -> Result<San
     let path = path.as_ref();
     let (format, inferred_default_toml) = detect_policy_format(path)?;
     load_policy_limited_inner(path, max_bytes, format, inferred_default_toml)
-}
-
-/// Load and validate a policy file from disk with a byte limit and explicit format.
-///
-/// This is equivalent to [`load_policy_limited`] except it bypasses extension-based
-/// format inference.
-pub fn load_policy_limited_with_format(
-    path: impl AsRef<Path>,
-    max_bytes: u64,
-    format: PolicyFormat,
-) -> Result<SandboxPolicy> {
-    load_policy_limited_inner(path.as_ref(), max_bytes, format, false)
 }
 
 fn load_policy_limited_inner(
@@ -193,7 +181,7 @@ fn initial_policy_capacity(meta_len: u64, max_bytes: u64) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{PolicyFormat, initial_policy_capacity, parse_policy};
+    use super::{PolicyFormat, initial_policy_capacity, parse_policy, parse_policy_unvalidated};
 
     use policy_meta::{Decision, ExecutionIsolation, RiskProfile};
 
@@ -241,7 +229,7 @@ decision = "prompt"
             .expect("nested policy metadata");
 
         assert_eq!(
-            policy.root("workspace").expect("root").mode.as_str(),
+            policy.root("workspace").expect("root").write_scope.as_str(),
             "read_only"
         );
         assert_eq!(policy_meta.version.map(|version| version.as_u8()), Some(1));
@@ -259,15 +247,15 @@ decision = "prompt"
 
     #[test]
     fn toml_serialization_preserves_nested_policy_meta_table() {
-        let mut policy = crate::SandboxPolicy::single_root(
+        let mut policy = crate::policy::SandboxPolicy::single_root(
             "workspace",
             std::env::temp_dir(),
-            crate::RootMode::ReadOnly,
+            policy_meta::WriteScope::ReadOnly,
         );
         policy.metadata.policy_meta = Some(policy_meta::PolicyMetaV1 {
             version: Some(policy_meta::SpecVersion::V1),
             risk_profile: Some(RiskProfile::Standard),
-            write_scope: Some(crate::RootMode::WorkspaceWrite),
+            write_scope: Some(policy_meta::WriteScope::WorkspaceWrite),
             execution_isolation: Some(ExecutionIsolation::BestEffort),
             decision: Some(Decision::Prompt),
         });
@@ -280,5 +268,37 @@ decision = "prompt"
         assert!(rendered.contains("write_scope = \"workspace_write\""));
         assert!(rendered.contains("execution_isolation = \"best_effort\""));
         assert!(rendered.contains("decision = \"prompt\""));
+    }
+
+    #[test]
+    fn parse_policy_unvalidated_preserves_raw_parse_behavior() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root_path = dir.path().join("root");
+        std::fs::create_dir_all(&root_path).expect("mkdir");
+
+        let raw = serde_json::json!({
+            "roots": [
+                {"id": "dup", "path": root_path, "write_scope": "read_only"},
+                {"id": "dup", "path": dir.path().join("other"), "write_scope": "read_only"}
+            ],
+            "permissions": {"read": true}
+        })
+        .to_string();
+
+        let parsed =
+            parse_policy_unvalidated(&raw, PolicyFormat::Json).expect("raw parse preserves data");
+        assert_eq!(parsed.roots.len(), 2);
+        assert_eq!(parsed.roots[0].id, "dup");
+        assert_eq!(parsed.roots[1].id, "dup");
+        assert_eq!(parsed.roots[0].path, root_path);
+        assert_eq!(parsed.roots[1].path, dir.path().join("other"));
+        assert_eq!(
+            parsed.roots[0].write_scope,
+            policy_meta::WriteScope::ReadOnly
+        );
+        assert_eq!(
+            parsed.roots[1].write_scope,
+            policy_meta::WriteScope::ReadOnly
+        );
     }
 }

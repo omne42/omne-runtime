@@ -4,10 +4,11 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus};
 
-use omne_execution_gateway::policy::GatewayPolicy;
 use omne_execution_gateway::{
-    ExecGateway, ExecRequest, IsolationLevel, RequestResolution, RequestedIsolationSource,
+    ExecEvent, ExecGateway, ExecRequest, ExecResult, GatewayPolicy, RequestResolution,
+    RequestedIsolationSource, requested_policy_meta,
 };
+use policy_meta::{ExecutionIsolation, SpecVersion};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -18,7 +19,7 @@ struct ExecRequestWire {
     cwd: PathBuf,
     workspace_root: PathBuf,
     #[serde(default)]
-    required_isolation: Option<IsolationLevel>,
+    required_isolation: Option<ExecutionIsolation>,
     #[serde(default)]
     declared_mutation: bool,
 }
@@ -26,16 +27,7 @@ struct ExecRequestWire {
 #[derive(Debug, Serialize)]
 struct ExecOutput {
     request_resolution: RequestResolution,
-    event: omne_execution_gateway::ExecEvent,
-    decision: String,
-    reason: Option<String>,
-    requested_isolation: IsolationLevel,
-    requested_isolation_source: RequestedIsolationSource,
-    requested_policy_meta: policy_meta::PolicyMetaV1,
-    policy_default_isolation: IsolationLevel,
-    supported_isolation: IsolationLevel,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sandbox_runtime: Option<omne_execution_gateway::SandboxRuntimeObservation>,
+    event: ExecEvent,
     exit_code: Option<i32>,
     signal: Option<i32>,
     error: Option<String>,
@@ -127,37 +119,21 @@ fn load_request(path: &PathBuf) -> Result<ExecRequestWire, String> {
 
 fn exec_output_from_result(
     request_resolution: RequestResolution,
-    event: omne_execution_gateway::ExecEvent,
-    result: omne_execution_gateway::ExecResult<ExitStatus>,
+    event: ExecEvent,
+    result: ExecResult<ExitStatus>,
 ) -> ExecOutput {
     match result {
         Ok(status) => ExecOutput {
-            request_resolution: request_resolution.clone(),
-            event: event.clone(),
-            decision: format!("{:?}", event.decision).to_lowercase(),
-            reason: event.reason,
-            requested_isolation: request_resolution.requested_isolation,
-            requested_isolation_source: request_resolution.requested_isolation_source,
-            requested_policy_meta: request_resolution.requested_policy_meta.clone(),
-            policy_default_isolation: request_resolution.policy_default_isolation,
-            supported_isolation: event.supported_isolation,
-            sandbox_runtime: event.sandbox_runtime,
+            request_resolution,
+            event,
             exit_code: status.code(),
             signal: exit_status_signal(&status),
             error: exit_status_signal(&status)
                 .map(|signal| format!("process terminated by signal {signal}")),
         },
         Err(err) => ExecOutput {
-            request_resolution: request_resolution.clone(),
-            event: event.clone(),
-            decision: format!("{:?}", event.decision).to_lowercase(),
-            reason: event.reason,
-            requested_isolation: request_resolution.requested_isolation,
-            requested_isolation_source: request_resolution.requested_isolation_source,
-            requested_policy_meta: request_resolution.requested_policy_meta.clone(),
-            policy_default_isolation: request_resolution.policy_default_isolation,
-            supported_isolation: event.supported_isolation,
-            sandbox_runtime: event.sandbox_runtime,
+            request_resolution,
+            event,
             exit_code: None,
             signal: None,
             error: Some(err.to_string()),
@@ -181,16 +157,13 @@ fn exit_status_signal(_: &ExitStatus) -> Option<i32> {
 mod tests {
     use super::*;
     use omne_execution_gateway::ExecDecision;
-    use omne_execution_gateway::SpecVersion;
 
     fn sample_event() -> omne_execution_gateway::ExecEvent {
         omne_execution_gateway::ExecEvent {
             decision: ExecDecision::Run,
-            requested_isolation: IsolationLevel::BestEffort,
-            requested_policy_meta: omne_execution_gateway::audit::requested_policy_meta(
-                IsolationLevel::BestEffort,
-            ),
-            supported_isolation: IsolationLevel::BestEffort,
+            requested_isolation: ExecutionIsolation::BestEffort,
+            requested_policy_meta: requested_policy_meta(ExecutionIsolation::BestEffort),
+            supported_isolation: ExecutionIsolation::BestEffort,
             program: "echo".into(),
             cwd: ".".into(),
             workspace_root: ".".into(),
@@ -201,8 +174,15 @@ mod tests {
     }
 
     fn sample_request_resolution() -> RequestResolution {
-        let request = ExecRequest::new("echo", vec!["hello"], ".", IsolationLevel::BestEffort, ".");
-        ExecGateway::with_supported_isolation(IsolationLevel::BestEffort).resolve_request(&request)
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            ".",
+            ExecutionIsolation::BestEffort,
+            ".",
+        );
+        ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort)
+            .resolve_request(&request)
     }
 
     fn sample_policy_default_request_resolution() -> RequestResolution {
@@ -210,10 +190,11 @@ mod tests {
             "echo",
             vec!["hello"],
             ".",
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             ".",
         );
-        ExecGateway::with_supported_isolation(IsolationLevel::BestEffort).resolve_request(&request)
+        ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort)
+            .resolve_request(&request)
     }
 
     #[test]
@@ -225,34 +206,28 @@ mod tests {
         assert_eq!(output.request_resolution.program, "echo");
         assert_eq!(output.request_resolution.args, vec!["hello"]);
         assert_eq!(output.exit_code, Some(1));
-        assert_eq!(output.requested_policy_meta.version, Some(SpecVersion::V1));
         assert_eq!(
-            output.requested_isolation_source,
+            output.request_resolution.requested_isolation_source,
             RequestedIsolationSource::Request
         );
-        assert_eq!(output.policy_default_isolation, IsolationLevel::BestEffort);
         assert_eq!(
-            output.requested_policy_meta.execution_isolation,
-            Some(IsolationLevel::BestEffort)
+            output.request_resolution.policy_default_isolation,
+            ExecutionIsolation::BestEffort
+        );
+        assert_eq!(
+            output.request_resolution.requested_policy_meta.version,
+            Some(SpecVersion::V1)
+        );
+        assert_eq!(
+            output
+                .request_resolution
+                .requested_policy_meta
+                .execution_isolation,
+            Some(ExecutionIsolation::BestEffort)
         );
         assert_eq!(output.signal, None);
         assert_eq!(output.error, None);
         let value = serde_json::to_value(&output).expect("serialize output");
-        assert_eq!(
-            value["requested_policy_meta"],
-            serde_json::json!({
-                "version": 1,
-                "execution_isolation": "best_effort"
-            })
-        );
-        assert_eq!(
-            value["requested_isolation_source"],
-            serde_json::json!("request")
-        );
-        assert_eq!(
-            value["policy_default_isolation"],
-            serde_json::json!("best_effort")
-        );
         assert_eq!(
             value["request_resolution"],
             serde_json::json!({
@@ -299,7 +274,7 @@ mod tests {
         assert_eq!(output.exit_code, None);
         assert_eq!(output.signal, Some(15));
         assert_eq!(
-            output.requested_isolation_source,
+            output.request_resolution.requested_isolation_source,
             RequestedIsolationSource::PolicyDefault
         );
         assert_eq!(
@@ -310,12 +285,12 @@ mod tests {
 
     #[test]
     fn shared_request_resolution_tracks_raw_and_effective_isolation() {
-        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let request = ExecRequest::with_policy_default_isolation(
             "sh",
             vec!["-lc", "echo hi"],
             ".",
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             ".",
         )
         .with_declared_mutation(true);
@@ -331,14 +306,17 @@ mod tests {
             ]
         );
         assert_eq!(resolution.input_required_isolation, None);
-        assert_eq!(resolution.requested_isolation, IsolationLevel::BestEffort);
+        assert_eq!(
+            resolution.requested_isolation,
+            ExecutionIsolation::BestEffort
+        );
         assert_eq!(
             resolution.requested_isolation_source,
             RequestedIsolationSource::PolicyDefault
         );
         assert_eq!(
             resolution.requested_policy_meta,
-            omne_execution_gateway::requested_policy_meta(IsolationLevel::BestEffort)
+            omne_execution_gateway::requested_policy_meta(ExecutionIsolation::BestEffort)
         );
         assert!(resolution.declared_mutation);
     }

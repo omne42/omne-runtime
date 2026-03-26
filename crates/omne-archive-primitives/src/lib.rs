@@ -13,7 +13,6 @@ mod binary_archive;
 
 pub use binary_archive::{
     ArchiveBinaryMatch, BinaryArchiveFormat, BinaryArchiveRequest, ExtractBinaryFromArchiveError,
-    ExtractedArchiveBinary, extract_binary_from_archive, extract_binary_from_archive_reader,
-    extract_binary_from_archive_reader_to_writer, extract_binary_from_archive_to_writer,
-    is_binary_archive_asset_name,
+    ExtractedArchiveBinary, extract_binary_from_archive,
+    extract_binary_from_archive_reader_to_writer, is_binary_archive_asset_name,
 };

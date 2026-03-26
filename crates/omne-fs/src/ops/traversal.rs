@@ -14,7 +14,7 @@ use globset::GlobSet;
 use crate::error::Result;
 
 #[cfg(any(feature = "glob", feature = "grep"))]
-use super::super::Context;
+use super::Context;
 #[cfg(any(feature = "glob", feature = "grep"))]
 use super::ScanLimitReason;
 
@@ -159,12 +159,6 @@ pub(super) struct TraversalDiagnostics {
 
 #[cfg(any(feature = "glob", feature = "grep"))]
 impl TraversalDiagnostics {
-    // Legacy alias kept for response compatibility; use `scan_limit_reached` as the
-    // canonical boolean source for limit truncation semantics.
-    pub(super) fn truncated(&self) -> bool {
-        self.scan_limit_reached()
-    }
-
     pub(super) fn scanned_files(&self) -> u64 {
         self.scanned_files
     }
@@ -242,7 +236,6 @@ mod tests {
         diag.mark_limit_reached(ScanLimitReason::Time);
 
         assert!(diag.scan_limit_reached());
-        assert!(diag.truncated());
         assert_eq!(diag.scan_limit_reason(), Some(ScanLimitReason::Entries));
     }
 

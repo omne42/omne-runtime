@@ -23,7 +23,11 @@ This project is not an OS sandbox. See `SECURITY.md` and `docs/security-guide.md
 
 ## Documentation
 
-For full documentation (Next.js-docs style structure), start here:
+For full documentation, start here:
+
+- [`docs/docs-system-map.md`](docs/docs-system-map.md) (documentation entrypoint)
+- [`docs/architecture/system-boundaries.md`](docs/architecture/system-boundaries.md)
+- [`docs/architecture/source-layout.md`](docs/architecture/source-layout.md)
 
 - [`docs/index.md`](docs/index.md) (full portal)
 - [`docs/getting-started.md`](docs/getting-started.md)
@@ -62,11 +66,15 @@ cargo run -p omne-fs-cli -- \
 
 ## Quick Start (Library)
 
+Add both `omne-fs` and `policy-meta`; `WriteScope` remains owned by `policy-meta`.
+
 ```rust
-use omne_fs::{Context, ReadRequest, RootMode, SandboxPolicy};
+use omne_fs::ops::{Context, ReadRequest};
+use omne_fs::policy::SandboxPolicy;
+use policy_meta::WriteScope;
 
 let mut policy =
-    SandboxPolicy::single_root("workspace", "/abs/path/to/workspace", RootMode::ReadOnly);
+    SandboxPolicy::single_root("workspace", "/abs/path/to/workspace", WriteScope::ReadOnly);
 policy.permissions.read = true;
 
 let ctx = Context::new(policy)?;

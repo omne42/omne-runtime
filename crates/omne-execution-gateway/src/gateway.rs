@@ -7,7 +7,9 @@ use crate::audit_log::AuditLogger;
 use crate::error::{ExecError, ExecResult};
 use crate::policy::GatewayPolicy;
 use crate::sandbox;
-use crate::types::{ExecRequest, IsolationLevel, RequestResolution, RequestedIsolationSource};
+use crate::types::{ExecRequest, RequestResolution, RequestedIsolationSource};
+use policy_meta::ExecutionIsolation;
+use serde::Serialize;
 
 #[derive(Debug)]
 struct ResolvedRequestPaths {
@@ -18,7 +20,7 @@ struct ResolvedRequestPaths {
 #[derive(Debug)]
 struct PreparedExecRequest {
     event: ExecEvent,
-    required_isolation: IsolationLevel,
+    required_isolation: ExecutionIsolation,
     resolved_paths: ResolvedRequestPaths,
 }
 
@@ -29,14 +31,6 @@ pub struct PreflightError {
 }
 
 impl PreflightError {
-    pub fn event(&self) -> &ExecEvent {
-        &self.event
-    }
-
-    pub fn error(&self) -> &ExecError {
-        &self.error
-    }
-
     pub fn into_parts(self) -> (ExecEvent, ExecError) {
         (self.event, self.error)
     }
@@ -44,15 +38,15 @@ impl PreflightError {
 
 #[derive(Debug)]
 pub struct ExecGateway {
-    supported_isolation: IsolationLevel,
+    supported_isolation: ExecutionIsolation,
     policy: GatewayPolicy,
     audit: Option<AuditLogger>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct CapabilityReport {
-    pub supported_isolation: IsolationLevel,
-    pub policy_default_isolation: IsolationLevel,
+    pub supported_isolation: ExecutionIsolation,
+    pub policy_default_isolation: ExecutionIsolation,
 }
 
 #[derive(Debug)]
@@ -65,16 +59,6 @@ pub struct ExecutionOutcome {
 impl ExecutionOutcome {
     pub fn into_parts(self) -> (ExecEvent, ExecResult<ExitStatus>) {
         (self.event, self.result)
-    }
-}
-
-impl CapabilityReport {
-    pub fn supported_policy_meta(&self) -> policy_meta::PolicyMetaV1 {
-        requested_policy_meta(self.supported_isolation)
-    }
-
-    pub fn policy_default_policy_meta(&self) -> policy_meta::PolicyMetaV1 {
-        requested_policy_meta(self.policy_default_isolation)
     }
 }
 
@@ -96,7 +80,7 @@ impl ExecGateway {
 
     pub fn with_policy_and_supported_isolation(
         policy: GatewayPolicy,
-        supported_isolation: IsolationLevel,
+        supported_isolation: ExecutionIsolation,
     ) -> Self {
         let audit = policy.audit_log_path.as_ref().map(AuditLogger::new);
         Self {
@@ -106,16 +90,8 @@ impl ExecGateway {
         }
     }
 
-    pub fn with_supported_isolation(supported_isolation: IsolationLevel) -> Self {
+    pub fn with_supported_isolation(supported_isolation: ExecutionIsolation) -> Self {
         Self::with_policy_and_supported_isolation(GatewayPolicy::default(), supported_isolation)
-    }
-
-    pub fn supported_isolation(&self) -> IsolationLevel {
-        self.supported_isolation
-    }
-
-    pub fn policy(&self) -> &GatewayPolicy {
-        &self.policy
     }
 
     pub fn capability_report(&self) -> CapabilityReport {
@@ -177,13 +153,6 @@ impl ExecGateway {
         self.execute(request).result
     }
 
-    pub fn execute_status_with_event(
-        &self,
-        request: &ExecRequest,
-    ) -> (ExecEvent, ExecResult<ExitStatus>) {
-        self.execute(request).into_parts()
-    }
-
     /// Apply validated cwd/sandbox settings to an existing command.
     ///
     /// The command's program and args must exactly match the supplied request.
@@ -239,7 +208,7 @@ impl ExecGateway {
             ));
         }
 
-        if matches!(request.required_isolation, IsolationLevel::None)
+        if matches!(request.required_isolation, ExecutionIsolation::None)
             && !self.policy.allow_isolation_none
         {
             return Err(self.deny_preflight(
@@ -249,14 +218,14 @@ impl ExecGateway {
             ));
         }
 
-        if request.declared_mutation && self.policy.enforce_fs_tool_for_mutation {
+        if request.declared_mutation && self.policy.enforce_allowlisted_program_for_mutation {
             let program = request.program.to_string_lossy();
-            if !self.policy.is_fs_tool_program(&program) {
+            if !self.policy.is_mutating_program_allowlisted(&program) {
                 return Err(self.deny_preflight(
                     event,
-                    "mutation_requires_fs_tool",
+                    "mutation_requires_allowlisted_program",
                     ExecError::PolicyDenied(
-                        "declared mutating command must use omne-fs".to_string(),
+                        "declared mutating command must use an allowlisted program".to_string(),
                     ),
                 ));
             }
@@ -413,14 +382,14 @@ mod tests {
 
     #[test]
     fn fail_closed_when_required_isolation_exceeds_supported() {
-        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
 
         let request = ExecRequest::new(
             OsString::from(dummy_program()),
             Vec::<OsString>::new(),
             workspace.path(),
-            IsolationLevel::Strict,
+            ExecutionIsolation::Strict,
             workspace.path(),
         );
 
@@ -433,8 +402,8 @@ mod tests {
                 requested,
                 supported,
             } => {
-                assert_eq!(requested, IsolationLevel::Strict);
-                assert_eq!(supported, IsolationLevel::BestEffort);
+                assert_eq!(requested, ExecutionIsolation::Strict);
+                assert_eq!(supported, ExecutionIsolation::BestEffort);
             }
             other => panic!("unexpected error: {other}"),
         }
@@ -442,7 +411,7 @@ mod tests {
 
     #[test]
     fn rejects_cwd_outside_workspace() {
-        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let outside = tempdir().expect("create outside cwd");
 
@@ -450,7 +419,7 @@ mod tests {
             OsString::from(dummy_program()),
             Vec::<OsString>::new(),
             outside.path(),
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         );
 
@@ -471,14 +440,14 @@ mod tests {
             ..GatewayPolicy::default()
         };
         let gateway =
-            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::None);
+            ExecGateway::with_policy_and_supported_isolation(policy, ExecutionIsolation::None);
         let workspace = tempdir().expect("create temp workspace");
 
         let request = ExecRequest::new(
             OsString::from(dummy_program()),
             Vec::<OsString>::new(),
             workspace.path(),
-            IsolationLevel::None,
+            ExecutionIsolation::None,
             workspace.path(),
         );
 
@@ -488,13 +457,13 @@ mod tests {
 
     #[test]
     fn evaluate_denies_with_reason_for_unsupported_isolation() {
-        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             dummy_program(),
             Vec::<OsString>::new(),
             workspace.path(),
-            IsolationLevel::Strict,
+            ExecutionIsolation::Strict,
             workspace.path(),
         );
 
@@ -503,46 +472,41 @@ mod tests {
         assert_eq!(event.reason.as_deref(), Some("isolation_not_supported"));
         assert_eq!(
             event.requested_policy_meta,
-            crate::audit::requested_policy_meta(IsolationLevel::Strict)
+            crate::audit::requested_policy_meta(ExecutionIsolation::Strict)
         );
     }
 
     #[test]
     fn capability_report_matches_supported_isolation() {
-        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let report = gateway.capability_report();
-        assert_eq!(report.supported_isolation, IsolationLevel::BestEffort);
-        assert_eq!(report.policy_default_isolation, IsolationLevel::BestEffort);
+        assert_eq!(report.supported_isolation, ExecutionIsolation::BestEffort);
         assert_eq!(
-            report.supported_policy_meta(),
-            crate::audit::requested_policy_meta(IsolationLevel::BestEffort)
-        );
-        assert_eq!(
-            report.policy_default_policy_meta(),
-            crate::audit::requested_policy_meta(IsolationLevel::BestEffort)
+            report.policy_default_isolation,
+            ExecutionIsolation::BestEffort
         );
     }
 
     #[test]
     fn execute_with_event_preserves_deny_reason() {
-        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             dummy_program(),
             Vec::<OsString>::new(),
             workspace.path(),
-            IsolationLevel::Strict,
+            ExecutionIsolation::Strict,
             workspace.path(),
         );
 
-        let (event, result) = gateway.execute_status_with_event(&request);
+        let (event, result) = gateway.execute(&request).into_parts();
         assert_eq!(event.reason.as_deref(), Some("isolation_not_supported"));
         assert!(result.is_err());
     }
 
     #[test]
     fn prepare_command_denial_matches_evaluate_for_outside_workspace() {
-        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let outside = tempdir().expect("create outside cwd");
 
@@ -550,7 +514,7 @@ mod tests {
             dummy_program(),
             Vec::<OsString>::new(),
             outside.path(),
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         );
 
@@ -564,31 +528,34 @@ mod tests {
     }
 
     #[test]
-    fn denies_mutation_for_non_fs_tool_program() {
-        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+    fn denies_mutation_for_non_allowlisted_program() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             dummy_program(),
             Vec::<OsString>::new(),
             workspace.path(),
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         )
         .with_declared_mutation(true);
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("mutation_requires_fs_tool"));
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("mutation_requires_allowlisted_program")
+        );
     }
 
     #[test]
-    fn allows_mutation_for_allowlisted_fs_tool_program() {
-        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+    fn allows_mutation_for_allowlisted_program() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "omne-fs",
             Vec::<OsString>::new(),
             workspace.path(),
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         )
         .with_declared_mutation(true);
@@ -596,28 +563,28 @@ mod tests {
         assert_eq!(event.decision, ExecDecision::Run);
         assert_eq!(
             event.requested_policy_meta,
-            crate::audit::requested_policy_meta(IsolationLevel::BestEffort)
+            crate::audit::requested_policy_meta(ExecutionIsolation::BestEffort)
         );
     }
 
     #[test]
     fn denies_policy_default_isolation_mismatch() {
         let policy = GatewayPolicy {
-            default_isolation: IsolationLevel::Strict,
+            default_isolation: ExecutionIsolation::Strict,
             ..GatewayPolicy::default()
         };
         let gateway =
-            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::Strict);
+            ExecGateway::with_policy_and_supported_isolation(policy, ExecutionIsolation::Strict);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::with_policy_default_isolation(
             "echo",
             vec!["hello"],
             workspace.path(),
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         );
 
-        let (event, result) = gateway.execute_status_with_event(&request);
+        let (event, result) = gateway.execute(&request).into_parts();
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(
             event.reason.as_deref(),
@@ -626,21 +593,21 @@ mod tests {
         assert!(matches!(
             result,
             Err(ExecError::PolicyDefaultIsolationMismatch {
-                requested: IsolationLevel::BestEffort,
-                policy_default: IsolationLevel::Strict,
+                requested: ExecutionIsolation::BestEffort,
+                policy_default: ExecutionIsolation::Strict,
             })
         ));
     }
 
     #[test]
     fn denies_none_isolation_by_default_policy() {
-        let gateway = ExecGateway::with_supported_isolation(IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "omne-fs",
             Vec::<OsString>::new(),
             workspace.path(),
-            IsolationLevel::None,
+            ExecutionIsolation::None,
             workspace.path(),
         );
         let event = gateway.evaluate(&request);
@@ -654,14 +621,16 @@ mod tests {
             allow_isolation_none: true,
             ..GatewayPolicy::default()
         };
-        let gateway =
-            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "echo",
             vec!["hello"],
             workspace.path(),
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         );
         let mut command = Command::new("echo");
@@ -677,14 +646,16 @@ mod tests {
             allow_isolation_none: true,
             ..GatewayPolicy::default()
         };
-        let gateway =
-            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "echo",
             vec!["hello"],
             workspace.path(),
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         );
         let mut command = Command::new("printf");
@@ -708,8 +679,10 @@ mod tests {
             allow_isolation_none: true,
             ..GatewayPolicy::default()
         };
-        let gateway =
-            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = tempdir().expect("create temp workspace");
         let real_dir = workspace.path().join("real");
         let link_dir = workspace.path().join("link");
@@ -720,7 +693,7 @@ mod tests {
             "echo",
             vec!["hello"],
             &link_dir,
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         );
         let mut command = Command::new("echo");
@@ -740,14 +713,16 @@ mod tests {
             audit_log_path: Some(audit_path.clone()),
             ..GatewayPolicy::default()
         };
-        let gateway =
-            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
         let (program, args) = shell_exit_nonzero_command();
         let request = ExecRequest::new(
             program,
             args,
             workspace.path(),
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         );
 
@@ -770,17 +745,19 @@ mod tests {
             allow_isolation_none: true,
             ..GatewayPolicy::default()
         };
-        let gateway =
-            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
         let request = ExecRequest::new(
             "sh",
             vec!["-c", "exit 0"],
             workspace.path(),
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         );
 
-        let (event, result) = gateway.execute_status_with_event(&request);
+        let (event, result) = gateway.execute(&request).into_parts();
         let status = result.expect("command should execute");
         assert!(status.success());
 
@@ -808,13 +785,15 @@ mod tests {
             allow_isolation_none: true,
             ..GatewayPolicy::default()
         };
-        let gateway =
-            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
         let request = ExecRequest::new(
             "sh",
             vec!["-c", "exec 3<>/dev/null"],
             workspace.path(),
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         );
 
@@ -833,13 +812,15 @@ mod tests {
             audit_log_path: Some(audit_path.clone()),
             ..GatewayPolicy::default()
         };
-        let gateway =
-            ExecGateway::with_policy_and_supported_isolation(policy, IsolationLevel::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
         let request = ExecRequest::new(
             "__omne_exec_gateway_missing_program__",
             Vec::<OsString>::new(),
             workspace.path(),
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             workspace.path(),
         );
 

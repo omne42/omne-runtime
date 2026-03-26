@@ -1,11 +1,9 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use policy_meta::PolicyMetaV1;
+use policy_meta::{ExecutionIsolation, PolicyMetaV1};
 use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
-
-pub use policy_meta::ExecutionIsolation as IsolationLevel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,7 +17,7 @@ pub struct ExecRequest {
     pub program: OsString,
     pub args: Vec<OsString>,
     pub cwd: PathBuf,
-    pub required_isolation: IsolationLevel,
+    pub required_isolation: ExecutionIsolation,
     pub requested_isolation_source: RequestedIsolationSource,
     pub workspace_root: PathBuf,
     pub declared_mutation: bool,
@@ -30,7 +28,7 @@ impl ExecRequest {
         program: impl Into<OsString>,
         args: I,
         cwd: impl Into<PathBuf>,
-        required_isolation: IsolationLevel,
+        required_isolation: ExecutionIsolation,
         workspace_root: impl Into<PathBuf>,
     ) -> Self
     where
@@ -52,7 +50,7 @@ impl ExecRequest {
         program: impl Into<OsString>,
         args: I,
         cwd: impl Into<PathBuf>,
-        policy_default_isolation: IsolationLevel,
+        policy_default_isolation: ExecutionIsolation,
         workspace_root: impl Into<PathBuf>,
     ) -> Self
     where
@@ -75,7 +73,7 @@ impl ExecRequest {
         self
     }
 
-    pub fn input_required_isolation(&self) -> Option<IsolationLevel> {
+    fn input_required_isolation(&self) -> Option<ExecutionIsolation> {
         match self.requested_isolation_source {
             RequestedIsolationSource::Request => Some(self.required_isolation),
             RequestedIsolationSource::PolicyDefault => None,
@@ -93,17 +91,17 @@ pub struct RequestResolution {
     pub workspace_root: PathBuf,
     pub declared_mutation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_required_isolation: Option<IsolationLevel>,
-    pub requested_isolation: IsolationLevel,
+    pub input_required_isolation: Option<ExecutionIsolation>,
+    pub requested_isolation: ExecutionIsolation,
     pub requested_isolation_source: RequestedIsolationSource,
     pub requested_policy_meta: PolicyMetaV1,
-    pub policy_default_isolation: IsolationLevel,
+    pub policy_default_isolation: ExecutionIsolation,
 }
 
 impl RequestResolution {
     pub(crate) fn from_request(
         request: &ExecRequest,
-        policy_default_isolation: IsolationLevel,
+        policy_default_isolation: ExecutionIsolation,
     ) -> Self {
         Self {
             program: request.program.clone(),
@@ -150,7 +148,7 @@ mod tests {
             "echo",
             vec!["hello", "world"],
             ".",
-            IsolationLevel::None,
+            ExecutionIsolation::None,
             ".",
         );
 
@@ -166,7 +164,7 @@ mod tests {
         );
         assert_eq!(
             request.input_required_isolation(),
-            Some(IsolationLevel::None)
+            Some(ExecutionIsolation::None)
         );
     }
 
@@ -180,7 +178,7 @@ mod tests {
             OsString::from("tool"),
             vec![non_utf8.clone()],
             ".",
-            IsolationLevel::None,
+            ExecutionIsolation::None,
             ".",
         );
 
@@ -189,7 +187,7 @@ mod tests {
 
     #[test]
     fn request_can_be_marked_as_mutating() {
-        let request = ExecRequest::new("echo", vec!["hi"], ".", IsolationLevel::None, ".")
+        let request = ExecRequest::new("echo", vec!["hi"], ".", ExecutionIsolation::None, ".")
             .with_declared_mutation(true);
         assert!(request.declared_mutation);
     }
@@ -200,10 +198,10 @@ mod tests {
             "echo",
             vec!["hi"],
             ".",
-            IsolationLevel::BestEffort,
+            ExecutionIsolation::BestEffort,
             ".",
         );
-        assert_eq!(request.required_isolation, IsolationLevel::BestEffort);
+        assert_eq!(request.required_isolation, ExecutionIsolation::BestEffort);
         assert_eq!(
             request.requested_isolation_source,
             RequestedIsolationSource::PolicyDefault
@@ -213,18 +211,22 @@ mod tests {
 
     #[test]
     fn request_resolution_tracks_effective_isolation_and_provenance() {
-        let request = ExecRequest::new("echo", vec!["hi"], ".", IsolationLevel::BestEffort, ".")
-            .with_declared_mutation(true);
+        let request =
+            ExecRequest::new("echo", vec!["hi"], ".", ExecutionIsolation::BestEffort, ".")
+                .with_declared_mutation(true);
 
-        let resolution = RequestResolution::from_request(&request, IsolationLevel::BestEffort);
+        let resolution = RequestResolution::from_request(&request, ExecutionIsolation::BestEffort);
 
         assert_eq!(resolution.program, OsString::from("echo"));
         assert_eq!(resolution.args, vec![OsString::from("hi")]);
         assert_eq!(
             resolution.input_required_isolation,
-            Some(IsolationLevel::BestEffort)
+            Some(ExecutionIsolation::BestEffort)
         );
-        assert_eq!(resolution.requested_isolation, IsolationLevel::BestEffort);
+        assert_eq!(
+            resolution.requested_isolation,
+            ExecutionIsolation::BestEffort
+        );
         assert_eq!(
             resolution.requested_isolation_source,
             RequestedIsolationSource::Request
@@ -233,15 +235,21 @@ mod tests {
             resolution.requested_policy_meta,
             PolicyMetaV1::new()
                 .with_version()
-                .with_execution_isolation(IsolationLevel::BestEffort)
+                .with_execution_isolation(ExecutionIsolation::BestEffort)
         );
         assert!(resolution.declared_mutation);
     }
 
     #[test]
     fn request_resolution_serializes_lossy_program_and_args() {
-        let request = ExecRequest::new("echo", vec!["hello"], ".", IsolationLevel::BestEffort, ".");
-        let resolution = RequestResolution::from_request(&request, IsolationLevel::BestEffort);
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            ".",
+            ExecutionIsolation::BestEffort,
+            ".",
+        );
+        let resolution = RequestResolution::from_request(&request, ExecutionIsolation::BestEffort);
 
         let value = serde_json::to_value(&resolution).expect("serialize resolution");
         assert_eq!(value["program"], "echo");

@@ -5,19 +5,21 @@
 ```toml
 [dependencies]
 omne-execution-gateway = { path = "../omne-execution-gateway" }
+policy-meta = { path = "../../omne_foundation/crates/policy-meta" }
 ```
 
 ## 2. Minimal Rust Example
 
 ```rust
-use omne_execution_gateway::{ExecGateway, ExecRequest, IsolationLevel};
+use omne_execution_gateway::{ExecGateway, ExecRequest};
+use policy_meta::ExecutionIsolation;
 
 let gateway = ExecGateway::new();
 let req = ExecRequest::new(
     "sh",
     ["-lc", "echo hello"],
     ".",
-    IsolationLevel::BestEffort,
+    ExecutionIsolation::BestEffort,
     ".",
 );
 
@@ -47,20 +49,12 @@ JSON mode example:
 ```json
 {
   "supported_isolation": "best_effort",
-  "supported_policy_meta": {
-    "version": 1,
-    "execution_isolation": "best_effort"
-  },
-  "policy_default_isolation": "best_effort",
-  "policy_default_policy_meta": {
-    "version": 1,
-    "execution_isolation": "best_effort"
-  }
+  "policy_default_isolation": "best_effort"
 }
 ```
 
-If you pass `--policy ./policy.json`, `policy_default_isolation` and
-`policy_default_policy_meta` reflect that file instead of the default in-memory policy.
+If you pass `--policy ./policy.json`, `policy_default_isolation` reflects that file instead of the
+default in-memory policy.
 
 ## 4. Optional CLI Mode
 
@@ -69,7 +63,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 ```
 
 `omne-execution` prints one JSON result object with canonical nested `request_resolution` and `event`
-objects, compatibility top-level projections, and exit outcome.
+objects and the exit outcome.
 
 Example fragment:
 
@@ -103,13 +97,9 @@ Example fragment:
     "declared_mutation": false,
     "reason": null
   },
-  "requested_isolation": "best_effort",
-  "requested_isolation_source": "policy_default",
-  "requested_policy_meta": {
-    "version": 1,
-    "execution_isolation": "best_effort"
-  },
-  "policy_default_isolation": "best_effort"
+  "exit_code": 0,
+  "signal": null,
+  "error": null
 }
 ```
 

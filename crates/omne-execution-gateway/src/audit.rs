@@ -5,7 +5,7 @@ use policy_meta::PolicyMetaV1;
 use serde::Serialize;
 use serde::ser::Serializer;
 
-use crate::types::IsolationLevel;
+use policy_meta::ExecutionIsolation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -40,9 +40,9 @@ pub struct SandboxRuntimeObservation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExecEvent {
     pub decision: ExecDecision,
-    pub requested_isolation: IsolationLevel,
+    pub requested_isolation: ExecutionIsolation,
     pub requested_policy_meta: PolicyMetaV1,
-    pub supported_isolation: IsolationLevel,
+    pub supported_isolation: ExecutionIsolation,
     #[serde(serialize_with = "serialize_os_string_lossy")]
     pub program: OsString,
     pub cwd: PathBuf,
@@ -53,7 +53,7 @@ pub struct ExecEvent {
     pub sandbox_runtime: Option<SandboxRuntimeObservation>,
 }
 
-pub fn requested_policy_meta(requested_isolation: IsolationLevel) -> PolicyMetaV1 {
+pub fn requested_policy_meta(requested_isolation: ExecutionIsolation) -> PolicyMetaV1 {
     PolicyMetaV1::new()
         .with_version()
         .with_execution_isolation(requested_isolation)
@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn requested_policy_meta_emits_canonical_fragment() {
         assert_eq!(
-            serde_json::to_value(requested_policy_meta(IsolationLevel::BestEffort))
+            serde_json::to_value(requested_policy_meta(ExecutionIsolation::BestEffort))
                 .expect("serialize policy meta"),
             json!({
                 "version": 1,

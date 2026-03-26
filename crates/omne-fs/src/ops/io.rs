@@ -210,7 +210,7 @@ fn map_regular_open_error(
     relative: &Path,
     err: std::io::Error,
 ) -> Error {
-    if crate::platform_open::is_symlink_open_error(&err) {
+    if omne_fs_primitives::is_symlink_or_reparse_open_error(&err) {
         return Error::InvalidPath(format!("path {} is a symlink", relative.display()));
     }
 

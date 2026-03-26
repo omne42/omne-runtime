@@ -21,7 +21,7 @@ The gateway exposes `ExecEvent` to describe decision outcomes.
 
 - `evaluate(&request)` for dry-run decision check.
 - `execute(&request)` for decision plus execution result.
-- `execute_status_with_event(&request)` for tuple-style compatibility.
+- `execute(&request).into_parts()` when tuple destructuring is preferred.
 - `prepare_command(&request, &mut command)` for callers that need the gateway to apply validated `cwd` and sandbox configuration to a `Command` before spawning manually; the gateway rejects the call if `command` program/args diverge from `request`.
 
 ## JSONL Audit Sink

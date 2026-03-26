@@ -3,28 +3,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use omne_execution_gateway::policy::GatewayPolicy;
-use omne_execution_gateway::{ExecGateway, PolicyMetaV1};
-use serde::Serialize;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct CapabilityOutput {
-    supported_isolation: omne_execution_gateway::IsolationLevel,
-    supported_policy_meta: PolicyMetaV1,
-    policy_default_isolation: omne_execution_gateway::IsolationLevel,
-    policy_default_policy_meta: PolicyMetaV1,
-}
-
-impl CapabilityOutput {
-    fn from_report(report: omne_execution_gateway::CapabilityReport) -> Self {
-        Self {
-            supported_isolation: report.supported_isolation,
-            supported_policy_meta: report.supported_policy_meta(),
-            policy_default_isolation: report.policy_default_isolation,
-            policy_default_policy_meta: report.policy_default_policy_meta(),
-        }
-    }
-}
+use omne_execution_gateway::{CapabilityReport, ExecGateway, GatewayPolicy};
+use policy_meta::ExecutionIsolation;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CapabilityArgs {
@@ -50,8 +30,7 @@ fn main() -> ExitCode {
     };
     let report = gateway.capability_report();
     if args.json {
-        let output = CapabilityOutput::from_report(report);
-        match serde_json::to_string(&output) {
+        match serde_json::to_string(&report) {
             Ok(rendered) => println!("{rendered}"),
             Err(err) => {
                 eprintln!("failed to serialize capability output: {err}");
@@ -151,28 +130,20 @@ mod tests {
     }
 
     #[test]
-    fn capability_output_includes_policy_meta_fragments() {
-        let report = omne_execution_gateway::CapabilityReport {
-            supported_isolation: omne_execution_gateway::IsolationLevel::BestEffort,
-            policy_default_isolation: omne_execution_gateway::IsolationLevel::BestEffort,
+    fn capability_output_serializes_report_fields_only() {
+        let report = CapabilityReport {
+            supported_isolation: ExecutionIsolation::BestEffort,
+            policy_default_isolation: ExecutionIsolation::BestEffort,
         };
-        let output = CapabilityOutput::from_report(report);
-        let value = serde_json::to_value(output).expect("serialize output");
+        let value = serde_json::to_value(report).expect("serialize output");
 
         assert_eq!(value["supported_isolation"], "best_effort");
-        assert_eq!(
-            value["supported_policy_meta"],
-            json!({
-                "version": 1,
-                "execution_isolation": "best_effort"
-            })
-        );
         assert_eq!(value["policy_default_isolation"], "best_effort");
         assert_eq!(
-            value["policy_default_policy_meta"],
+            value,
             json!({
-                "version": 1,
-                "execution_isolation": "best_effort"
+                "supported_isolation": "best_effort",
+                "policy_default_isolation": "best_effort"
             })
         );
     }
@@ -185,8 +156,8 @@ mod tests {
             &path,
             r#"{
   "allow_isolation_none": false,
-  "enforce_fs_tool_for_mutation": true,
-  "fs_tool_program_allowlist": ["omne-fs"],
+  "enforce_allowlisted_program_for_mutation": true,
+  "mutating_program_allowlist": ["omne-fs"],
   "default_isolation": "strict",
   "audit_log_path": null
 }"#,
@@ -201,7 +172,7 @@ mod tests {
 
         assert_eq!(
             gateway.capability_report().policy_default_isolation,
-            omne_execution_gateway::IsolationLevel::Strict
+            ExecutionIsolation::Strict
         );
     }
 }

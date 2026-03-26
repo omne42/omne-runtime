@@ -96,7 +96,7 @@ fn make_redaction() -> (tempfile::TempDir, PathRedaction) {
     let policy = omne_fs::policy::SandboxPolicy::single_root(
         "root",
         dir.path(),
-        omne_fs::policy::RootMode::ReadOnly,
+        policy_meta::WriteScope::ReadOnly,
     );
     let redaction = PathRedaction::from_policy(&policy);
     (dir, redaction)

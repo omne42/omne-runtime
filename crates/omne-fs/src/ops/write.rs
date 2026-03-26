@@ -135,8 +135,7 @@ pub struct WriteFileRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WriteFileResponse {
     pub path: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_path: Option<PathBuf>,
+    pub requested_path: PathBuf,
     pub bytes_written: u64,
     /// Best-effort preflight observation. Concurrent writers may still turn an
     /// apparent create into a replace before commit.
@@ -244,7 +243,7 @@ pub fn write_file(ctx: &Context, request: WriteFileRequest) -> Result<WriteFileR
         })?;
         return Ok(WriteFileResponse {
             path: relative,
-            requested_path: Some(requested_path),
+            requested_path,
             bytes_written,
             created: false,
         });
@@ -278,7 +277,7 @@ pub fn write_file(ctx: &Context, request: WriteFileRequest) -> Result<WriteFileR
 
     Ok(WriteFileResponse {
         path: relative,
-        requested_path: Some(requested_path),
+        requested_path,
         bytes_written,
         created: true,
     })

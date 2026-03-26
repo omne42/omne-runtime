@@ -7,11 +7,12 @@ use omne_fs::ops::{Context, ListDirRequest, ReadRequest, list_dir, read_file};
 use omne_fs::ops::{GlobRequest, glob_paths};
 #[cfg(feature = "grep")]
 use omne_fs::ops::{GrepRequest, grep};
-use omne_fs::policy::{Permissions, RootMode, SandboxPolicy};
+use omne_fs::policy::{Permissions, SandboxPolicy};
+use policy_meta::WriteScope;
 
 fn permissive_policy(root: &Path) -> SandboxPolicy {
     let mut policy =
-        SandboxPolicy::single_root("root", root.to_path_buf(), RootMode::WorkspaceWrite);
+        SandboxPolicy::single_root("root", root.to_path_buf(), WriteScope::WorkspaceWrite);
     policy.permissions = Permissions {
         read: true,
         glob: true,

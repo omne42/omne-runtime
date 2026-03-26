@@ -14,12 +14,43 @@ use sha2::{Digest as _, Sha256};
 pub struct Sha256Digest([u8; 32]);
 
 impl Sha256Digest {
-    pub fn as_bytes(&self) -> &[u8; 32] {
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
-    pub fn to_prefixed_string(&self) -> String {
-        format!("sha256:{self}")
+    #[must_use]
+    pub const fn into_bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
+#[derive(Debug)]
+pub struct Sha256Hasher {
+    inner: Sha256,
+}
+
+impl Sha256Hasher {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Sha256::new(),
+        }
+    }
+
+    pub fn update(&mut self, bytes: impl AsRef<[u8]>) {
+        self.inner.update(bytes.as_ref());
+    }
+
+    #[must_use]
+    pub fn finalize(self) -> Sha256Digest {
+        sha256_digest_from_bytes(self.inner.finalize().as_slice())
+    }
+}
+
+impl Default for Sha256Hasher {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -36,16 +67,6 @@ impl fmt::Display for Sha256Digest {
 pub struct VerifySha256Error {
     expected: Sha256Digest,
     actual: Sha256Digest,
-}
-
-impl VerifySha256Error {
-    pub fn expected(&self) -> &Sha256Digest {
-        &self.expected
-    }
-
-    pub fn actual(&self) -> &Sha256Digest {
-        &self.actual
-    }
 }
 
 impl fmt::Display for VerifySha256Error {
@@ -96,17 +117,16 @@ pub fn parse_sha256_user_input(raw: &str) -> Option<Sha256Digest> {
 }
 
 pub fn hash_sha256(content: &[u8]) -> Sha256Digest {
-    let digest = Sha256::digest(content);
-    let mut out = [0_u8; 32];
-    out.copy_from_slice(&digest);
-    Sha256Digest(out)
+    let mut hasher = Sha256Hasher::new();
+    hasher.update(content);
+    hasher.finalize()
 }
 
 pub fn hash_sha256_reader<R>(reader: &mut R) -> io::Result<Sha256Digest>
 where
     R: Read + ?Sized,
 {
-    let mut hasher = Sha256::new();
+    let mut hasher = Sha256Hasher::new();
     let mut buffer = [0_u8; 16 * 1024];
     loop {
         let read = reader.read(&mut buffer)?;
@@ -115,10 +135,7 @@ where
         }
         hasher.update(&buffer[..read]);
     }
-    let digest = hasher.finalize();
-    let mut out = [0_u8; 32];
-    out.copy_from_slice(&digest);
-    Ok(Sha256Digest(out))
+    Ok(hasher.finalize())
 }
 
 pub fn verify_sha256(content: &[u8], expected: &Sha256Digest) -> Result<(), VerifySha256Error> {
@@ -165,6 +182,12 @@ fn decode_sha256_hex(raw: &str) -> Option<Sha256Digest> {
     Some(Sha256Digest(out))
 }
 
+fn sha256_digest_from_bytes(bytes: &[u8]) -> Sha256Digest {
+    let mut out = [0_u8; 32];
+    out.copy_from_slice(bytes);
+    Sha256Digest(out)
+}
+
 fn decode_hex_nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -178,8 +201,8 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        hash_sha256, hash_sha256_reader, parse_sha256_digest, parse_sha256_user_input,
-        verify_sha256, verify_sha256_reader,
+        Sha256Hasher, hash_sha256, hash_sha256_reader, parse_sha256_digest,
+        parse_sha256_user_input, verify_sha256, verify_sha256_reader,
     };
 
     #[test]
@@ -210,6 +233,31 @@ mod tests {
             hash_sha256(b"demo").to_string(),
             "2a97516c354b68848cdbd8f54a226a0a55b21ed138e207ad6c5cbb9c00aa5aea"
         );
+    }
+
+    #[test]
+    fn sha256_hasher_supports_incremental_updates() {
+        let mut hasher = Sha256Hasher::new();
+        hasher.update(b"de");
+        hasher.update(b"mo");
+        assert_eq!(
+            hasher.finalize().to_string(),
+            "2a97516c354b68848cdbd8f54a226a0a55b21ed138e207ad6c5cbb9c00aa5aea"
+        );
+    }
+
+    #[test]
+    fn sha256_digest_exposes_raw_bytes() {
+        let digest = hash_sha256(b"demo");
+        assert_eq!(
+            digest.as_bytes(),
+            &[
+                0x2a, 0x97, 0x51, 0x6c, 0x35, 0x4b, 0x68, 0x84, 0x8c, 0xdb, 0xd8, 0xf5, 0x4a, 0x22,
+                0x6a, 0x0a, 0x55, 0xb2, 0x1e, 0xd1, 0x38, 0xe2, 0x07, 0xad, 0x6c, 0x5c, 0xbb, 0x9c,
+                0x00, 0xaa, 0x5a, 0xea,
+            ]
+        );
+        assert_eq!(digest.into_bytes().len(), 32);
     }
 
     #[test]

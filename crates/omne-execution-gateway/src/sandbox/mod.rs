@@ -3,7 +3,7 @@ use std::process::Command;
 
 use crate::audit::SandboxRuntimeObservation;
 use crate::error::{ExecError, ExecResult};
-use crate::types::IsolationLevel;
+use policy_meta::ExecutionIsolation;
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
@@ -14,7 +14,7 @@ mod macos;
 mod windows;
 
 #[derive(Debug)]
-pub struct SandboxMonitor {
+pub(crate) struct SandboxMonitor {
     observation: Option<SandboxRuntimeObservation>,
     #[cfg(target_os = "linux")]
     linux_best_effort: Option<linux::LinuxSandboxMonitor>,
@@ -45,7 +45,7 @@ impl SandboxMonitor {
         }
     }
 
-    pub fn observe_after_spawn(self) -> Option<SandboxRuntimeObservation> {
+    pub(crate) fn observe_after_spawn(self) -> Option<SandboxRuntimeObservation> {
         #[cfg(target_os = "linux")]
         if let Some(monitor) = self.linux_best_effort {
             return Some(monitor.observe_after_spawn());
@@ -55,7 +55,7 @@ impl SandboxMonitor {
     }
 }
 
-pub fn detect_supported_isolation() -> IsolationLevel {
+pub(crate) fn detect_supported_isolation() -> ExecutionIsolation {
     #[cfg(target_os = "linux")]
     {
         return linux::detect_supported_isolation();
@@ -72,12 +72,12 @@ pub fn detect_supported_isolation() -> IsolationLevel {
     }
 
     #[allow(unreachable_code)]
-    IsolationLevel::None
+    ExecutionIsolation::None
 }
 
-pub fn apply_sandbox(
+pub(crate) fn apply_sandbox(
     command: &mut Command,
-    required_isolation: IsolationLevel,
+    required_isolation: ExecutionIsolation,
     workspace_root: &Path,
 ) -> ExecResult<SandboxMonitor> {
     #[cfg(target_os = "linux")]
@@ -97,7 +97,7 @@ pub fn apply_sandbox(
 
     #[allow(unreachable_code)]
     match required_isolation {
-        IsolationLevel::None => Ok(SandboxMonitor::none()),
+        ExecutionIsolation::None => Ok(SandboxMonitor::none()),
         _ => Err(ExecError::Sandbox(
             "sandbox not supported on this platform".to_string(),
         )),

@@ -5,8 +5,9 @@ use std::path::PathBuf;
 use common::test_policy;
 use omne_fs::ops::Context;
 use omne_fs::policy::{
-    Limits, PathRules, Permissions, Root, RootMode, SandboxPolicy, SecretRules, TraversalRules,
+    Limits, PathRules, Permissions, Root, SandboxPolicy, SecretRules, TraversalRules,
 };
+use policy_meta::WriteScope;
 
 type LimitCase = (&'static str, fn(&mut Limits), &'static str);
 
@@ -28,7 +29,7 @@ fn read_only_root(id: impl Into<String>, path: impl Into<PathBuf>) -> Root {
     Root {
         id: id.into(),
         path: path.into(),
-        mode: RootMode::ReadOnly,
+        write_scope: WriteScope::ReadOnly,
     }
 }
 
@@ -51,9 +52,23 @@ fn policy_with_single_root(id: impl Into<String>, path: impl Into<PathBuf>) -> S
 #[test]
 fn policy_accepts_valid_configuration() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let policy = test_policy(dir.path(), WriteScope::ReadOnly);
     let ctx = Context::new(policy).expect("valid policy should be accepted");
     assert_eq!(ctx.policy().roots.len(), 1);
+}
+
+#[test]
+fn decision_trace_is_exposed_from_ops_module() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let policy = test_policy(dir.path(), WriteScope::ReadOnly);
+    let ctx = Context::new(policy).expect("valid policy should be accepted");
+
+    let trace: omne_fs::ops::DecisionTrace =
+        ctx.decision_trace_for_error(&omne_fs::Error::NotPermitted("read disabled".to_string()));
+
+    assert_eq!(trace.reason_code, omne_fs::Error::CODE_NOT_PERMITTED);
+    assert_eq!(trace.risk_tag, "authorization");
+    assert_eq!(trace.policy_rule, None);
 }
 
 #[test]
@@ -167,7 +182,7 @@ fn policy_rejects_relative_root_paths() {
 #[test]
 fn policy_rejects_invalid_redact_regexes() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.secrets.redact_regexes = vec!["[".to_string()];
 
     let err = Context::new(policy).expect_err("should reject");
@@ -177,7 +192,7 @@ fn policy_rejects_invalid_redact_regexes() {
 #[test]
 fn policy_rejects_zero_max_patch_bytes() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_patch_bytes = Some(0);
 
     let err = policy.validate().expect_err("should reject");
@@ -187,7 +202,7 @@ fn policy_rejects_zero_max_patch_bytes() {
 #[test]
 fn policy_rejects_zero_max_glob_bytes() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_glob_bytes = Some(0);
 
     let err = policy.validate().expect_err("should reject");
@@ -197,7 +212,7 @@ fn policy_rejects_zero_max_glob_bytes() {
 #[test]
 fn policy_rejects_excessive_max_glob_bytes() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_glob_bytes = Some(64 * 1024 * 1024 + 1);
 
     let err = policy.validate().expect_err("should reject");
@@ -207,7 +222,7 @@ fn policy_rejects_excessive_max_glob_bytes() {
 #[test]
 fn policy_rejects_max_walk_files_greater_than_entries() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_walk_entries = 10;
     policy.limits.max_walk_files = 11;
 
@@ -218,7 +233,7 @@ fn policy_rejects_max_walk_files_greater_than_entries() {
 #[test]
 fn policy_rejects_excessive_grep_response_budget() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_results = 100_000;
     policy.limits.max_line_bytes = 8 * 1024;
 
@@ -229,7 +244,7 @@ fn policy_rejects_excessive_grep_response_budget() {
 #[test]
 fn policy_rejects_excessive_default_glob_response_budget() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_glob_bytes = None;
     policy.limits.max_results = 100_000;
     policy.limits.max_line_bytes = 8 * 1024;
@@ -248,7 +263,7 @@ fn policy_rejects_excessive_default_glob_response_budget() {
 #[test]
 fn policy_rejects_excessive_list_dir_response_budget() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_glob_bytes = Some(64 * 1024 * 1024);
     policy.limits.max_results = 100_000;
     policy.limits.max_line_bytes = 8 * 1024;
@@ -327,7 +342,7 @@ fn policy_rejects_zero_required_limits() {
     ];
 
     for (case_name, mutate, expected) in cases {
-        let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+        let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
         mutate(&mut policy.limits);
 
         match policy.validate().expect_err("should reject") {
@@ -387,7 +402,7 @@ fn policy_deserialization_rejects_unknown_fields() {
         (
             "unknown root field",
             r#"{
-  "roots": [{"id": "root", "path": "/", "mode": "read_only", "unknown_root": true}],
+  "roots": [{"id": "root", "path": "/", "write_scope": "read_only", "unknown_root": true}],
   "permissions": { "read": true }
 }"#,
             "unknown_root",
@@ -395,15 +410,22 @@ fn policy_deserialization_rejects_unknown_fields() {
         (
             "unknown top-level field",
             r#"{
-  "roots": [{"id": "root", "path": "/", "mode": "read_only"}],
+  "roots": [{"id": "root", "path": "/", "write_scope": "read_only"}],
   "unknown_top": true
 }"#,
             "unknown_top",
         ),
         (
+            "legacy mode field",
+            r#"{
+  "roots": [{"id": "root", "path": "/", "mode": "read_only"}]
+}"#,
+            "mode",
+        ),
+        (
             "unknown permissions field",
             r#"{
-  "roots": [{"id": "root", "path": "/", "mode": "read_only"}],
+  "roots": [{"id": "root", "path": "/", "write_scope": "read_only"}],
   "permissions": { "read": true, "unknown_permissions": true }
 }"#,
             "unknown_permissions",
@@ -411,7 +433,7 @@ fn policy_deserialization_rejects_unknown_fields() {
         (
             "unknown limits field",
             r#"{
-  "roots": [{"id": "root", "path": "/", "mode": "read_only"}],
+  "roots": [{"id": "root", "path": "/", "write_scope": "read_only"}],
   "limits": { "unknown_limits": 1 }
 }"#,
             "unknown_limits",
@@ -419,7 +441,7 @@ fn policy_deserialization_rejects_unknown_fields() {
         (
             "unknown secrets field",
             r#"{
-  "roots": [{"id": "root", "path": "/", "mode": "read_only"}],
+  "roots": [{"id": "root", "path": "/", "write_scope": "read_only"}],
   "secrets": { "unknown_secrets": true }
 }"#,
             "unknown_secrets",
@@ -427,7 +449,7 @@ fn policy_deserialization_rejects_unknown_fields() {
         (
             "unknown traversal field",
             r#"{
-  "roots": [{"id": "root", "path": "/", "mode": "read_only"}],
+  "roots": [{"id": "root", "path": "/", "write_scope": "read_only"}],
   "traversal": { "unknown_traversal": true }
 }"#,
             "unknown_traversal",
@@ -435,7 +457,7 @@ fn policy_deserialization_rejects_unknown_fields() {
         (
             "unknown paths field",
             r#"{
-  "roots": [{"id": "root", "path": "/", "mode": "read_only"}],
+  "roots": [{"id": "root", "path": "/", "write_scope": "read_only"}],
   "paths": { "unknown_paths": true }
 }"#,
             "unknown_paths",
@@ -456,7 +478,7 @@ fn policy_deserialization_rejects_unknown_fields() {
 #[test]
 fn policy_deserialization_sets_traversal_stable_sort_default_true() {
     let raw = r#"{
-  "roots": [{"id": "root", "path": "/", "mode": "read_only"}]
+  "roots": [{"id": "root", "path": "/", "write_scope": "read_only"}]
 }"#;
 
     let policy: SandboxPolicy = serde_json::from_str(raw).expect("should parse");
@@ -469,7 +491,7 @@ fn policy_deserialization_sets_traversal_stable_sort_default_true() {
 #[test]
 fn policy_deserialization_allows_disabling_traversal_stable_sort() {
     let raw = r#"{
-  "roots": [{"id": "root", "path": "/", "mode": "read_only"}],
+  "roots": [{"id": "root", "path": "/", "write_scope": "read_only"}],
   "traversal": { "stable_sort": false }
 }"#;
 
@@ -480,7 +502,7 @@ fn policy_deserialization_allows_disabling_traversal_stable_sort() {
 #[test]
 fn policy_deserialization_sets_preserve_unix_xattrs_default_true() {
     let raw = r#"{
-  "roots": [{"id": "root", "path": "/", "mode": "read_only"}]
+  "roots": [{"id": "root", "path": "/", "write_scope": "read_only"}]
 }"#;
 
     let policy: SandboxPolicy = serde_json::from_str(raw).expect("should parse");
@@ -493,7 +515,7 @@ fn policy_deserialization_sets_preserve_unix_xattrs_default_true() {
 #[test]
 fn policy_deserialization_allows_disabling_preserve_unix_xattrs() {
     let raw = r#"{
-  "roots": [{"id": "root", "path": "/", "mode": "read_only"}],
+  "roots": [{"id": "root", "path": "/", "write_scope": "read_only"}],
   "limits": { "preserve_unix_xattrs": false }
 }"#;
 

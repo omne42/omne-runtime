@@ -31,12 +31,12 @@ agent plan
 | `isolation_not_supported` | Lower isolation only with explicit approval. |
 | `policy_default_isolation_mismatch` | Rebuild the request against the current gateway policy default. |
 | `cwd_outside_workspace` | Correct path under workspace root. |
-| `mutation_requires_fs_tool` | Route via `omne-fs`. |
+| `mutation_requires_allowlisted_program` | Route via a policy-allowlisted mutating program such as `omne-fs`. |
 | `isolation_none_forbidden` | Use `best_effort` or `strict`. |
 
 ## Safe Defaults for Autonomous Runs
 
 - `allow_isolation_none=false`
-- `enforce_fs_tool_for_mutation=true`
+- `enforce_allowlisted_program_for_mutation=true`
 - request `best_effort` by default
 - keep audit logging enabled

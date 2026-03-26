@@ -10,22 +10,26 @@ use crate::audit::ExecEvent;
 use crate::error::{ExecError, ExecResult};
 
 #[derive(Debug, Clone)]
-pub struct AuditLogger {
+pub(crate) struct AuditLogger {
     path: PathBuf,
 }
 
 impl AuditLogger {
-    pub fn new(path: impl AsRef<Path>) -> Self {
+    pub(crate) fn new(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
         }
     }
 
-    pub fn write_prepare_record(&self, event: &ExecEvent, result: &ExecResult<()>) {
+    pub(crate) fn write_prepare_record(&self, event: &ExecEvent, result: &ExecResult<()>) {
         self.write_record(AuditRecord::from_prepare(event, result));
     }
 
-    pub fn write_execution_record(&self, event: &ExecEvent, result: &ExecResult<ExitStatus>) {
+    pub(crate) fn write_execution_record(
+        &self,
+        event: &ExecEvent,
+        result: &ExecResult<ExitStatus>,
+    ) {
         self.write_record(AuditRecord::from_execution(event, result));
     }
 
@@ -160,7 +164,7 @@ mod tests {
 
     use super::*;
     use crate::audit::{ExecDecision, ExecEvent};
-    use crate::types::IsolationLevel;
+    use policy_meta::ExecutionIsolation;
 
     #[test]
     fn writes_jsonl_record() {
@@ -170,9 +174,11 @@ mod tests {
 
         let event = ExecEvent {
             decision: ExecDecision::Run,
-            requested_isolation: IsolationLevel::BestEffort,
-            requested_policy_meta: crate::audit::requested_policy_meta(IsolationLevel::BestEffort),
-            supported_isolation: IsolationLevel::BestEffort,
+            requested_isolation: ExecutionIsolation::BestEffort,
+            requested_policy_meta: crate::audit::requested_policy_meta(
+                ExecutionIsolation::BestEffort,
+            ),
+            supported_isolation: ExecutionIsolation::BestEffort,
             program: "echo".into(),
             cwd: ".".into(),
             workspace_root: ".".into(),
@@ -206,9 +212,11 @@ mod tests {
 
         let event = ExecEvent {
             decision: ExecDecision::Run,
-            requested_isolation: IsolationLevel::BestEffort,
-            requested_policy_meta: crate::audit::requested_policy_meta(IsolationLevel::BestEffort),
-            supported_isolation: IsolationLevel::BestEffort,
+            requested_isolation: ExecutionIsolation::BestEffort,
+            requested_policy_meta: crate::audit::requested_policy_meta(
+                ExecutionIsolation::BestEffort,
+            ),
+            supported_isolation: ExecutionIsolation::BestEffort,
             program: "false".into(),
             cwd: ".".into(),
             workspace_root: ".".into(),

@@ -6,7 +6,8 @@ use std::path::PathBuf;
 
 use common::test_policy;
 use omne_fs::ops::{Context, ReadRequest, read_file};
-use omne_fs::policy::{RootMode, SandboxPolicy};
+use omne_fs::policy::SandboxPolicy;
+use policy_meta::WriteScope;
 
 #[cfg(feature = "glob")]
 use omne_fs::ops::{GlobRequest, glob_paths};
@@ -67,7 +68,7 @@ fn assert_invalid_path_contains(err: omne_fs::Error, expected_substring: &str) {
 fn deny_globs_apply_to_absolute_paths_even_when_parent_is_missing() {
     let dir = tempfile::tempdir().expect("tempdir");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.secrets.deny_globs = vec!["missing/**".to_string()];
     let ctx = Context::new(policy).expect("ctx");
 
@@ -98,7 +99,7 @@ fn resolve_path_rejects_drive_relative_paths() {
     use std::path::Path;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let policy = SandboxPolicy::single_root("root", dir.path(), RootMode::ReadOnly);
+    let policy = SandboxPolicy::single_root("root", dir.path(), WriteScope::ReadOnly);
     let err = policy
         .resolve_path_checked("root", Path::new("C:foo"))
         .expect_err("should reject");
@@ -111,7 +112,7 @@ fn resolve_path_rejects_colon_paths_on_windows() {
     use std::path::Path;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let policy = SandboxPolicy::single_root("root", dir.path(), RootMode::ReadOnly);
+    let policy = SandboxPolicy::single_root("root", dir.path(), WriteScope::ReadOnly);
     let err = policy
         .resolve_path_checked("root", Path::new("file.txt::$DATA"))
         .expect_err("should reject");
@@ -125,7 +126,7 @@ fn deny_globs_match_backslash_separators() {
     std::fs::create_dir_all(dir.path().join(".git")).expect("mkdir");
     std::fs::write(dir.path().join(".git").join("config"), "secret").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.secrets.deny_globs = vec![".git/**".to_string()];
     let ctx = Context::new(policy).expect("ctx");
     let err = read_file(
@@ -153,7 +154,7 @@ fn deny_globs_are_case_insensitive_on_windows() {
     std::fs::create_dir_all(dir.path().join(".git")).expect("mkdir");
     std::fs::write(dir.path().join(".git").join("config"), "secret").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.secrets.deny_globs = vec![".GIT/**".to_string()];
     let ctx = Context::new(policy).expect("ctx");
     let err = read_file(
@@ -251,7 +252,7 @@ fn glob_patterns_are_case_insensitive_on_windows() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "a\n").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let resp = glob_paths(
         &ctx,
         GlobRequest {
@@ -272,7 +273,7 @@ fn traversal_skip_globs_are_case_insensitive_on_windows() {
     std::fs::write(dir.path().join(".git").join("config"), "secret").expect("write");
     std::fs::write(dir.path().join("keep.txt"), "ok").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.traversal.skip_globs = vec![".GIT/**".to_string()];
     let ctx = Context::new(policy).expect("ctx");
 

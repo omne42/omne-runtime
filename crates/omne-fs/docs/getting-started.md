@@ -119,15 +119,18 @@ Add dependency:
 ```toml
 [dependencies]
 omne-fs = { version = "0.2.0" }
+policy-meta = { version = "0.1.0" }
 ```
 
 Minimal usage:
 
 ```rust
-use omne_fs::{Context, ReadRequest, RootMode, SandboxPolicy};
+use omne_fs::ops::{Context, ReadRequest};
+use omne_fs::policy::SandboxPolicy;
+use policy_meta::WriteScope;
 
 let mut policy =
-    SandboxPolicy::single_root("workspace", "/abs/path/to/workspace", RootMode::ReadOnly);
+    SandboxPolicy::single_root("workspace", "/abs/path/to/workspace", WriteScope::ReadOnly);
 policy.permissions.read = true;
 
 let ctx = Context::new(policy)?;
