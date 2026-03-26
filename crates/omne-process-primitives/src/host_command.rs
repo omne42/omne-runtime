@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use crate::command_path::{
@@ -241,11 +241,12 @@ pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoM
 }
 
 fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecution) -> Command {
+    let program = resolve_program_for_spawn(request);
     let mut cmd = match execution {
-        HostCommandExecution::Direct => Command::new(request.program),
+        HostCommandExecution::Direct => Command::new(&program),
         HostCommandExecution::Sudo => {
             let mut cmd = Command::new("sudo");
-            cmd.arg("-n").arg(request.program);
+            cmd.arg("-n").arg(&program);
             cmd
         }
     };
@@ -336,6 +337,20 @@ fn has_path_separator(command: &OsStr) -> bool {
         .to_string_lossy()
         .chars()
         .any(|ch| ch == '/' || ch == '\\')
+}
+
+fn resolve_program_for_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
+    let program = Path::new(request.program);
+    if program.is_absolute() {
+        return program.to_path_buf();
+    }
+    if !is_explicit_command_path(request.program) {
+        return program.to_path_buf();
+    }
+    if let Some(working_directory) = request.working_directory {
+        return working_directory.join(program);
+    }
+    program.to_path_buf()
 }
 
 fn is_explicit_command_path(command: &OsStr) -> bool {
