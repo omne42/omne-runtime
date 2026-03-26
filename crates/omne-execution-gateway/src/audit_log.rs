@@ -238,7 +238,7 @@ mod tests {
                 let logger = Arc::clone(&logger);
                 let barrier = Arc::clone(&barrier);
                 thread::spawn(move || {
-                    let event = sample_event(&format!("echo-{index}"));
+                    let event = sample_event(format!("echo-{index}"));
                     barrier.wait();
                     for _ in 0..writes_per_thread {
                         logger.write_prepare_record(&event, &Ok(()));
