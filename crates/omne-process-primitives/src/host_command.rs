@@ -573,9 +573,10 @@ mod tests {
         let working_directory = temp.path().join("cwd");
         std::fs::create_dir_all(&working_directory).expect("create working directory");
         write_pwd_command(&working_directory, "pwd");
+        let relative_program = relative_command_path("pwd");
         let args = Vec::new();
         let request = HostCommandRequest {
-            program: OsStr::new("./pwd"),
+            program: OsStr::new(relative_program.as_str()),
             args: &args,
             env: &[],
             working_directory: Some(&working_directory),
@@ -719,6 +720,11 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
+    fn relative_command_path(name: &str) -> String {
+        format!("./{name}")
+    }
+
     #[cfg(windows)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(format!("{name}.cmd"));
@@ -754,5 +760,10 @@ mod tests {
         )
         .expect("write windows failing command");
         path
+    }
+
+    #[cfg(windows)]
+    fn relative_command_path(name: &str) -> String {
+        format!("./{name}.cmd")
     }
 }
