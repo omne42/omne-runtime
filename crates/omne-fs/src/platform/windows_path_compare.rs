@@ -159,7 +159,7 @@ mod tests {
         );
         assert_eq!(
             ascii_case_insensitive_cmp_fast(OsStr::new("safe"), OsStr::new("Saevil")),
-            Some(std::cmp::Ordering::Less)
+            Some(std::cmp::Ordering::Greater)
         );
         assert_eq!(
             ascii_case_insensitive_cmp_fast(OsStr::new("A"), OsStr::new("aB")),

@@ -201,7 +201,10 @@ mod tests {
 
     #[test]
     fn parse_policy_accepts_nested_policy_meta_in_toml() {
-        let root_path = std::env::temp_dir().display().to_string();
+        let root_path = std::env::temp_dir()
+            .display()
+            .to_string()
+            .replace('\\', "\\\\");
         let raw = format!(
             r#"
 [[roots]]

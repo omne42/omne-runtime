@@ -73,9 +73,8 @@ fn validate_requested_path_contract(
     #[cfg(debug_assertions)]
     {
         let normalized = crate::path_utils_internal::normalize_path_lexical(requested_path);
-        debug_assert_eq!(
-            normalized.as_os_str(),
-            requested_path.as_os_str(),
+        debug_assert!(
+            normalized.components().eq(requested_path.components()),
             "internal contract violation: requested path must be normalized root-relative: requested={requested_path:?}, raw={raw_input_path:?}"
         );
     }
@@ -207,16 +206,16 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn rejects_requested_path_with_windows_prefix_component() {
-        let err = ensure_non_root_leaf(
-            Path::new(r"C:\tmp\file.txt"),
-            Path::new(r"C:\tmp\file.txt"),
-            LeafOp::Delete,
-        )
-        .expect_err("prefixed requested path should be rejected");
+        let path = Path::new(r"C:\tmp\file.txt");
+        let err = ensure_non_root_leaf(path, path, LeafOp::Delete)
+            .expect_err("prefixed requested path should be rejected");
 
         assert_eq!(
             invalid_path_message(err),
-            "invalid delete path \"C:\\tmp\\file.txt\": internal contract violation: requested path must stay root-relative (raw input \"C:\\tmp\\file.txt\")"
+            format!(
+                "invalid delete path {:?}: internal contract violation: requested path must stay root-relative (raw input {:?})",
+                path, path
+            )
         );
     }
 

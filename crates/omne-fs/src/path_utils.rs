@@ -310,6 +310,9 @@ pub(crate) fn starts_with_case_insensitive_normalized(path: &Path, prefix: &Path
 /// On non-Windows platforms this is equivalent to `Path::strip_prefix`.
 #[inline]
 pub fn strip_prefix_case_insensitive(path: &Path, prefix: &Path) -> Option<PathBuf> {
+    if prefix.as_os_str().is_empty() {
+        return path.strip_prefix(prefix).ok().map(PathBuf::from);
+    }
     let path = normalized_for_boundary(path);
     let prefix = normalized_for_boundary(prefix);
     strip_prefix_case_insensitive_normalized(path.as_ref(), prefix.as_ref())
