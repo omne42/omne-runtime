@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -47,10 +47,15 @@ impl AuditLogger {
         let line = serde_json::to_string(&record)?;
         let mut file = OpenOptions::new()
             .create(true)
-            .append(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
             .open(&self.path)?;
         file.lock_exclusive()?;
-        let write_result = writeln!(file, "{line}").and_then(|_| file.flush());
+        let write_result = file
+            .seek(SeekFrom::End(0))
+            .and_then(|_| writeln!(file, "{line}"))
+            .and_then(|_| file.flush());
         let unlock_result = file.unlock();
         write_result?;
         unlock_result?;

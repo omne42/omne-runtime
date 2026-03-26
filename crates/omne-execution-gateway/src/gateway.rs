@@ -623,14 +623,14 @@ mod tests {
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             policy,
-            ExecutionIsolation::BestEffort,
+            host_supported_test_isolation(),
         );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "echo",
             vec!["hello"],
             workspace.path(),
-            ExecutionIsolation::BestEffort,
+            host_supported_test_isolation(),
             workspace.path(),
         );
         let mut command = Command::new("echo");
@@ -652,14 +652,14 @@ mod tests {
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             policy,
-            ExecutionIsolation::BestEffort,
+            host_supported_test_isolation(),
         );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "echo",
             vec!["hello"],
             workspace.path(),
-            ExecutionIsolation::BestEffort,
+            host_supported_test_isolation(),
             workspace.path(),
         );
         let mut command = Command::new("printf");
@@ -685,7 +685,7 @@ mod tests {
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             policy,
-            ExecutionIsolation::BestEffort,
+            host_supported_test_isolation(),
         );
         let workspace = tempdir().expect("create temp workspace");
         let real_dir = workspace.path().join("real");
@@ -697,7 +697,7 @@ mod tests {
             "echo",
             vec!["hello"],
             &link_dir,
-            ExecutionIsolation::BestEffort,
+            host_supported_test_isolation(),
             workspace.path(),
         );
         let mut command = Command::new("echo");
@@ -720,14 +720,14 @@ mod tests {
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             policy,
-            ExecutionIsolation::BestEffort,
+            host_supported_test_isolation(),
         );
         let (program, args) = shell_exit_nonzero_command();
         let request = ExecRequest::new(
             program,
             args,
             workspace.path(),
-            ExecutionIsolation::BestEffort,
+            host_supported_test_isolation(),
             workspace.path(),
         );
 
@@ -819,13 +819,13 @@ mod tests {
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             policy,
-            ExecutionIsolation::BestEffort,
+            host_supported_test_isolation(),
         );
         let request = ExecRequest::new(
             "__omne_exec_gateway_missing_program__",
             Vec::<OsString>::new(),
             workspace.path(),
-            ExecutionIsolation::BestEffort,
+            host_supported_test_isolation(),
             workspace.path(),
         );
 
@@ -856,5 +856,15 @@ mod tests {
     #[cfg(not(windows))]
     fn shell_exit_nonzero_command() -> (&'static str, Vec<&'static str>) {
         ("sh", vec!["-c", "exit 1"])
+    }
+
+    #[cfg(target_os = "linux")]
+    fn host_supported_test_isolation() -> ExecutionIsolation {
+        ExecutionIsolation::BestEffort
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn host_supported_test_isolation() -> ExecutionIsolation {
+        ExecutionIsolation::None
     }
 }
