@@ -637,7 +637,11 @@ mod tests {
         command.arg("hello");
         let (_event, result) = gateway.prepare_command(&request, &mut command);
         assert!(result.is_ok());
-        assert_eq!(command.get_current_dir(), Some(workspace.path()));
+        let expected_cwd = workspace
+            .path()
+            .canonicalize()
+            .expect("canonicalize workspace");
+        assert_eq!(command.get_current_dir(), Some(expected_cwd.as_path()));
     }
 
     #[test]
@@ -700,8 +704,9 @@ mod tests {
         command.arg("hello");
         let (event, result) = gateway.prepare_command(&request, &mut command);
         assert!(result.is_ok());
-        assert_eq!(event.cwd, real_dir);
-        assert_eq!(command.get_current_dir(), Some(real_dir.as_path()));
+        let expected_cwd = real_dir.canonicalize().expect("canonicalize real dir");
+        assert_eq!(event.cwd, expected_cwd);
+        assert_eq!(command.get_current_dir(), Some(expected_cwd.as_path()));
     }
 
     #[test]
