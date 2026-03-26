@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use crate::command_path::{
@@ -241,8 +241,9 @@ pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoM
 }
 
 fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecution) -> Command {
+    let program = resolve_program_for_spawn(request);
     let mut cmd = match execution {
-        HostCommandExecution::Direct => Command::new(request.program),
+        HostCommandExecution::Direct => Command::new(&program),
         HostCommandExecution::Sudo => {
             let mut cmd = Command::new("sudo");
             cmd.arg("-n");
@@ -257,7 +258,7 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
                         .join(",")
                 ));
             }
-            cmd.arg("--").arg(request.program);
+            cmd.arg("--").arg(&program);
             cmd
         }
     };
@@ -348,6 +349,20 @@ fn has_path_separator(command: &OsStr) -> bool {
         .to_string_lossy()
         .chars()
         .any(|ch| ch == '/' || ch == '\\')
+}
+
+fn resolve_program_for_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
+    let program = Path::new(request.program);
+    if program.is_absolute() {
+        return program.to_path_buf();
+    }
+    if !is_explicit_command_path(request.program) {
+        return program.to_path_buf();
+    }
+    if let Some(working_directory) = request.working_directory {
+        return working_directory.join(program);
+    }
+    program.to_path_buf()
 }
 
 fn is_explicit_command_path(command: &OsStr) -> bool {
@@ -584,6 +599,28 @@ mod tests {
     }
 
     #[test]
+    fn run_host_command_resolves_relative_program_against_working_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let working_directory = temp.path().join("cwd");
+        std::fs::create_dir_all(&working_directory).expect("create working directory");
+        write_pwd_command(&working_directory, "pwd");
+        let relative_program = relative_command_path("pwd");
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: OsStr::new(relative_program.as_str()),
+            args: &args,
+            env: &[],
+            working_directory: Some(&working_directory),
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let output = run_host_command(&request).expect("run host command");
+        assert!(output.output.status.success());
+        let stdout = String::from_utf8_lossy(&output.output.stdout);
+        assert!(stdout.contains(&working_directory.display().to_string()));
+    }
+
+    #[test]
     fn run_host_recipe_captures_success_output() {
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = write_test_command(temp.path(), "echoenv");
@@ -708,6 +745,11 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
+    fn relative_command_path(name: &str) -> String {
+        format!("./{name}")
+    }
+
     #[cfg(windows)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(format!("{name}.cmd"));
@@ -743,5 +785,10 @@ mod tests {
         )
         .expect("write windows failing command");
         path
+    }
+
+    #[cfg(windows)]
+    fn relative_command_path(name: &str) -> String {
+        format!(".\\{name}.cmd")
     }
 }
