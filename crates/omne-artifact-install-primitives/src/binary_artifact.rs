@@ -86,18 +86,18 @@ pub async fn download_binary_to_destination(
             continue;
         }
 
-        if let Some(expected_sha256) = request.expected_sha256 {
-            staged
-                .file_mut()
-                .seek(SeekFrom::Start(0))
-                .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-            verify_sha256_reader(staged.file_mut(), expected_sha256)
-                .map_err(|err| ArtifactInstallError::download(err.to_string()))?;
+        let install_result =
+            verify_downloaded_candidate(staged.file_mut(), request.expected_sha256).and_then(
+                |_| {
+                    staged
+                        .commit()
+                        .map_err(|err| ArtifactInstallError::install(err.to_string()))
+                },
+            );
+        if let Err(err) = install_result {
+            errors.push(candidate_failure_message(candidate, &err));
+            continue;
         }
-
-        staged
-            .commit()
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
         return Ok(candidate.clone());
     }
 
@@ -130,27 +130,31 @@ pub async fn download_and_install_binary_from_archive(
             continue;
         }
 
-        if let Some(expected_sha256) = request.expected_sha256 {
-            staged
-                .file_mut()
-                .seek(SeekFrom::Start(0))
-                .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-            verify_sha256_reader(staged.file_mut(), expected_sha256)
-                .map_err(|err| ArtifactInstallError::download(err.to_string()))?;
-        }
-
-        staged
-            .file_mut()
-            .seek(SeekFrom::Start(0))
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-        let archive_match = install_binary_from_archive_reader(
-            request.asset_name,
-            staged.file_mut(),
-            request.binary_name,
-            request.tool_name,
-            request.destination,
-            request.archive_binary_hint,
-        )?;
+        let install_result =
+            verify_downloaded_candidate(staged.file_mut(), request.expected_sha256)
+                .and_then(|_| {
+                    staged
+                        .file_mut()
+                        .seek(SeekFrom::Start(0))
+                        .map_err(|err| ArtifactInstallError::install(err.to_string()))
+                })
+                .and_then(|_| {
+                    install_binary_from_archive_reader(
+                        request.asset_name,
+                        staged.file_mut(),
+                        request.binary_name,
+                        request.tool_name,
+                        request.destination,
+                        request.archive_binary_hint,
+                    )
+                });
+        let archive_match = match install_result {
+            Ok(archive_match) => archive_match,
+            Err(err) => {
+                errors.push(candidate_failure_message(candidate, &err));
+                continue;
+            }
+        };
         return Ok(InstalledArchiveBinary {
             source: candidate.clone(),
             archive_match,
@@ -190,6 +194,24 @@ where
     Ok(matched)
 }
 
+fn verify_downloaded_candidate<R>(
+    reader: &mut R,
+    expected_sha256: Option<&Sha256Digest>,
+) -> Result<(), ArtifactInstallError>
+where
+    R: Read + Seek + ?Sized,
+{
+    let Some(expected_sha256) = expected_sha256 else {
+        return Ok(());
+    };
+
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    verify_sha256_reader(reader, expected_sha256)
+        .map_err(|err| ArtifactInstallError::download(err.to_string()))
+}
+
 fn archive_download_stage_options() -> AtomicWriteOptions {
     AtomicWriteOptions {
         create_parent_directories: true,
@@ -204,5 +226,178 @@ fn binary_write_options() -> AtomicWriteOptions {
         require_non_empty: true,
         require_executable_on_unix: true,
         unix_mode: Some(0o755),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::error::Error;
+    use std::io::{Cursor, Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    use omne_integrity_primitives::hash_sha256;
+
+    use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
+
+    use super::{
+        BinaryArchiveInstallRequest, DownloadBinaryRequest,
+        download_and_install_binary_from_archive, download_binary_to_destination,
+    };
+
+    fn spawn_mock_http_server(
+        listener: TcpListener,
+        routes: HashMap<String, Vec<u8>>,
+        expected_requests: usize,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            for _ in 0..expected_requests {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut buffer = [0_u8; 8192];
+                let Ok(size) = stream.read(&mut buffer) else {
+                    continue;
+                };
+                if size == 0 {
+                    continue;
+                }
+                let request = String::from_utf8_lossy(&buffer[..size]);
+                let request_line = request.lines().next().unwrap_or_default();
+                let path = request_line.split_whitespace().nth(1).unwrap_or("/");
+                let (status, body) = if let Some(body) = routes.get(path) {
+                    ("200 OK", body.clone())
+                } else {
+                    ("404 Not Found", b"not found".to_vec())
+                };
+                let headers = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(headers.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        })
+    }
+
+    fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut writer = Cursor::new(Vec::new());
+        {
+            let mut archive = zip::ZipWriter::new(&mut writer);
+            for (path, body, mode) in entries {
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored)
+                    .unix_permissions(*mode);
+                archive.start_file(*path, options)?;
+                archive.write_all(body)?;
+            }
+            archive.finish()?;
+        }
+        Ok(writer.into_inner())
+    }
+
+    #[tokio::test]
+    async fn direct_binary_download_retries_after_checksum_failure() -> Result<(), Box<dyn Error>> {
+        let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let good_binary = b"good-binary".to_vec();
+        let bad_binary = b"bad-binary".to_vec();
+        let expected_sha256 = hash_sha256(&good_binary);
+
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let base = format!("http://{addr}");
+        let canonical_url = format!("{base}/{asset_name}");
+        let mirror_url = format!("{base}/mirror/{asset_name}");
+
+        let mut routes = HashMap::new();
+        routes.insert(format!("/{asset_name}"), bad_binary);
+        routes.insert(format!("/mirror/{asset_name}"), good_binary.clone());
+        let handle = spawn_mock_http_server(listener, routes, 2);
+
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join(&asset_name);
+        let client = reqwest::Client::builder().build()?;
+        let selected = download_binary_to_destination(
+            &client,
+            &[
+                ArtifactDownloadCandidate {
+                    url: canonical_url.clone(),
+                    kind: ArtifactDownloadCandidateKind::Canonical,
+                },
+                ArtifactDownloadCandidate {
+                    url: mirror_url,
+                    kind: ArtifactDownloadCandidateKind::Mirror,
+                },
+            ],
+            &DownloadBinaryRequest {
+                canonical_url: &canonical_url,
+                destination: &destination,
+                asset_name: &asset_name,
+                expected_sha256: Some(&expected_sha256),
+                max_download_bytes: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(selected.kind, ArtifactDownloadCandidateKind::Mirror);
+        assert_eq!(std::fs::read(&destination)?, good_binary);
+
+        handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn archive_binary_download_retries_after_extract_failure() -> Result<(), Box<dyn Error>> {
+        let asset_name = "demo.zip";
+        let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let archive_path = format!("demo/bin/{binary_name}");
+        let good_archive = make_zip_archive(&[(archive_path.as_str(), b"good-binary", 0o755)])?;
+
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let base = format!("http://{addr}");
+        let canonical_url = format!("{base}/{asset_name}");
+        let mirror_url = format!("{base}/mirror/{asset_name}");
+
+        let mut routes = HashMap::new();
+        routes.insert(format!("/{asset_name}"), b"not a zip archive".to_vec());
+        routes.insert(format!("/mirror/{asset_name}"), good_archive);
+        let handle = spawn_mock_http_server(listener, routes, 2);
+
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join(&binary_name);
+        let client = reqwest::Client::builder().build()?;
+        let installed = download_and_install_binary_from_archive(
+            &client,
+            &[
+                ArtifactDownloadCandidate {
+                    url: canonical_url.clone(),
+                    kind: ArtifactDownloadCandidateKind::Canonical,
+                },
+                ArtifactDownloadCandidate {
+                    url: mirror_url,
+                    kind: ArtifactDownloadCandidateKind::Mirror,
+                },
+            ],
+            &BinaryArchiveInstallRequest {
+                canonical_url: &canonical_url,
+                destination: &destination,
+                asset_name,
+                binary_name: &binary_name,
+                tool_name: "demo",
+                archive_binary_hint: None,
+                expected_sha256: None,
+                max_download_bytes: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(installed.source.kind, ArtifactDownloadCandidateKind::Mirror);
+        assert_eq!(std::fs::read(&destination)?, b"good-binary");
+
+        handle.join().expect("mock server thread join");
+        Ok(())
     }
 }
