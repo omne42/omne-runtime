@@ -271,6 +271,7 @@ pub(super) fn ensure_dir_under_root(
                     })?);
                 if created_now {
                     let created_identity = super::super::io::DirectoryIdentity::from_metadata(
+                        &next,
                         post_create_meta.take().ok_or_else(|| {
                             Error::InvalidPath(
                                 "internal error: missing post-create metadata snapshot".to_string(),

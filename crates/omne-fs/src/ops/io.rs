@@ -18,7 +18,10 @@ pub(super) enum MetadataIdentityCheck {
 }
 
 #[derive(Debug)]
-pub(super) struct DirectoryIdentity(PathIdentity);
+pub(super) struct DirectoryIdentity {
+    metadata: PathIdentity,
+    handle: Option<same_file::Handle>,
+}
 
 impl PathIdentity {
     pub(super) fn capture(path: &Path, relative: &Path) -> Result<Self> {
@@ -62,21 +65,28 @@ impl DirectoryIdentity {
     {
         let meta = fs::symlink_metadata(path)
             .map_err(|err| Error::io_path("symlink_metadata", relative, err))?;
-        Self::from_metadata(meta, not_dir_error)
+        Self::from_metadata(path, meta, not_dir_error)
     }
 
-    pub(super) fn from_metadata<F>(meta: fs::Metadata, not_dir_error: F) -> Result<Self>
+    pub(super) fn from_metadata<F>(
+        path: &Path,
+        meta: fs::Metadata,
+        not_dir_error: F,
+    ) -> Result<Self>
     where
         F: FnOnce() -> Error,
     {
         if meta.file_type().is_symlink() || !meta.is_dir() {
             return Err(not_dir_error());
         }
-        Ok(Self(PathIdentity::from_metadata(meta)))
+        Ok(Self {
+            metadata: PathIdentity::from_metadata(meta),
+            handle: same_file::Handle::from_path(path).ok(),
+        })
     }
 
     pub(super) fn metadata(&self) -> &fs::Metadata {
-        self.0.metadata()
+        self.metadata.metadata()
     }
 
     pub(super) fn verify_metadata<F>(
@@ -90,7 +100,7 @@ impl DirectoryIdentity {
         if current_meta.file_type().is_symlink() || !current_meta.is_dir() {
             return Err(changed_error());
         }
-        self.0.verify_metadata(current_meta, changed_error)
+        self.metadata.verify_metadata(current_meta, changed_error)
     }
 
     pub(super) fn verify<F>(
@@ -104,6 +114,18 @@ impl DirectoryIdentity {
     {
         let current_meta = fs::symlink_metadata(path)
             .map_err(|err| Error::io_path("symlink_metadata", relative, err))?;
+        if current_meta.file_type().is_symlink() || !current_meta.is_dir() {
+            return Err(changed_error());
+        }
+        if let Some(expected_handle) = self.handle.as_ref() {
+            match same_file::Handle::from_path(path) {
+                Ok(current_handle) if current_handle == *expected_handle => {
+                    return Ok(MetadataIdentityCheck::Verified);
+                }
+                Ok(_) => return Err(changed_error()),
+                Err(_) => {}
+            }
+        }
         self.verify_metadata(&current_meta, changed_error)
     }
 
