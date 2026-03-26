@@ -363,9 +363,10 @@ fn map_spawn_error(
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+
     #[cfg(unix)]
     use std::io;
-    use std::path::{Path, PathBuf};
 
     use super::{
         HostCommandError, HostCommandExecution, HostCommandOutput, HostCommandRequest,
