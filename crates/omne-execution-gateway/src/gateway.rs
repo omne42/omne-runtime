@@ -183,18 +183,10 @@ impl ExecGateway {
         (event, result)
     }
 
-    #[expect(
-        clippy::result_large_err,
-        reason = "preflight returns the full event and error together so callers can preserve authoritative audit context"
-    )]
     pub fn preflight(&self, request: &ExecRequest) -> Result<ExecEvent, PreflightError> {
         self.prepare_request(request).map(|prepared| prepared.event)
     }
 
-    #[expect(
-        clippy::result_large_err,
-        reason = "callers need the complete preflight event and error pair to report the denial faithfully"
-    )]
     fn prepare_request(
         &self,
         request: &ExecRequest,

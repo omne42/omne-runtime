@@ -368,11 +368,59 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
-        HostRecipeError, HostRecipeRequest, command_available, command_exists, command_path_exists,
-        default_recipe_sudo_mode_for_program, run_host_command, run_host_recipe,
-        should_try_sudo_with_status,
+        HostCommandError, HostCommandExecution, HostCommandOutput, HostCommandRequest,
+        HostCommandSudoMode, HostRecipeError, HostRecipeRequest, command_available, command_exists,
+        command_path_exists, default_recipe_sudo_mode_for_program, run_host_command,
+        run_host_recipe, should_try_sudo_with_status,
     };
+
+    #[cfg(unix)]
+    fn run_host_command_with_retry(
+        request: &HostCommandRequest<'_>,
+    ) -> Result<HostCommandOutput, HostCommandError> {
+        for attempt in 0..5 {
+            match run_host_command(request) {
+                Err(HostCommandError::SpawnFailed { source, .. })
+                    if source.kind() == io::ErrorKind::ExecutableFileBusy && attempt < 4 =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+        unreachable!("retry loop always returns on the final attempt")
+    }
+
+    #[cfg(not(unix))]
+    fn run_host_command_with_retry(
+        request: &HostCommandRequest<'_>,
+    ) -> Result<HostCommandOutput, HostCommandError> {
+        run_host_command(request)
+    }
+
+    #[cfg(unix)]
+    fn run_host_recipe_with_retry(
+        request: &HostRecipeRequest<'_>,
+    ) -> Result<HostCommandOutput, HostRecipeError> {
+        for attempt in 0..5 {
+            match run_host_recipe(request) {
+                Err(HostRecipeError::Command(HostCommandError::SpawnFailed { source, .. }))
+                    if source.kind() == io::ErrorKind::ExecutableFileBusy && attempt < 4 =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+        unreachable!("retry loop always returns on the final attempt")
+    }
+
+    #[cfg(not(unix))]
+    fn run_host_recipe_with_retry(
+        request: &HostRecipeRequest<'_>,
+    ) -> Result<HostCommandOutput, HostRecipeError> {
+        run_host_recipe(request)
+    }
 
     #[test]
     fn command_probe_reports_missing_command_as_absent() {
@@ -401,7 +449,7 @@ mod tests {
             sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
         };
 
-        let output = run_host_command(&request).expect("run host command");
+        let output = run_host_command_with_retry(&request).expect("run host command");
         assert_eq!(output.execution, HostCommandExecution::Direct);
         assert!(output.output.status.success());
         let stdout = String::from_utf8_lossy(&output.output.stdout);
@@ -472,7 +520,7 @@ mod tests {
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let output = run_host_command(&request).expect("run host command");
+        let output = run_host_command_with_retry(&request).expect("run host command");
         assert!(output.output.status.success());
         let stdout = String::from_utf8_lossy(&output.output.stdout);
         assert!(stdout.contains(&working_directory.display().to_string()));
@@ -511,7 +559,7 @@ mod tests {
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let output = run_host_command(&request).expect("run host command");
+        let output = run_host_command_with_retry(&request).expect("run host command");
         assert!(output.output.status.success());
 
         let recorded = std::fs::read_to_string(&count_file).expect("read count file");
@@ -533,7 +581,7 @@ mod tests {
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let output = run_host_command(&request).expect("run host command");
+        let output = run_host_command_with_retry(&request).expect("run host command");
         assert!(output.output.status.success());
         let stdout = String::from_utf8_lossy(&output.output.stdout);
         assert!(stdout.contains(&working_directory.display().to_string()));
@@ -546,7 +594,7 @@ mod tests {
         let args = vec!["hello".to_string()];
         let env = vec![("OMNE_TEST_VALUE".to_string(), "world".to_string())];
 
-        let output = run_host_recipe(
+        let output = run_host_recipe_with_retry(
             &HostRecipeRequest::new(command_path.as_os_str(), &args).with_env(&env),
         )
         .expect("run host recipe");
@@ -563,8 +611,9 @@ mod tests {
         let command_path = write_failing_command(temp.path(), "failcmd");
         let args = Vec::new();
 
-        let err = run_host_recipe(&HostRecipeRequest::new(command_path.as_os_str(), &args))
-            .expect_err("recipe should fail");
+        let err =
+            run_host_recipe_with_retry(&HostRecipeRequest::new(command_path.as_os_str(), &args))
+                .expect_err("recipe should fail");
         match err {
             HostRecipeError::NonZeroExit {
                 execution, output, ..
@@ -650,11 +699,16 @@ mod tests {
 
     #[cfg(unix)]
     fn write_unix_executable(dir: &Path, name: &str, content: &str) -> PathBuf {
+        use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
 
         let path = dir.join(name);
         let temp_path = dir.join(format!("{name}.tmp"));
-        std::fs::write(&temp_path, content).expect("write unix command");
+        let mut file = std::fs::File::create(&temp_path).expect("create unix command");
+        file.write_all(content.as_bytes())
+            .expect("write unix command");
+        file.sync_all().expect("sync unix command");
+        drop(file);
         let mut perms = std::fs::metadata(&temp_path)
             .expect("stat unix command")
             .permissions();
