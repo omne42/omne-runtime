@@ -202,13 +202,15 @@ where
             continue;
         }
         if entry_type.is_file() {
-            if let Some(parent) = output_path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-            }
-            entry
-                .unpack(&output_path)
+            let extracted = entry
+                .unpack_in(destination)
                 .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+            if !extracted {
+                return Err(ArtifactInstallError::install(format!(
+                    "unsafe tar archive entry path `{}`",
+                    path.display()
+                )));
+            }
             continue;
         }
         if entry_type.is_symlink() {
