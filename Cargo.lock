@@ -1344,6 +1344,9 @@ dependencies = [
 [[package]]
 name = "omne-system-package-primitives"
 version = "0.1.0"
+dependencies = [
+ "omne-host-info-primitives",
+]
 
 [[package]]
 name = "once_cell"

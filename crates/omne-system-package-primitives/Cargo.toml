@@ -4,3 +4,6 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 description = "Low-level Omne system package primitives."
+
+[dependencies]
+omne-host-info-primitives = { path = "../omne-host-info-primitives" }
