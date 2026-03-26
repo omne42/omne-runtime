@@ -73,9 +73,7 @@ fn deny_globs_apply_to_absolute_paths_even_when_parent_is_missing() {
     policy.secrets.deny_globs = vec!["missing/**".to_string()];
     let ctx = Context::new(policy).expect("ctx");
 
-    let root = toggle_drive_letter_case(dir.path())
-        .expect("tempdir path must have a disk or verbatim-disk prefix on Windows");
-    let abs = root.join("missing").join("file.txt");
+    let abs = dir.path().join("missing").join("file.txt");
     let err = read_file(
         &ctx,
         ReadRequest {
