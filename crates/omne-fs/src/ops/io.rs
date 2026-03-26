@@ -407,7 +407,7 @@ pub(super) fn write_bytes_atomic_checked(
         path,
         relative,
         bytes,
-        Some(&expected_identity),
+        Some(expected_identity),
         true,
         preserve_unix_xattrs,
     )
@@ -417,7 +417,7 @@ fn write_bytes_atomic_impl(
     path: &Path,
     relative: &Path,
     bytes: &[u8],
-    expected_identity: Option<&FileIdentity>,
+    expected_identity: Option<FileIdentity>,
     recheck_before_commit: bool,
     preserve_unix_xattrs: bool,
 ) -> Result<()> {
@@ -429,7 +429,7 @@ fn write_bytes_atomic_impl(
     let _ = preserve_unix_xattrs;
     verify_expected_identity(
         relative,
-        expected_identity,
+        expected_identity.as_ref(),
         FileIdentity::from_file(&existing_file),
     )?;
 
@@ -471,11 +471,15 @@ fn write_bytes_atomic_impl(
         let (recheck_file, _recheck_meta) = open_regular_file_for_write(path, relative)?;
         verify_expected_identity(
             relative,
-            expected_identity,
+            expected_identity.as_ref(),
             FileIdentity::from_file(&recheck_file),
         )?;
         drop(recheck_file);
     }
+
+    // The expected identity may itself own an open file handle on Windows.
+    // Release it before the final replace operation.
+    drop(expected_identity);
 
     // Windows replacement APIs reject replacing a destination that this process still has open.
     // Close the original handle after we've copied metadata and finished identity checks.
