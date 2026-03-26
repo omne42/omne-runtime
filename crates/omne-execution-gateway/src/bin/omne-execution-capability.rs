@@ -3,8 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use omne_execution_gateway::{CapabilityReport, ExecGateway, GatewayPolicy};
-use policy_meta::ExecutionIsolation;
+use omne_execution_gateway::{ExecGateway, GatewayPolicy};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CapabilityArgs {
@@ -90,6 +89,8 @@ fn load_gateway(args: &CapabilityArgs) -> Result<ExecGateway, String> {
 mod tests {
     use std::fs;
 
+    use omne_execution_gateway::CapabilityReport;
+    use policy_meta::ExecutionIsolation;
     use serde_json::json;
     use tempfile::tempdir;
 

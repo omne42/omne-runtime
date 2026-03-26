@@ -6,9 +6,8 @@ use std::process::{ExitCode, ExitStatus};
 
 use omne_execution_gateway::{
     ExecEvent, ExecGateway, ExecRequest, ExecResult, GatewayPolicy, RequestResolution,
-    RequestedIsolationSource, requested_policy_meta,
 };
-use policy_meta::{ExecutionIsolation, SpecVersion};
+use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -156,7 +155,8 @@ fn exit_status_signal(_: &ExitStatus) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omne_execution_gateway::ExecDecision;
+    use omne_execution_gateway::{ExecDecision, RequestedIsolationSource, requested_policy_meta};
+    use policy_meta::SpecVersion;
 
     fn sample_event() -> omne_execution_gateway::ExecEvent {
         omne_execution_gateway::ExecEvent {
