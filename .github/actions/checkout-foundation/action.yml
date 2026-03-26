@@ -1,0 +1,37 @@
+name: Checkout Foundation
+description: Checkout sibling omne_foundation repository required by local path dependencies.
+
+inputs:
+  repo-owner:
+    description: GitHub owner that hosts omne_foundation.
+    required: true
+  token:
+    description: Token with read access to omne_foundation.
+    required: true
+  foundation-ref:
+    description: Ref to checkout for omne_foundation.
+    required: false
+    default: main
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout omne_foundation
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.repo-owner }}/omne_foundation
+        ref: ${{ inputs.foundation-ref }}
+        token: ${{ inputs.token }}
+        path: _deps/omne_foundation
+        fetch-depth: 1
+
+    - name: Move omne_foundation into sibling layout
+      shell: bash
+      run: |
+        set -euo pipefail
+        rm -rf ../omne_foundation
+        mv _deps/omne_foundation ../omne_foundation
+        test -f ../omne_foundation/Cargo.toml
+        test -f ../omne_foundation/crates/http-kit/Cargo.toml
+        test -f ../omne_foundation/crates/policy-meta/Cargo.toml
+        rmdir _deps 2>/dev/null || true

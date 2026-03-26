@@ -29,6 +29,12 @@ jobs:
           repository: omne42/omne_foundation
           path: omne_foundation
 
+      - name: Checkout foundation
+        uses: ./.github/actions/checkout-foundation
+        with:
+          repo-owner: ${{ github.repository_owner }}
+          token: ${{ secrets.OMNE_REPO_READ_TOKEN || github.token }}
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
 
@@ -116,6 +122,12 @@ jobs:
         with:
           repository: omne42/omne_foundation
           path: omne_foundation
+
+      - name: Checkout foundation
+        uses: ./.github/actions/checkout-foundation
+        with:
+          repo-owner: ${{ github.repository_owner }}
+          token: ${{ secrets.OMNE_REPO_READ_TOKEN || github.token }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
