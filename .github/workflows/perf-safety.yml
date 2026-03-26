@@ -20,8 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - name: Checkout
+      - name: Checkout runtime
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: omne-runtime
+
+      - name: Checkout foundation
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: omne42/omne_foundation
+          path: omne_foundation
 
       - name: Setup Rust (nightly)
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
@@ -31,45 +39,52 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          workspaces: |
+            omne-runtime -> target
 
       - name: Run tests with AddressSanitizer
+        working-directory: omne-runtime
         env:
           RUSTFLAGS: -Zsanitizer=address
           ASAN_OPTIONS: detect_leaks=1:strict_init_order=1
           CC: clang
           CXX: clang++
         run: |
-          cargo +nightly test --locked -p omne-systems-fs --target x86_64-unknown-linux-gnu -Zbuild-std
-
-      - name: Run unix xattr metadata tests with AddressSanitizer
-        env:
-          RUSTFLAGS: -Zsanitizer=address
-          ASAN_OPTIONS: detect_leaks=1:strict_init_order=1
-          CC: clang
-          CXX: clang++
-        run: |
-          cargo +nightly test --locked -p omne-systems-fs --target x86_64-unknown-linux-gnu -Zbuild-std --lib preserve_unix_security_metadata
+          cargo +nightly test --locked -p omne-fs --target x86_64-unknown-linux-gnu -Zbuild-std
 
   benchmark:
     name: Benchmark (criterion)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Checkout
+      - name: Checkout runtime
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: omne-runtime
+
+      - name: Checkout foundation
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: omne42/omne_foundation
+          path: omne_foundation
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
 
       - name: Rust cache
         uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          workspaces: |
+            omne-runtime -> target
 
       - name: Run criterion benchmark
-        run: cargo bench --locked -p omne-systems-fs --bench perf_ops -- --noplot
+        working-directory: omne-runtime
+        run: cargo bench --locked -p omne-fs --bench perf_ops -- --noplot
 
       - name: Upload benchmark artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: criterion-${{ github.sha }}
-          path: target/criterion
+          path: omne-runtime/target/criterion
           if-no-files-found: ignore

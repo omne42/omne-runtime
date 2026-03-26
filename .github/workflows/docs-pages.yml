@@ -6,9 +6,9 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
-      - "crates/omne-systems-fs/**"
-      - "crates/omne-systems-fs-primitives/**"
-      - "crates/omne-systems-exec-gateway/**"
+      - "crates/omne-fs/**"
+      - "crates/omne-fs-primitives/**"
+      - "crates/omne-execution-gateway/**"
       - ".github/workflows/docs-pages.yml"
   workflow_dispatch:
 
@@ -25,14 +25,25 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout runtime
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: omne-runtime
+
+      - name: Checkout foundation
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: omne42/omne_foundation
+          path: omne_foundation
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
 
       - name: Rust cache
         uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          workspaces: |
+            omne-runtime -> target
 
       - name: Setup Python
         uses: actions/setup-python@42375524f8ff6da1a8ebd5e3f7c6f6d88d548ec2 # v5.4.0
@@ -45,29 +56,32 @@ jobs:
           pip install mkdocs==1.6.1 mkdocs-material==9.7.3 mike==2.1.3 pymdown-extensions==10.21
 
       - name: Build fs rustdoc
+        working-directory: omne-runtime
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --locked -p omne-systems-fs --no-deps --all-features
+        run: cargo doc --locked -p omne-fs --no-deps --all-features
 
       - name: Add fs rustdoc landing page
         shell: bash
+        working-directory: omne-runtime
         run: |
           set -euo pipefail
           cat > target/doc/index.html <<'EOF'
           <!doctype html>
           <meta charset="utf-8">
-          <meta http-equiv="refresh" content="0; url=omne_systems_fs/">
-          <link rel="canonical" href="omne_systems_fs/">
-          <title>omne-systems-fs docs</title>
-          <p>Redirecting to <a href="omne_systems_fs/">omne-systems-fs</a>.</p>
+          <meta http-equiv="refresh" content="0; url=omne_fs/">
+          <link rel="canonical" href="omne_fs/">
+          <title>omne-fs docs</title>
+          <p>Redirecting to <a href="omne_fs/">omne-fs</a>.</p>
           EOF
 
       - name: Build exec gateway docs
-        working-directory: crates/omne-systems-exec-gateway
+        working-directory: omne-runtime/crates/omne-execution-gateway
         run: mkdocs build -d ../../target/pages/exec-gateway
 
       - name: Assemble combined Pages site
         shell: bash
+        working-directory: omne-runtime
         run: |
           set -euo pipefail
           site_root="target/pages"
@@ -76,8 +90,8 @@ jobs:
           cat > "$site_root/index.html" <<'EOF'
           <!doctype html>
           <meta charset="utf-8">
-          <title>omne-systems-runtime docs</title>
-          <h1>omne-systems-runtime docs</h1>
+          <title>omne-runtime docs</title>
+          <h1>omne-runtime docs</h1>
           <ul>
             <li><a href="fs-rustdoc/">Filesystem rustdoc</a></li>
             <li><a href="exec-gateway/">Execution gateway guides</a></li>
@@ -93,7 +107,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
-          path: target/pages
+          path: omne-runtime/target/pages
 
   deploy:
     needs: build

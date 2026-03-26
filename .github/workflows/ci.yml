@@ -18,13 +18,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout
+      - name: Checkout runtime
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
+          path: omne-runtime
 
       - name: Install gitleaks
         shell: bash
+        working-directory: omne-runtime
         run: |
           set -euo pipefail
           version="8.24.2"
@@ -56,9 +58,10 @@ jobs:
 
       - name: Run gitleaks
         shell: bash
+        working-directory: omne-runtime
         run: |
           set -euo pipefail
-          baseline_path="crates/omne-systems-fs/security/secrets/gitleaks-baseline.json"
+          baseline_path="crates/omne-fs/security/secrets/gitleaks-baseline.json"
           cmd=(
             gitleaks
             dir
@@ -85,8 +88,16 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      - name: Checkout
+      - name: Checkout runtime
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: omne-runtime
+
+      - name: Checkout foundation
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: omne42/omne_foundation
+          path: omne_foundation
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
@@ -95,7 +106,11 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          workspaces: |
+            omne-runtime -> target
 
       - name: Gates
         shell: bash
-        run: ./crates/omne-systems-fs/scripts/gate.sh
+        working-directory: omne-runtime
+        run: ./crates/omne-fs/scripts/gate.sh

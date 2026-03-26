@@ -336,9 +336,9 @@ mod tests {
 
     use super::{
         HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
-        HostRecipeError, HostRecipeRequest, command_available, command_exists,
-        command_path_exists, default_recipe_sudo_mode_for_program, run_host_command,
-        run_host_recipe, should_try_sudo_with_status,
+        HostRecipeError, HostRecipeRequest, command_available, command_exists, command_path_exists,
+        default_recipe_sudo_mode_for_program, run_host_command, run_host_recipe,
+        should_try_sudo_with_status,
     };
 
     #[test]
@@ -578,7 +578,11 @@ mod tests {
 
     #[cfg(unix)]
     fn write_count_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(dir, name, "#!/bin/sh\nprintf 'run\\n' >> \"$OMNE_COUNT_FILE\"\n")
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\nprintf 'run\\n' >> \"$OMNE_COUNT_FILE\"\n",
+        )
     }
 
     #[cfg(unix)]

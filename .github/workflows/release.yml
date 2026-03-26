@@ -18,26 +18,39 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      - name: Checkout
+      - name: Checkout runtime
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: omne-runtime
+
+      - name: Checkout foundation
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: omne42/omne_foundation
+          path: omne_foundation
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
 
       - name: Rust cache
         uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          workspaces: |
+            omne-runtime -> target
 
       - name: Build (release)
-        run: cargo build --locked --release -p omne-systems-fs-cli
+        working-directory: omne-runtime
+        run: cargo build --locked --release -p omne-fs-cli
 
       - name: Package (tar.gz)
         if: runner.os != 'Windows'
         shell: bash
+        working-directory: omne-runtime
         run: |
           set -euo pipefail
           mkdir -p dist
 
-          bin_name="omne-systems-fs"
+          bin_name="omne-fs"
           os="$(uname -s | tr '[:upper:]' '[:lower:]')"
           if [[ "$os" == "darwin" ]]; then os="macos"; fi
           arch="$(uname -m)"
@@ -46,15 +59,15 @@ jobs:
             aarch64|arm64) arch="arm64" ;;
           esac
 
-          asset="omne-systems-fs-${os}-${arch}.tar.gz"
+          asset="omne-fs-${os}-${arch}.tar.gz"
           stage_root="dist/stage"
-          stage_dir="${stage_root}/omne-systems-fs-${os}-${arch}"
+          stage_dir="${stage_root}/omne-fs-${os}-${arch}"
           rm -rf "${stage_root}"
           mkdir -p "${stage_dir}"
           cp "target/release/${bin_name}" "${stage_dir}/${bin_name}"
-          cp "crates/omne-systems-fs/README.md" "${stage_dir}/README.md"
-          cp "crates/omne-systems-fs/policy.example.toml" "${stage_dir}/policy.example.toml"
-          tar -C "${stage_root}" -czf "dist/${asset}" "omne-systems-fs-${os}-${arch}"
+          cp "crates/omne-fs/README.md" "${stage_dir}/README.md"
+          cp "crates/omne-fs/policy.example.toml" "${stage_dir}/policy.example.toml"
+          tar -C "${stage_root}" -czf "dist/${asset}" "omne-fs-${os}-${arch}"
           (
             cd dist
             shasum -a 256 "${asset}" | awk '{print $1 "  " $2}' >"${asset}.sha256"
@@ -63,18 +76,19 @@ jobs:
       - name: Package (zip)
         if: runner.os == 'Windows'
         shell: pwsh
+        working-directory: omne-runtime
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $os = "windows"
           $arch = $env:RUNNER_ARCH.ToLower()
           if ($arch -eq "x64") { $arch = "x64" }
           elseif ($arch -eq "arm64") { $arch = "arm64" }
-          $asset = "omne-systems-fs-$os-$arch.zip"
-          $stage = Join-Path "dist" ("omne-systems-fs-" + $os + "-" + $arch)
+          $asset = "omne-fs-$os-$arch.zip"
+          $stage = Join-Path "dist" ("omne-fs-" + $os + "-" + $arch)
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item "target\\release\\omne-systems-fs.exe" -Destination (Join-Path $stage "omne-systems-fs.exe") -Force
-          Copy-Item "crates\\omne-systems-fs\\README.md" -Destination (Join-Path $stage "README.md") -Force
-          Copy-Item "crates\\omne-systems-fs\\policy.example.toml" -Destination (Join-Path $stage "policy.example.toml") -Force
+          Copy-Item "target\\release\\omne-fs.exe" -Destination (Join-Path $stage "omne-fs.exe") -Force
+          Copy-Item "crates\\omne-fs\\README.md" -Destination (Join-Path $stage "README.md") -Force
+          Copy-Item "crates\\omne-fs\\policy.example.toml" -Destination (Join-Path $stage "policy.example.toml") -Force
           Compress-Archive -Path $stage -DestinationPath ("dist\\" + $asset) -Force
           $hash = (Get-FileHash ("dist\\" + $asset) -Algorithm SHA256).Hash.ToLower()
           "$hash  $asset" | Out-File -Encoding utf8NoBOM ("dist\\" + $asset + ".sha256")
@@ -83,7 +97,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-assets-${{ matrix.os }}
-          path: dist/*
+          path: omne-runtime/dist/*
 
   publish:
     name: Publish (GitHub Release)
@@ -92,17 +106,27 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout
+      - name: Checkout runtime
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: omne-runtime
+
+      - name: Checkout foundation
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: omne42/omne_foundation
+          path: omne_foundation
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
 
       - name: Run workspace tests
+        working-directory: omne-runtime
         run: cargo test --locked --workspace
 
       - name: Verify tag matches crate versions
         shell: bash
+        working-directory: omne-runtime
         run: |
           set -euo pipefail
           metadata_json="$(mktemp)"
@@ -118,7 +142,7 @@ jobs:
           with open(metadata_path, "r", encoding="utf-8") as f:
             m = json.load(f)
           versions = {p["name"]: p["version"] for p in m.get("packages", [])}
-          expected = ("omne-systems-fs", "omne-systems-fs-cli")
+          expected = ("omne-fs", "omne-fs-cli")
 
           missing = [name for name in expected if name not in versions]
           if missing:
