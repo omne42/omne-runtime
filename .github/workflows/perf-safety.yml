@@ -32,7 +32,7 @@ jobs:
           path: omne_foundation
 
       - name: Checkout foundation
-        uses: ./.github/actions/checkout-foundation
+        uses: ./omne-runtime/.github/actions/checkout-foundation
         with:
           repo-owner: ${{ github.repository_owner }}
           token: ${{ secrets.OMNE_REPO_READ_TOKEN || github.token }}
@@ -86,7 +86,7 @@ jobs:
           path: omne_foundation
 
       - name: Checkout foundation
-        uses: ./.github/actions/checkout-foundation
+        uses: ./omne-runtime/.github/actions/checkout-foundation
         with:
           repo-owner: ${{ github.repository_owner }}
           token: ${{ secrets.OMNE_REPO_READ_TOKEN || github.token }}
