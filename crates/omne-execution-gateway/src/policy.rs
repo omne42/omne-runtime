@@ -33,9 +33,10 @@ impl GatewayPolicy {
         let program_basename = Path::new(program)
             .file_name()
             .and_then(|name| name.to_str());
-        self.mutating_program_allowlist
-            .iter()
-            .any(|item| item == program || program_basename.is_some_and(|name| item == name))
+        self.mutating_program_allowlist.iter().any(|item| {
+            program_name_matches(item, program)
+                || program_basename.is_some_and(|name| program_name_matches(item, name))
+        })
     }
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
@@ -44,6 +45,32 @@ impl GatewayPolicy {
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
         Ok(policy)
     }
+}
+
+#[cfg(windows)]
+fn program_name_matches(expected: &str, actual: &str) -> bool {
+    if expected.eq_ignore_ascii_case(actual) {
+        return true;
+    }
+
+    executable_stem(expected)
+        .zip(executable_stem(actual))
+        .is_some_and(|(expected_stem, actual_stem)| expected_stem.eq_ignore_ascii_case(actual_stem))
+        || executable_stem(actual)
+            .is_some_and(|actual_stem| expected.eq_ignore_ascii_case(actual_stem))
+        || executable_stem(expected)
+            .is_some_and(|expected_stem| expected_stem.eq_ignore_ascii_case(actual))
+}
+
+#[cfg(not(windows))]
+fn program_name_matches(expected: &str, actual: &str) -> bool {
+    expected == actual
+}
+
+#[cfg(windows)]
+fn executable_stem(name: &str) -> Option<&str> {
+    name.get(..name.len().checked_sub(4)?)
+        .filter(|stem| name[stem.len()..].eq_ignore_ascii_case(".exe"))
 }
 
 #[cfg(test)]
@@ -69,5 +96,12 @@ mod tests {
     fn allowlist_matches_windows_program_basename_for_explicit_paths() {
         let policy = GatewayPolicy::default();
         assert!(policy.is_mutating_program_allowlisted("C:\\tools\\omne-fs-cli"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn allowlist_matches_windows_program_basename_with_exe_suffix() {
+        let policy = GatewayPolicy::default();
+        assert!(policy.is_mutating_program_allowlisted("C:\\tools\\OMNE-FS.EXE"));
     }
 }

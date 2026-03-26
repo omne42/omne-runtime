@@ -53,9 +53,11 @@ impl SystemPackageManager {
             Self::Dnf => SystemPackageInstallRecipe::new("dnf", &["install", "-y"], package),
             Self::Yum => SystemPackageInstallRecipe::new("yum", &["install", "-y"], package),
             Self::Apk => SystemPackageInstallRecipe::new("apk", &["add", "--no-cache"], package),
-            Self::Pacman => {
-                SystemPackageInstallRecipe::new("pacman", &["-Sy", "--noconfirm"], package)
-            }
+            Self::Pacman => SystemPackageInstallRecipe::new(
+                "pacman",
+                &["-S", "--needed", "--noconfirm"],
+                package,
+            ),
             Self::Zypper => SystemPackageInstallRecipe::new(
                 "zypper",
                 &["--non-interactive", "install"],
@@ -125,6 +127,22 @@ mod tests {
             SystemPackageInstallRecipe {
                 program: "apt-get",
                 args: vec!["install".to_string(), "-y".to_string(), "git".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn pacman_recipe_avoids_sync_only_install() {
+        assert_eq!(
+            SystemPackageManager::Pacman.install_recipe("git"),
+            SystemPackageInstallRecipe {
+                program: "pacman",
+                args: vec![
+                    "-S".to_string(),
+                    "--needed".to_string(),
+                    "--noconfirm".to_string(),
+                    "git".to_string(),
+                ],
             }
         );
     }

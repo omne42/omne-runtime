@@ -214,17 +214,17 @@ fn map_regular_open_error(
         return Error::InvalidPath(format!("path {} is a symlink", relative.display()));
     }
 
-    if err.kind() == std::io::ErrorKind::InvalidInput {
-        if let Ok(metadata) = fs::symlink_metadata(path) {
-            if metadata.file_type().is_symlink() {
-                return Error::InvalidPath(format!("path {} is a symlink", relative.display()));
-            }
-            if !metadata.is_file() {
-                return Error::InvalidPath(format!(
-                    "path {} is not a regular file",
-                    relative.display()
-                ));
-            }
+    if err.kind() == std::io::ErrorKind::InvalidInput
+        && let Ok(metadata) = fs::symlink_metadata(path)
+    {
+        if metadata.file_type().is_symlink() {
+            return Error::InvalidPath(format!("path {} is a symlink", relative.display()));
+        }
+        if !metadata.is_file() {
+            return Error::InvalidPath(format!(
+                "path {} is not a regular file",
+                relative.display()
+            ));
         }
     }
 
