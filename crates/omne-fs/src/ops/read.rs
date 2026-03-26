@@ -31,8 +31,7 @@ pub struct ReadRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadResponse {
     pub path: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_path: Option<PathBuf>,
+    pub requested_path: PathBuf,
     /// Always `false`: `read` fails instead of truncating.
     pub truncated: bool,
     /// Number of bytes scanned from disk before returning.
@@ -84,7 +83,7 @@ pub fn read_file(ctx: &Context, request: ReadRequest) -> Result<ReadResponse> {
 
     Ok(ReadResponse {
         path: relative,
-        requested_path: Some(requested_path),
+        requested_path,
         truncated: false,
         bytes_read,
         content,

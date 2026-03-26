@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use common::test_policy;
 use omne_fs::ops::{Context, GrepRequest, grep};
-use omne_fs::policy::RootMode;
+use policy_meta::WriteScope;
 
 #[test]
 fn grep_with_glob_skips_symlink_directories_instead_of_error() {
@@ -16,7 +16,7 @@ fn grep_with_glob_skips_symlink_directories_instead_of_error() {
     std::fs::write(dir.path().join("keep.txt"), "needle\n").expect("write");
     symlink(dir.path().join("real"), dir.path().join("linkdir")).expect("symlink dir");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let resp = grep(
         &ctx,
         GrepRequest {

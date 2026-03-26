@@ -12,13 +12,6 @@ pub struct AdvisoryLockGuard {
     file: std::fs::File,
 }
 
-impl AdvisoryLockGuard {
-    #[must_use]
-    pub fn file(&self) -> &std::fs::File {
-        &self.file
-    }
-}
-
 impl Drop for AdvisoryLockGuard {
     fn drop(&mut self) {
         let _ = self.file.unlock();

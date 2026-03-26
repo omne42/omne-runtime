@@ -76,7 +76,7 @@ fn build_glob_response(
     maybe_sort_glob_matches(&mut matches, stable_sort, sorted_hint);
     GlobResponse {
         matches,
-        truncated: diag.truncated(),
+        truncated: diag.scan_limit_reached(),
         scanned_files: diag.scanned_files(),
         scan_limit_reached: diag.scan_limit_reached(),
         scan_limit_reason: diag.scan_limit_reason(),

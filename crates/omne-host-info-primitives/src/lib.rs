@@ -5,6 +5,7 @@
 //! This crate owns policy-free helpers for:
 //! - recognizing the current host OS/architecture pair
 //! - mapping supported host pairs to canonical target triples
+//! - resolving an effective target triple from an optional override
 //! - resolving the current user's home directory from standard environment variables
 //! - inferring executable suffixes from target triples
 
@@ -74,6 +75,16 @@ pub fn detect_host_target_triple() -> Option<&'static str> {
     detect_host_platform().map(HostPlatform::target_triple)
 }
 
+pub fn resolve_target_triple(override_target: Option<&str>, host_target_triple: &str) -> String {
+    if let Some(raw) = override_target {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    host_target_triple.to_string()
+}
+
 pub fn executable_suffix_for_target(target_triple: &str) -> &'static str {
     if target_triple.contains("windows") {
         ".exe"
@@ -86,7 +97,7 @@ pub fn resolve_home_dir() -> Option<PathBuf> {
     resolve_home_dir_with(&|key| std::env::var_os(key))
 }
 
-pub fn resolve_home_dir_with<F>(env_lookup: &F) -> Option<PathBuf>
+fn resolve_home_dir_with<F>(env_lookup: &F) -> Option<PathBuf>
 where
     F: Fn(&str) -> Option<OsString>,
 {
@@ -148,6 +159,7 @@ mod tests {
     use super::{
         HostArchitecture, HostOperatingSystem, detect_host_target_triple,
         executable_suffix_for_target, host_platform_from_parts, resolve_home_dir_with,
+        resolve_target_triple,
     };
 
     #[test]
@@ -183,6 +195,18 @@ mod tests {
             ".exe"
         );
         assert_eq!(executable_suffix_for_target("x86_64-unknown-linux-gnu"), "");
+    }
+
+    #[test]
+    fn resolve_target_triple_prefers_trimmed_override() {
+        assert_eq!(
+            resolve_target_triple(Some("  custom-target  "), "x86_64-unknown-linux-gnu"),
+            "custom-target"
+        );
+        assert_eq!(
+            resolve_target_triple(Some("   "), "x86_64-unknown-linux-gnu"),
+            "x86_64-unknown-linux-gnu"
+        );
     }
 
     #[test]

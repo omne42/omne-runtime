@@ -124,19 +124,7 @@ pub fn extract_binary_from_archive(
     extract_binary_from_archive_reader(asset_name, Cursor::new(content), request)
 }
 
-pub fn extract_binary_from_archive_to_writer<W>(
-    asset_name: &str,
-    content: &[u8],
-    request: &BinaryArchiveRequest<'_>,
-    writer: &mut W,
-) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
-where
-    W: Write + ?Sized,
-{
-    extract_binary_from_archive_reader_to_writer(asset_name, Cursor::new(content), request, writer)
-}
-
-pub fn extract_binary_from_archive_reader<R>(
+fn extract_binary_from_archive_reader<R>(
     asset_name: &str,
     reader: R,
     request: &BinaryArchiveRequest<'_>,

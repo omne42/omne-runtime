@@ -25,15 +25,13 @@ pub const DEFAULT_TEXT_FILE_BYTES_LIMIT: usize = 1024 * 1024;
 pub const DEFAULT_TEXT_TREE_BYTES_LIMIT: usize = 8 * DEFAULT_TEXT_FILE_BYTES_LIMIT;
 
 pub use cap_root::{
-    Dir, EntryKind, File, MissingRootPolicy, OpenRootReport, RootDir, create_directory_component,
-    create_regular_file_at, entry_kind_at, materialize_root, open_ambient_root,
-    open_ambient_root_with_report, open_directory_component, open_regular_file_at, open_root,
-    open_root_with_report, read_directory_names, remove_file_or_symlink_at,
+    Dir, File, MissingRootPolicy, RootDir, create_directory_component, create_regular_file_at,
+    open_ambient_root, open_directory_component, open_regular_file_at, open_root,
 };
 pub use path_identity::filesystem_is_case_sensitive;
 pub use platform_open::{
-    is_symlink_open_error, is_symlink_or_reparse_open_error, open_readonly_nofollow,
-    open_regular_readonly_nofollow, open_regular_writeonly_nofollow, open_writeonly_nofollow,
+    is_symlink_or_reparse_open_error, open_readonly_nofollow, open_regular_readonly_nofollow,
+    open_regular_writeonly_nofollow, open_writeonly_nofollow,
 };
 pub use read_limited::{
     ReadUtf8Error, read_to_end_limited, read_to_end_limited_with_capacity, read_utf8_limited,

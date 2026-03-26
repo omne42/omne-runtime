@@ -484,7 +484,7 @@ fn build_grep_response(
     maybe_sort_grep_matches(&mut matches, stable_sort, sorted_hint);
     GrepResponse {
         matches,
-        truncated: diag.truncated(),
+        truncated: diag.scan_limit_reached(),
         skipped_too_large_files: counters.skipped_too_large_files,
         skipped_non_utf8_files: counters.skipped_non_utf8_files,
         scanned_files: diag.scanned_files(),

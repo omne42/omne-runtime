@@ -8,7 +8,7 @@ use omne_fs::ops::{
     MovePathRequest, StatRequest, WriteFileRequest, copy_file, delete, list_dir, mkdir, move_path,
     stat, write_file,
 };
-use omne_fs::policy::RootMode;
+use policy_meta::WriteScope;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -109,7 +109,7 @@ fn assert_secret_path_denied_any(err: omne_fs::Error, expected_paths: &[PathBuf]
     }
 }
 
-fn ctx_with_deny_glob(root: &Path, mode: RootMode) -> Context {
+fn ctx_with_deny_glob(root: &Path, mode: WriteScope) -> Context {
     let mut policy = test_policy(root, mode);
     policy.secrets.deny_globs = vec!["deny/**".to_string()];
     Context::new(policy).expect("ctx")
@@ -122,7 +122,7 @@ fn list_dir_lists_entries_in_sorted_order_and_truncates() {
     std::fs::write(dir.path().join("a.txt"), "a").expect("write");
     std::fs::create_dir_all(dir.path().join("sub")).expect("mkdir");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let resp = list_dir(
         &ctx,
         ListDirRequest {
@@ -134,7 +134,7 @@ fn list_dir_lists_entries_in_sorted_order_and_truncates() {
     .expect("list");
 
     assert_eq!(resp.path, PathBuf::from("."));
-    assert_eq!(resp.requested_path, Some(PathBuf::from(".")));
+    assert_eq!(resp.requested_path, PathBuf::from("."));
     assert_eq!(resp.skipped_io_errors, 0);
     assert!(resp.truncated);
     assert_eq!(resp.entries.len(), 2);
@@ -147,7 +147,7 @@ fn list_dir_allows_zero_max_entries() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "a").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let resp = list_dir(
         &ctx,
         ListDirRequest {
@@ -159,7 +159,7 @@ fn list_dir_allows_zero_max_entries() {
     .expect("list");
 
     assert_eq!(resp.path, PathBuf::from("."));
-    assert_eq!(resp.requested_path, Some(PathBuf::from(".")));
+    assert_eq!(resp.requested_path, PathBuf::from("."));
     assert_eq!(resp.skipped_io_errors, 0);
     assert!(resp.entries.is_empty());
     assert!(resp.truncated);
@@ -170,7 +170,7 @@ fn stat_reports_file_metadata() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "hi").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
     let resp = stat(
         &ctx,
         StatRequest {
@@ -195,7 +195,7 @@ fn stat_resolves_symlink_targets_with_requested_path() {
         return;
     }
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.stat = true;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -209,7 +209,7 @@ fn stat_resolves_symlink_targets_with_requested_path() {
     .expect("stat should resolve symlink to canonical target");
 
     assert_eq!(resp.path, PathBuf::from("real.txt"));
-    assert_eq!(resp.requested_path, Some(PathBuf::from("link.txt")));
+    assert_eq!(resp.requested_path, PathBuf::from("link.txt"));
     assert!(matches!(resp.kind, omne_fs::ops::StatKind::File));
     assert_eq!(resp.size_bytes, 2);
 }
@@ -218,7 +218,7 @@ fn stat_resolves_symlink_targets_with_requested_path() {
 fn mkdir_creates_directories_and_can_ignore_existing() {
     let dir = tempfile::tempdir().expect("tempdir");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let resp = mkdir(
         &ctx,
         MkdirRequest {
@@ -230,7 +230,7 @@ fn mkdir_creates_directories_and_can_ignore_existing() {
     )
     .expect("mkdir");
     assert_eq!(resp.path, PathBuf::from("sub"));
-    assert_eq!(resp.requested_path, Some(PathBuf::from("sub")));
+    assert_eq!(resp.requested_path, PathBuf::from("sub"));
     assert!(resp.created);
     assert!(dir.path().join("sub").is_dir());
 
@@ -245,7 +245,7 @@ fn mkdir_creates_directories_and_can_ignore_existing() {
     )
     .expect("mkdir");
     assert_eq!(resp.path, PathBuf::from("sub"));
-    assert_eq!(resp.requested_path, Some(PathBuf::from("sub")));
+    assert_eq!(resp.requested_path, PathBuf::from("sub"));
     assert!(!resp.created);
 }
 
@@ -255,7 +255,7 @@ fn mkdir_rejects_existing_paths_when_creation_is_not_allowed() {
     std::fs::create_dir_all(dir.path().join("sub")).expect("mkdir");
     std::fs::write(dir.path().join("file.txt"), "hi").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.mkdir = true;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -298,7 +298,7 @@ fn mkdir_rejects_symlink_targets() {
         return;
     }
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.mkdir = true;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -320,7 +320,7 @@ fn mkdir_rejects_symlink_targets() {
 #[test]
 fn mkdir_rejects_readonly_root() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.mkdir = true;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -341,7 +341,7 @@ fn mkdir_rejects_readonly_root() {
 fn write_file_creates_new_files_and_respects_overwrite() {
     let dir = tempfile::tempdir().expect("tempdir");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let resp = write_file(
         &ctx,
         WriteFileRequest {
@@ -354,7 +354,7 @@ fn write_file_creates_new_files_and_respects_overwrite() {
     )
     .expect("write");
     assert_eq!(resp.path, PathBuf::from("sub/file.txt"));
-    assert_eq!(resp.requested_path, Some(PathBuf::from("sub/file.txt")));
+    assert_eq!(resp.requested_path, PathBuf::from("sub/file.txt"));
     assert_eq!(resp.bytes_written, 2);
     assert!(resp.created);
     assert_eq!(
@@ -394,7 +394,7 @@ fn write_file_creates_new_files_and_respects_overwrite() {
     )
     .expect("write");
     assert_eq!(resp.path, PathBuf::from("sub/file.txt"));
-    assert_eq!(resp.requested_path, Some(PathBuf::from("sub/file.txt")));
+    assert_eq!(resp.requested_path, PathBuf::from("sub/file.txt"));
     assert_eq!(resp.bytes_written, 3);
     assert!(!resp.created);
     assert_eq!(
@@ -413,7 +413,7 @@ fn write_file_overwrite_preserves_existing_permissions() {
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640))
         .expect("set permissions");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let resp = write_file(
         &ctx,
         WriteFileRequest {
@@ -427,7 +427,7 @@ fn write_file_overwrite_preserves_existing_permissions() {
     .expect("write");
 
     assert_eq!(resp.path, PathBuf::from("file.txt"));
-    assert_eq!(resp.requested_path, Some(PathBuf::from("file.txt")));
+    assert_eq!(resp.requested_path, PathBuf::from("file.txt"));
     assert!(!resp.created);
     assert_eq!(std::fs::read_to_string(&target).expect("read"), "new");
 
@@ -444,7 +444,7 @@ fn write_file_rejects_directory_targets() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(dir.path().join("sub")).expect("mkdir");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.write = true;
     let ctx = Context::new(policy).expect("ctx");
     let err = write_file(
@@ -472,7 +472,7 @@ fn write_file_rejects_symlink_targets() {
         return;
     }
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.write = true;
     let ctx = Context::new(policy).expect("ctx");
     let err = write_file(
@@ -499,7 +499,7 @@ fn write_file_rejects_symlink_targets() {
 fn write_file_rejects_content_larger_than_max_write_bytes() {
     let dir = tempfile::tempdir().expect("tempdir");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.write = true;
     policy.limits.max_write_bytes = 1;
     let ctx = Context::new(policy).expect("ctx");
@@ -533,7 +533,7 @@ fn write_file_rejects_content_larger_than_max_write_bytes() {
 #[test]
 fn write_file_rejects_readonly_root() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.write = true;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -556,7 +556,7 @@ fn move_path_renames_entries() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "hi").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let resp = move_path(
         &ctx,
         MovePathRequest {
@@ -571,8 +571,8 @@ fn move_path_renames_entries() {
 
     assert_eq!(resp.from, PathBuf::from("a.txt"));
     assert_eq!(resp.to, PathBuf::from("b.txt"));
-    assert_eq!(resp.requested_from, Some(PathBuf::from("a.txt")));
-    assert_eq!(resp.requested_to, Some(PathBuf::from("b.txt")));
+    assert_eq!(resp.requested_from, PathBuf::from("a.txt"));
+    assert_eq!(resp.requested_to, PathBuf::from("b.txt"));
     assert!(resp.moved);
     assert_eq!(resp.kind, "file");
     assert!(!dir.path().join("a.txt").exists());
@@ -587,7 +587,7 @@ fn move_path_same_path_is_noop_when_source_exists() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("same.txt"), "hi").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let resp = move_path(
         &ctx,
         MovePathRequest {
@@ -602,8 +602,8 @@ fn move_path_same_path_is_noop_when_source_exists() {
 
     assert_eq!(resp.from, PathBuf::from("same.txt"));
     assert_eq!(resp.to, PathBuf::from("same.txt"));
-    assert_eq!(resp.requested_from, Some(PathBuf::from("same.txt")));
-    assert_eq!(resp.requested_to, Some(PathBuf::from("same.txt")));
+    assert_eq!(resp.requested_from, PathBuf::from("same.txt"));
+    assert_eq!(resp.requested_to, PathBuf::from("same.txt"));
     assert!(!resp.moved);
     assert_eq!(resp.kind, "file");
     assert_eq!(
@@ -615,7 +615,7 @@ fn move_path_same_path_is_noop_when_source_exists() {
 #[test]
 fn move_path_same_path_missing_source_reports_not_found() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
 
     let err = move_path(
         &ctx,
@@ -643,7 +643,7 @@ fn move_path_overwrite_replaces_existing_destination_file() {
     std::fs::write(dir.path().join("from.txt"), "new").expect("write source");
     std::fs::write(dir.path().join("to.txt"), "old").expect("write destination");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let resp = move_path(
         &ctx,
         MovePathRequest {
@@ -658,8 +658,8 @@ fn move_path_overwrite_replaces_existing_destination_file() {
 
     assert_eq!(resp.from, PathBuf::from("from.txt"));
     assert_eq!(resp.to, PathBuf::from("to.txt"));
-    assert_eq!(resp.requested_from, Some(PathBuf::from("from.txt")));
-    assert_eq!(resp.requested_to, Some(PathBuf::from("to.txt")));
+    assert_eq!(resp.requested_from, PathBuf::from("from.txt"));
+    assert_eq!(resp.requested_to, PathBuf::from("to.txt"));
     assert!(resp.moved);
     assert_eq!(resp.kind, "file");
     assert!(!dir.path().join("from.txt").exists());
@@ -674,7 +674,7 @@ fn move_path_create_parents_creates_missing_destination_parents() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("from.txt"), "hi").expect("write source");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let resp = move_path(
         &ctx,
         MovePathRequest {
@@ -689,8 +689,8 @@ fn move_path_create_parents_creates_missing_destination_parents() {
 
     assert_eq!(resp.from, PathBuf::from("from.txt"));
     assert_eq!(resp.to, PathBuf::from("nested/dir/to.txt"));
-    assert_eq!(resp.requested_from, Some(PathBuf::from("from.txt")));
-    assert_eq!(resp.requested_to, Some(PathBuf::from("nested/dir/to.txt")));
+    assert_eq!(resp.requested_from, PathBuf::from("from.txt"));
+    assert_eq!(resp.requested_to, PathBuf::from("nested/dir/to.txt"));
     assert!(resp.moved);
     assert_eq!(resp.kind, "file");
     assert!(!dir.path().join("from.txt").exists());
@@ -706,7 +706,7 @@ fn move_path_rejects_moving_directory_into_descendant() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(dir.path().join("a").join("sub")).expect("mkdir");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let err = move_path(
         &ctx,
         MovePathRequest {
@@ -730,7 +730,7 @@ fn move_path_rejects_readonly_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "hi").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.move_path = true;
     let ctx = Context::new(policy).expect("ctx");
     let err = move_path(
@@ -755,7 +755,7 @@ fn copy_file_copies_regular_files() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "hi").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let resp = copy_file(
         &ctx,
         CopyFileRequest {
@@ -770,8 +770,8 @@ fn copy_file_copies_regular_files() {
 
     assert_eq!(resp.from, PathBuf::from("a.txt"));
     assert_eq!(resp.to, PathBuf::from("b.txt"));
-    assert_eq!(resp.requested_from, Some(PathBuf::from("a.txt")));
-    assert_eq!(resp.requested_to, Some(PathBuf::from("b.txt")));
+    assert_eq!(resp.requested_from, PathBuf::from("a.txt"));
+    assert_eq!(resp.requested_to, PathBuf::from("b.txt"));
     assert!(resp.copied);
     assert_eq!(resp.bytes, 2);
     assert_eq!(
@@ -786,7 +786,7 @@ fn copy_file_overwrite_replaces_existing_destination_file() {
     std::fs::write(dir.path().join("from.txt"), "new").expect("write source");
     std::fs::write(dir.path().join("to.txt"), "old").expect("write destination");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let resp = copy_file(
         &ctx,
         CopyFileRequest {
@@ -801,8 +801,8 @@ fn copy_file_overwrite_replaces_existing_destination_file() {
 
     assert_eq!(resp.from, PathBuf::from("from.txt"));
     assert_eq!(resp.to, PathBuf::from("to.txt"));
-    assert_eq!(resp.requested_from, Some(PathBuf::from("from.txt")));
-    assert_eq!(resp.requested_to, Some(PathBuf::from("to.txt")));
+    assert_eq!(resp.requested_from, PathBuf::from("from.txt"));
+    assert_eq!(resp.requested_to, PathBuf::from("to.txt"));
     assert!(resp.copied);
     assert_eq!(resp.bytes, 3);
     assert_eq!(
@@ -820,7 +820,7 @@ fn copy_file_create_parents_creates_missing_destination_parents() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("from.txt"), "hi").expect("write source");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let resp = copy_file(
         &ctx,
         CopyFileRequest {
@@ -835,8 +835,8 @@ fn copy_file_create_parents_creates_missing_destination_parents() {
 
     assert_eq!(resp.from, PathBuf::from("from.txt"));
     assert_eq!(resp.to, PathBuf::from("nested/dir/to.txt"));
-    assert_eq!(resp.requested_from, Some(PathBuf::from("from.txt")));
-    assert_eq!(resp.requested_to, Some(PathBuf::from("nested/dir/to.txt")));
+    assert_eq!(resp.requested_from, PathBuf::from("from.txt"));
+    assert_eq!(resp.requested_to, PathBuf::from("nested/dir/to.txt"));
     assert!(resp.copied);
     assert_eq!(resp.bytes, 2);
     assert_eq!(
@@ -853,7 +853,7 @@ fn copy_file_create_parents_creates_missing_destination_parents() {
 #[test]
 fn copy_file_same_path_still_validates_source_exists() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
 
     let err = copy_file(
         &ctx,
@@ -880,7 +880,7 @@ fn copy_file_same_path_is_a_noop_when_source_exists() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("same.txt"), "hi").expect("write");
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let resp = copy_file(
         &ctx,
         CopyFileRequest {
@@ -895,8 +895,8 @@ fn copy_file_same_path_is_a_noop_when_source_exists() {
 
     assert_eq!(resp.from, PathBuf::from("same.txt"));
     assert_eq!(resp.to, PathBuf::from("same.txt"));
-    assert_eq!(resp.requested_from, Some(PathBuf::from("same.txt")));
-    assert_eq!(resp.requested_to, Some(PathBuf::from("same.txt")));
+    assert_eq!(resp.requested_from, PathBuf::from("same.txt"));
+    assert_eq!(resp.requested_to, PathBuf::from("same.txt"));
     assert!(!resp.copied);
     assert_eq!(resp.bytes, 0);
     assert_eq!(
@@ -914,7 +914,7 @@ fn copy_file_same_path_is_noop_even_when_file_exceeds_max_write_bytes() {
     )
     .expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.copy_file = true;
     policy.limits.max_write_bytes = 1;
     let ctx = Context::new(policy).expect("ctx");
@@ -933,8 +933,8 @@ fn copy_file_same_path_is_noop_even_when_file_exceeds_max_write_bytes() {
 
     assert_eq!(resp.from, PathBuf::from("same.txt"));
     assert_eq!(resp.to, PathBuf::from("same.txt"));
-    assert_eq!(resp.requested_from, Some(PathBuf::from("same.txt")));
-    assert_eq!(resp.requested_to, Some(PathBuf::from("same.txt")));
+    assert_eq!(resp.requested_from, PathBuf::from("same.txt"));
+    assert_eq!(resp.requested_to, PathBuf::from("same.txt"));
     assert!(!resp.copied);
     assert_eq!(resp.bytes, 0);
 }
@@ -948,7 +948,7 @@ fn copy_file_rejects_symlink_sources() {
         return;
     }
 
-    let ctx = Context::new(test_policy(dir.path(), RootMode::WorkspaceWrite)).expect("ctx");
+    let ctx = Context::new(test_policy(dir.path(), WriteScope::WorkspaceWrite)).expect("ctx");
     let err = copy_file(
         &ctx,
         CopyFileRequest {
@@ -971,7 +971,7 @@ fn copy_file_rejects_readonly_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "hi").expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.permissions.copy_file = true;
     let ctx = Context::new(policy).expect("ctx");
     let err = copy_file(

@@ -123,7 +123,7 @@ fn handle_existing_target_dir(
         if ignore_existing {
             return Ok(MkdirResponse {
                 path: context.relative.to_path_buf(),
-                requested_path: Some(context.requested_path.to_path_buf()),
+                requested_path: context.requested_path.to_path_buf(),
                 created: false,
             });
         }
@@ -147,8 +147,7 @@ pub struct MkdirRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MkdirResponse {
     pub path: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_path: Option<PathBuf>,
+    pub requested_path: PathBuf,
     pub created: bool,
 }
 
@@ -282,7 +281,7 @@ pub fn mkdir(ctx: &Context, request: MkdirRequest) -> Result<MkdirResponse> {
             }
             Ok(MkdirResponse {
                 path: relative,
-                requested_path: Some(requested_path),
+                requested_path,
                 created: true,
             })
         }

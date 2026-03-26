@@ -7,7 +7,7 @@ use std::process::Command;
 
 use common::test_policy;
 use omne_fs::ops::{Context, DeleteRequest, EditRequest, delete, edit_range};
-use omne_fs::policy::RootMode;
+use policy_meta::WriteScope;
 
 fn run_git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -40,7 +40,7 @@ fn init_repo_with_file(content: &str) -> tempfile::TempDir {
 #[test]
 fn edit_can_fall_back_to_git_tracked_clean_file_when_disabled_by_policy() {
     let dir = init_repo_with_file("hello\n");
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.edit = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -70,7 +70,7 @@ fn edit_fallback_rejects_dirty_file() {
     let dir = init_repo_with_file("hello\n");
     std::fs::write(dir.path().join("file.txt"), "dirty\n").expect("write dirty");
 
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.edit = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -100,7 +100,7 @@ fn edit_fallback_rejects_dirty_file() {
 #[test]
 fn delete_can_fall_back_to_git_tracked_clean_file_when_disabled_by_policy() {
     let dir = init_repo_with_file("hello\n");
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.delete = false;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -122,7 +122,7 @@ fn delete_can_fall_back_to_git_tracked_clean_file_when_disabled_by_policy() {
 #[test]
 fn delete_fallback_rejects_recursive_requests() {
     let dir = init_repo_with_file("hello\n");
-    let mut policy = test_policy(dir.path(), RootMode::WorkspaceWrite);
+    let mut policy = test_policy(dir.path(), WriteScope::WorkspaceWrite);
     policy.permissions.delete = false;
     let ctx = Context::new(policy).expect("ctx");
 

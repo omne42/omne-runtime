@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::types::IsolationLevel;
+use policy_meta::ExecutionIsolation;
 
 #[derive(Debug, Error)]
 pub enum ExecError {
@@ -10,8 +10,8 @@ pub enum ExecError {
         "security policy violation: requested isolation {requested:?}, but host only supports {supported:?}"
     )]
     IsolationNotSupported {
-        requested: IsolationLevel,
-        supported: IsolationLevel,
+        requested: ExecutionIsolation,
+        supported: ExecutionIsolation,
     },
 
     #[error("workspace root does not exist or is inaccessible: {path}")]
@@ -27,8 +27,8 @@ pub enum ExecError {
         "request claims policy-default isolation {requested:?}, but gateway policy default is {policy_default:?}"
     )]
     PolicyDefaultIsolationMismatch {
-        requested: IsolationLevel,
-        policy_default: IsolationLevel,
+        requested: ExecutionIsolation,
+        policy_default: ExecutionIsolation,
     },
 
     #[error(

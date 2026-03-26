@@ -18,27 +18,9 @@ pub(crate) mod path_utils_internal {
         validate_root_relative_glob_pattern,
     };
 }
-mod platform_open;
 pub mod policy;
 #[cfg(feature = "policy-io")]
 pub mod policy_io;
-pub mod redaction;
+mod redaction;
 
 pub use error::{Error, Result};
-
-pub use ops::{
-    Context, CopyFileRequest, CopyFileResponse, DeleteKind, DeleteRequest, DeleteResponse,
-    EditRequest, EditResponse, GlobRequest, GlobResponse, GrepMatch, GrepRequest, GrepResponse,
-    ListDirEntry, ListDirRequest, ListDirResponse, MkdirRequest, MkdirResponse, MovePathRequest,
-    MovePathResponse, PatchRequest, PatchResponse, ReadRequest, ReadResponse, ScanLimitReason,
-    StatKind, StatRequest, StatResponse, WriteFileRequest, WriteFileResponse, glob_paths, grep,
-};
-pub use ops::{
-    apply_unified_patch, copy_file, delete, edit_range, list_dir, mkdir, move_path, read_file,
-    stat, write_file,
-};
-
-pub use policy::{
-    Limits, PathRules, Permissions, PolicyMetaV1, PolicyMetadata, Root, RootMode, SandboxPolicy,
-    SecretRules, TraversalRules,
-};

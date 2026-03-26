@@ -41,8 +41,7 @@ pub struct PatchRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatchResponse {
     pub path: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_path: Option<PathBuf>,
+    pub requested_path: PathBuf,
     /// Final on-disk file size when the patch changes content; `0` for a no-op patch.
     pub bytes_written: u64,
 }
@@ -143,7 +142,7 @@ pub fn apply_unified_patch(ctx: &Context, request: PatchRequest) -> Result<Patch
     }
     Ok(PatchResponse {
         path: relative,
-        requested_path: Some(requested_path),
+        requested_path,
         bytes_written: if changed { updated_len } else { 0 },
     })
 }

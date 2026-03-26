@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::policy::RootMode;
+use policy_meta::WriteScope;
 
 use super::*;
 
@@ -177,7 +177,7 @@ fn walk_traversal_files_rejects_walk_root_outside_root() {
     use std::time::Instant;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let policy = SandboxPolicy::single_root("root", dir.path(), RootMode::ReadOnly);
+    let policy = SandboxPolicy::single_root("root", dir.path(), WriteScope::ReadOnly);
     let ctx = Context::new(policy).expect("ctx");
 
     let root_path = ctx.canonical_root("root").expect("root").to_path_buf();
@@ -269,7 +269,7 @@ fn traversal_skip_globs_apply_to_directories_via_probe_matrix_does_not_recurse_s
         )
         .expect("write");
 
-        let mut policy = SandboxPolicy::single_root("root", dir.path(), RootMode::ReadOnly);
+        let mut policy = SandboxPolicy::single_root("root", dir.path(), WriteScope::ReadOnly);
         policy.traversal.skip_globs = vec![case.pattern.to_string()];
         let ctx = Context::new(policy).expect("ctx");
 
@@ -366,7 +366,7 @@ fn normalize_path_lexical_preserves_leading_parent_dirs() {
 #[test]
 fn requested_path_for_dot_is_not_empty() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let policy = SandboxPolicy::single_root("root", dir.path(), RootMode::ReadOnly);
+    let policy = SandboxPolicy::single_root("root", dir.path(), WriteScope::ReadOnly);
     let ctx = Context::new(policy).expect("ctx");
 
     let (_canonical, relative, requested_path) = ctx
@@ -386,7 +386,7 @@ fn absolute_path_under_declared_symlink_root_preserves_requested_path() {
     std::os::unix::fs::symlink(&real_root, &alias_root).expect("create alias symlink root");
     fs::write(alias_root.join("file.txt"), "ok").expect("write file");
 
-    let mut policy = SandboxPolicy::single_root("root", &alias_root, RootMode::ReadOnly);
+    let mut policy = SandboxPolicy::single_root("root", &alias_root, WriteScope::ReadOnly);
     policy.paths.allow_absolute = true;
     let ctx = Context::new(policy).expect("ctx");
 
@@ -397,30 +397,6 @@ fn absolute_path_under_declared_symlink_root_preserves_requested_path() {
 
     assert_eq!(relative, PathBuf::from("file.txt"));
     assert_eq!(requested_path, PathBuf::from("file.txt"));
-}
-
-#[test]
-fn context_builder_build_matches_context_new() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let policy = SandboxPolicy::single_root("root", dir.path(), RootMode::ReadOnly);
-
-    let new_ctx = Context::new(policy.clone()).expect("ctx from new");
-    let builder_ctx = Context::builder(policy).build().expect("ctx from builder");
-
-    assert_eq!(
-        new_ctx.policy().roots.len(),
-        builder_ctx.policy().roots.len()
-    );
-    assert_eq!(
-        new_ctx.policy().roots[0].id,
-        builder_ctx.policy().roots[0].id
-    );
-    assert_eq!(
-        new_ctx.canonical_root("root").expect("root from new"),
-        builder_ctx
-            .canonical_root("root")
-            .expect("root from builder")
-    );
 }
 
 #[test]

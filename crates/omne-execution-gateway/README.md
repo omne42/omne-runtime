@@ -7,7 +7,7 @@ Cross-platform command execution gateway for agent runtimes and tooling, with ex
 `omne-execution-gateway` provides one consistent execution boundary for `program + args + cwd` command calls.
 
 It prevents fragmented per-caller safety logic and provides deterministic decisions with structured audit data.
-Those audit and CLI surfaces also expose a canonical `policy-meta` projection for requested isolation.
+Audit surfaces expose a canonical `policy-meta` projection for requested isolation.
 
 ## Core Guarantees
 
@@ -15,7 +15,7 @@ Those audit and CLI surfaces also expose a canonical `policy-meta` projection fo
 - fail-closed if requested isolation exceeds host support
 - fail-closed if a request marked as `policy_default` no longer matches the gateway's current policy default
 - workspace boundary enforcement (`cwd` must be inside `workspace_root`, and execution uses the canonicalized working directory)
-- declared-mutation enforcement via allowlisted filesystem tool programs
+- declared-mutation enforcement via allowlisted mutating programs
 - structured decision events for audit/logging
 
 ## Important Scope Notes
@@ -39,14 +39,15 @@ If `Strict` is requested but unsupported, execution is denied (no silent downgra
 ## Quick Usage
 
 ```rust
-use omne_execution_gateway::{ExecGateway, ExecRequest, IsolationLevel};
+use omne_execution_gateway::{ExecGateway, ExecRequest};
+use policy_meta::ExecutionIsolation;
 
 let gateway = ExecGateway::new();
 let req = ExecRequest::new(
     "sh",
     vec!["-lc", "echo hello"],
     ".",
-    IsolationLevel::BestEffort,
+    ExecutionIsolation::BestEffort,
     ".",
 );
 let execution = gateway.execute(&req);
@@ -64,7 +65,7 @@ cargo run --bin omne-execution-capability -- --json
 cargo run --bin omne-execution-capability -- --policy ./policy.json --json
 ```
 
-`--json` emits both raw isolation fields and canonical `policy-meta` fragments for machine consumption.
+`--json` emits the raw capability fields directly for machine consumption.
 `--policy` lets capability reporting reflect a specific `GatewayPolicy` file instead of defaults.
 
 ## CLI Adapter
@@ -75,8 +76,12 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 
 ## Documentation
 
-- docs source: `docs/`
-- site config: `mkdocs.yml`
-- auto deployment: `.github/workflows/docs-pages.yml`
+- `docs/docs-system-map.md`
+- `docs/architecture/system-boundaries.md`
+- `docs/architecture/source-layout.md`
+- `docs/index.md`
+- `../../docs/workspace-crate-boundaries.md`
+
+`docs/` is the source of truth. `site/` is generated output, not the maintained record.
 
 GitHub Pages deployment is fully automated via GitHub Actions and includes version selection (powered by `mike`).

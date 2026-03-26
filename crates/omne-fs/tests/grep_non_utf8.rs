@@ -4,7 +4,7 @@ mod common;
 
 use common::test_policy;
 use omne_fs::ops::{Context, GrepRequest, grep};
-use omne_fs::policy::RootMode;
+use policy_meta::WriteScope;
 
 #[test]
 fn grep_skips_non_utf8_when_invalid_bytes_appear_after_capped_prefix() {
@@ -15,7 +15,7 @@ fn grep_skips_non_utf8_when_invalid_bytes_appear_after_capped_prefix() {
     first_line.extend_from_slice(b"needle\n");
     std::fs::write(dir.path().join("bin_after_cap.txt"), &first_line).expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_line_bytes = 16;
     policy.limits.max_read_bytes = 128 * 1024;
     let ctx = Context::new(policy).expect("ctx");
@@ -44,7 +44,7 @@ fn grep_skips_non_utf8_when_query_matches_before_invalid_bytes_after_cap() {
     line.push(b'\n');
     std::fs::write(dir.path().join("bin_after_cap_hit.txt"), &line).expect("write");
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_line_bytes = 16;
     policy.limits.max_read_bytes = 128 * 1024;
     let ctx = Context::new(policy).expect("ctx");

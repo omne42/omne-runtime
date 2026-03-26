@@ -13,7 +13,7 @@ use std::os::unix::process::CommandExt;
 use crate::audit::{SandboxRuntimeMechanism, SandboxRuntimeObservation, SandboxRuntimeOutcome};
 use crate::error::ExecResult;
 use crate::sandbox::SandboxMonitor;
-use crate::types::IsolationLevel;
+use policy_meta::ExecutionIsolation;
 
 const BEST_EFFORT_MONITOR_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -49,25 +49,25 @@ impl LinuxSandboxMonitor {
     }
 }
 
-pub fn detect_supported_isolation() -> IsolationLevel {
+pub(crate) fn detect_supported_isolation() -> ExecutionIsolation {
     if landlock_strict_is_available() {
-        IsolationLevel::Strict
+        ExecutionIsolation::Strict
     } else {
-        IsolationLevel::BestEffort
+        ExecutionIsolation::BestEffort
     }
 }
 
-pub fn apply_sandbox(
+pub(crate) fn apply_sandbox(
     command: &mut Command,
-    required_isolation: IsolationLevel,
+    required_isolation: ExecutionIsolation,
     workspace_root: &Path,
 ) -> ExecResult<SandboxMonitor> {
     match required_isolation {
-        IsolationLevel::None => {
+        ExecutionIsolation::None => {
             command.env("AGENT_EXEC_GATEWAY_WORKSPACE_ROOT", workspace_root);
             Ok(SandboxMonitor::none())
         }
-        IsolationLevel::BestEffort => {
+        ExecutionIsolation::BestEffort => {
             let workspace_root = workspace_root.to_path_buf();
             let workspace_root_for_pre_exec = workspace_root.clone();
             let (parent_stream, mut child_stream) = UnixStream::pair()
@@ -96,7 +96,7 @@ pub fn apply_sandbox(
                 },
             ))
         }
-        IsolationLevel::Strict => {
+        ExecutionIsolation::Strict => {
             let workspace_root = workspace_root.to_path_buf();
             let workspace_root_for_pre_exec = workspace_root.clone();
             // SAFETY:

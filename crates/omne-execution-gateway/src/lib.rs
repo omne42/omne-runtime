@@ -1,12 +1,12 @@
 #![deny(unsafe_code)]
 
-pub mod audit;
-pub mod audit_log;
-pub mod error;
-pub mod gateway;
-pub mod policy;
-pub mod sandbox;
-pub mod types;
+mod audit;
+mod audit_log;
+mod error;
+mod gateway;
+mod policy;
+mod sandbox;
+mod types;
 
 pub use crate::audit::requested_policy_meta;
 pub use crate::audit::{
@@ -15,5 +15,5 @@ pub use crate::audit::{
 };
 pub use crate::error::{ExecError, ExecResult};
 pub use crate::gateway::{CapabilityReport, ExecGateway, ExecutionOutcome, PreflightError};
-pub use crate::types::{ExecRequest, IsolationLevel, RequestResolution, RequestedIsolationSource};
-pub use policy_meta::{PolicyMetaV1, SpecVersion};
+pub use crate::policy::GatewayPolicy;
+pub use crate::types::{ExecRequest, RequestResolution, RequestedIsolationSource};

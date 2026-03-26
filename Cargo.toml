@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/omne-artifact-install-primitives",
   "crates/omne-archive-primitives",
   "crates/omne-fs",
   "crates/omne-fs/cli",

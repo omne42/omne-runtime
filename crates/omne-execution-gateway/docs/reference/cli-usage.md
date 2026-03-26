@@ -13,8 +13,8 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 ```json
 {
   "allow_isolation_none": false,
-  "enforce_fs_tool_for_mutation": true,
-  "fs_tool_program_allowlist": ["omne-fs", "omne-fs-cli"],
+  "enforce_allowlisted_program_for_mutation": true,
+  "mutating_program_allowlist": ["omne-fs", "omne-fs-cli"],
   "default_isolation": "best_effort",
   "audit_log_path": "/tmp/omne_exec_audit.jsonl"
 }
@@ -43,14 +43,6 @@ One JSON line with:
 
 - `request_resolution` (authoritative normalized request plus isolation provenance)
 - `event` (authoritative full `ExecEvent` payload)
-- `decision`
-- `reason`
-- `requested_isolation`
-- `requested_isolation_source`
-- `requested_policy_meta`
-- `policy_default_isolation`
-- `supported_isolation`
-- `sandbox_runtime` (when available)
 - `exit_code`
 - `signal`
 - `error`
@@ -87,15 +79,9 @@ Example output fragment:
     "declared_mutation": false,
     "reason": null
   },
-  "decision": "run",
-  "requested_isolation": "best_effort",
-  "requested_isolation_source": "policy_default",
-  "requested_policy_meta": {
-    "version": 1,
-    "execution_isolation": "best_effort"
-  },
-  "policy_default_isolation": "best_effort",
-  "supported_isolation": "best_effort"
+  "exit_code": 0,
+  "signal": null,
+  "error": null
 }
 ```
 
@@ -103,8 +89,8 @@ Example output fragment:
 request payload shape (`program`, `args`, `cwd`, `workspace_root`, `declared_mutation`) and makes
 defaulted isolation decisions explicit through `input_required_isolation`,
 `requested_isolation_source`, and `policy_default_isolation`.
-`event` is the canonical shape and includes fields that the compatibility top-level projection omits
-such as `program`, canonicalized `cwd`, canonicalized `workspace_root`, and `declared_mutation`.
+`event` is the canonical execution/audit shape and includes canonicalized `cwd`,
+canonicalized `workspace_root`, and declared mutation intent.
 `requested_isolation_source` explains whether the effective isolation came from the request payload
 or from `policy.default_isolation`.
 

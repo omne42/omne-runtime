@@ -17,7 +17,7 @@ This note summarizes the risk-boundary delivery items completed in 2026H1.
   - mutating commands require this flag: `edit`, `patch`, `mkdir`, `write`, `delete`, `move`, `copy-file`.
 - Error classification contract:
   - `reason_code`, `risk_tag`, `policy_rule` mapping in `src/error.rs`,
-  - `DecisionTrace` in `src/ops/context.rs` for unified audit metadata.
+  - `omne_fs::ops::DecisionTrace` for unified audit metadata.
 - Adversarial regression tests:
   - encoded traversal token literal handling,
   - prompt-like path injection cases,

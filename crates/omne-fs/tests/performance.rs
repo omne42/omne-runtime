@@ -8,7 +8,7 @@ use omne_fs::ops::{Context, ListDirRequest, ReadRequest, list_dir, read_file};
 use omne_fs::ops::{GlobRequest, glob_paths};
 #[cfg(feature = "grep")]
 use omne_fs::ops::{GrepRequest, grep};
-use omne_fs::policy::RootMode;
+use policy_meta::WriteScope;
 
 // Large-input correctness tests (not micro-benchmarks).
 // Large enough to reliably exercise list truncation on a non-trivial directory.
@@ -31,7 +31,7 @@ fn prepare_large_file_fixture() -> (tempfile::TempDir, String) {
 }
 
 fn build_read_context(dir: &tempfile::TempDir, max_read_bytes: u64) -> Context {
-    let mut policy = all_permissions_test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = all_permissions_test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_read_bytes = max_read_bytes;
     Context::new(policy).expect("ctx")
 }
@@ -58,8 +58,11 @@ fn list_dir_handles_large_directory_with_small_limit() {
         std::fs::write(dir.path().join(name), "x").expect("write");
     }
 
-    let ctx =
-        Context::new(all_permissions_test_policy(dir.path(), RootMode::ReadOnly)).expect("ctx");
+    let ctx = Context::new(all_permissions_test_policy(
+        dir.path(),
+        WriteScope::ReadOnly,
+    ))
+    .expect("ctx");
     let resp = list_dir(
         &ctx,
         ListDirRequest {
@@ -71,7 +74,7 @@ fn list_dir_handles_large_directory_with_small_limit() {
     .expect("list");
 
     assert_eq!(resp.path, PathBuf::from("."));
-    assert_eq!(resp.requested_path, Some(PathBuf::from(".")));
+    assert_eq!(resp.requested_path, PathBuf::from("."));
     assert!(resp.truncated);
     assert_eq!(resp.entries.len(), LIST_LIMIT);
     assert_eq!(resp.skipped_io_errors, 0);
@@ -102,7 +105,7 @@ fn read_handles_large_file_within_limit() {
     .expect("read");
 
     assert_eq!(resp.path, PathBuf::from("large.txt"));
-    assert_eq!(resp.requested_path, Some(PathBuf::from("large.txt")));
+    assert_eq!(resp.requested_path, PathBuf::from("large.txt"));
     assert_eq!(resp.bytes_read, content_len);
     assert_eq!(resp.content.len(), content.len());
     assert!(resp.content.starts_with(READ_LINE));
@@ -147,7 +150,7 @@ fn read_rejects_file_exceeding_max_read_bytes() {
 #[test]
 fn grep_handles_many_long_path_matches_near_result_cap() {
     let dir = prepare_many_long_path_match_files(MATCH_FILE_COUNT);
-    let mut policy = all_permissions_test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = all_permissions_test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_results = MATCH_RESULT_LIMIT;
     policy.limits.max_line_bytes = 256;
     let ctx = Context::new(policy).expect("ctx");
@@ -172,7 +175,7 @@ fn grep_handles_many_long_path_matches_near_result_cap() {
 #[test]
 fn glob_handles_many_long_path_matches_near_result_cap() {
     let dir = prepare_many_long_path_match_files(MATCH_FILE_COUNT);
-    let mut policy = all_permissions_test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = all_permissions_test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_results = MATCH_RESULT_LIMIT;
     let ctx = Context::new(policy).expect("ctx");
 

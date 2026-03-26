@@ -10,9 +10,10 @@ use std::path::PathBuf;
 
 #[cfg(any(feature = "glob", feature = "grep"))]
 use globset::GlobSet;
+use policy_meta::WriteScope;
 use serde::{Deserialize, Serialize};
 
-use crate::policy::{Permissions, RootMode, SandboxPolicy};
+use crate::policy::{Permissions, SandboxPolicy};
 use crate::redaction::SecretRedactor;
 
 mod context;
@@ -36,6 +37,7 @@ mod transfer;
 mod traversal;
 mod write;
 
+pub use context::DecisionTrace;
 pub use copy_file::{CopyFileRequest, CopyFileResponse, copy_file};
 pub use delete::{DeleteKind, DeleteRequest, DeleteResponse, delete};
 pub use edit::{EditRequest, EditResponse, edit_range};
@@ -60,20 +62,11 @@ pub struct Context {
     traversal_skip_globs: Option<GlobSet>,
 }
 
-/// Builder for [`Context`].
-///
-/// Currently this is equivalent to `Context::new(policy)` and exists to provide
-/// a forward-compatible construction entrypoint.
-#[derive(Debug)]
-pub struct ContextBuilder {
-    policy: SandboxPolicy,
-}
-
 #[derive(Debug)]
 struct RootRuntime {
     declared_path: PathBuf,
     canonical_path: PathBuf,
-    mode: RootMode,
+    write_scope: WriteScope,
 }
 
 impl std::fmt::Debug for Context {

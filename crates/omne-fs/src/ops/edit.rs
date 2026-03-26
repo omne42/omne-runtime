@@ -19,8 +19,7 @@ pub struct EditRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditResponse {
     pub path: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_path: Option<PathBuf>,
+    pub requested_path: PathBuf,
     pub bytes_written: u64,
 }
 
@@ -103,14 +102,14 @@ pub fn edit_range(ctx: &Context, request: EditRequest) -> Result<EditResponse> {
         let output_len = usize_to_u64(content.len(), &relative, "output size")?;
         return Ok(EditResponse {
             path: relative,
-            requested_path: Some(requested_path),
+            requested_path,
             bytes_written: output_len,
         });
     }
 
     Ok(EditResponse {
         path: relative,
-        requested_path: Some(requested_path),
+        requested_path,
         bytes_written: 0,
     })
 }

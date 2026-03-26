@@ -2,6 +2,13 @@
 
 Low-level archive/compression primitives shared across callers.
 
+## Documentation
+
+- `docs/docs-system-map.md`
+- `docs/architecture/system-boundaries.md`
+- `docs/architecture/source-layout.md`
+- `../../docs/workspace-crate-boundaries.md`
+
 ## Scope
 
 - archive format detection for binary delivery assets
@@ -15,3 +22,10 @@ Low-level archive/compression primitives shared across callers.
 - filesystem writes, chmod, or atomic replacement
 - hash verification or source trust policy
 - product-specific install error mapping
+
+## Verification
+
+```bash
+cargo test -p omne-archive-primitives
+../../scripts/check-docs-system.sh
+```

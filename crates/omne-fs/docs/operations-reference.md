@@ -21,7 +21,7 @@ Mutating operations additionally require:
 
 Request: `ReadRequest { root_id, path, start_line?, end_line? }`
 
-Response: `ReadResponse { path, requested_path?, truncated=false, bytes_read, content, start_line?, end_line? }`
+Response: `ReadResponse { path, requested_path, truncated=false, bytes_read, content, start_line?, end_line? }`
 
 Notes:
 
@@ -34,7 +34,7 @@ Notes:
 
 Request: `ListDirRequest { root_id, path, max_entries? }`
 
-Response: `ListDirResponse { path, requested_path?, entries, truncated, skipped_io_errors }`
+Response: `ListDirResponse { path, requested_path, entries, truncated, skipped_io_errors }`
 
 Notes:
 
@@ -81,7 +81,7 @@ Notes:
 
 Request: `StatRequest { root_id, path }`
 
-Response: `StatResponse { path, requested_path?, type, size_bytes, modified_ms?, accessed_ms?, created_ms?, readonly }`
+Response: `StatResponse { path, requested_path, type, size_bytes, modified_ms?, accessed_ms?, created_ms?, readonly }`
 
 Notes:
 
@@ -92,7 +92,7 @@ Notes:
 
 Request: `EditRequest { root_id, path, start_line, end_line, replacement }`
 
-Response: `EditResponse { path, requested_path?, bytes_written }`
+Response: `EditResponse { path, requested_path, bytes_written }`
 
 Notes:
 
@@ -105,7 +105,7 @@ Notes:
 
 Request: `PatchRequest { root_id, path, patch }`
 
-Response: `PatchResponse { path, requested_path?, bytes_written }`
+Response: `PatchResponse { path, requested_path, bytes_written }`
 
 Notes:
 
@@ -118,7 +118,7 @@ Notes:
 
 Request: `MkdirRequest { root_id, path, create_parents=false, ignore_existing=false }`
 
-Response: `MkdirResponse { path, requested_path?, created }`
+Response: `MkdirResponse { path, requested_path, created }`
 
 Notes:
 
@@ -129,7 +129,7 @@ Notes:
 
 Request: `WriteFileRequest { root_id, path, content, overwrite=false, create_parents=false }`
 
-Response: `WriteFileResponse { path, requested_path?, bytes_written, created }`
+Response: `WriteFileResponse { path, requested_path, bytes_written, created }`
 
 Notes:
 
@@ -141,7 +141,7 @@ Notes:
 
 Request: `MovePathRequest { root_id, from, to, overwrite=false, create_parents=false }`
 
-Response: `MovePathResponse { from, to, requested_from?, requested_to?, moved, type }`
+Response: `MovePathResponse { from, to, requested_from, requested_to, moved, type }`
 
 Notes:
 
@@ -153,7 +153,7 @@ Notes:
 
 Request: `CopyFileRequest { root_id, from, to, overwrite=false, create_parents=false }`
 
-Response: `CopyFileResponse { from, to, requested_from?, requested_to?, copied, bytes }`
+Response: `CopyFileResponse { from, to, requested_from, requested_to, copied, bytes }`
 
 Notes:
 
@@ -165,7 +165,7 @@ Notes:
 
 Request: `DeleteRequest { root_id, path, recursive=false, ignore_missing=false }`
 
-Response: `DeleteResponse { path, requested_path?, deleted, type }`
+Response: `DeleteResponse { path, requested_path, deleted, type }`
 
 `type` values: `file | dir | symlink | other | missing`.
 

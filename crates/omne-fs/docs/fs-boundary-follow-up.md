@@ -14,7 +14,7 @@ Do not group code by "it has platform branches". Group it by abstraction ownersh
 
 ## Decisions
 
-### Keep `runtime-assets-kit::secure_fs` In `omne_foundation`
+### Keep `text-assets-kit::secure_fs` In `omne_foundation`
 
 Reason:
 - It is not a raw filesystem primitive.
@@ -24,7 +24,7 @@ Reason:
 What it should consume:
 - `omne-fs-primitives::{open_root, open_directory_component, open_regular_file_at, read_utf8_limited, ...}`
 
-### Keep `i18n::dynamic::secure_fs` In `omne_foundation`
+### Keep `i18n-runtime-kit` Directory Loader In `omne_foundation`
 
 Reason:
 - It is a catalog adapter, not generic filesystem tooling.

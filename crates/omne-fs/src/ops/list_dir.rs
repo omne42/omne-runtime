@@ -90,8 +90,7 @@ pub struct ListDirEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListDirResponse {
     pub path: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_path: Option<PathBuf>,
+    pub requested_path: PathBuf,
     pub entries: Vec<ListDirEntry>,
     pub truncated: bool,
     pub skipped_io_errors: u64,
@@ -502,7 +501,7 @@ pub fn list_dir(ctx: &Context, request: ListDirRequest) -> Result<ListDirRespons
         );
         return Ok(ListDirResponse {
             path: relative_dir,
-            requested_path: Some(requested_path),
+            requested_path,
             entries: Vec::new(),
             truncated,
             skipped_io_errors,
@@ -611,7 +610,7 @@ pub fn list_dir(ctx: &Context, request: ListDirRequest) -> Result<ListDirRespons
 
     Ok(ListDirResponse {
         path: relative_dir,
-        requested_path: Some(requested_path),
+        requested_path,
         entries,
         truncated,
         skipped_io_errors,

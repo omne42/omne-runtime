@@ -44,10 +44,6 @@ pub fn is_symlink_or_reparse_open_error(_err: &io::Error) -> bool {
     false
 }
 
-pub fn is_symlink_open_error(err: &io::Error) -> bool {
-    is_symlink_or_reparse_open_error(err)
-}
-
 #[cfg(unix)]
 pub fn open_readonly_nofollow(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -152,7 +148,6 @@ mod tests {
 
         let err = open_readonly_nofollow(&link).expect_err("symlink open should fail");
         assert!(is_symlink_or_reparse_open_error(&err));
-        assert!(is_symlink_open_error(&err));
     }
 
     #[cfg(unix)]
@@ -160,7 +155,6 @@ mod tests {
     fn unix_eloop_errno_is_classified_as_symlink_error() {
         let err = io::Error::from_raw_os_error(libc::ELOOP);
         assert!(is_symlink_or_reparse_open_error(&err));
-        assert!(is_symlink_open_error(&err));
     }
 
     #[cfg(any(
@@ -173,7 +167,6 @@ mod tests {
     fn bsd_emlink_errno_is_classified_as_symlink_error() {
         let err = io::Error::from_raw_os_error(libc::EMLINK);
         assert!(is_symlink_or_reparse_open_error(&err));
-        assert!(is_symlink_open_error(&err));
     }
 
     #[cfg(unix)]
@@ -181,7 +174,6 @@ mod tests {
     fn unix_non_symlink_errno_is_not_classified_as_symlink_error() {
         let err = io::Error::from_raw_os_error(libc::ENOENT);
         assert!(!is_symlink_or_reparse_open_error(&err));
-        assert!(!is_symlink_open_error(&err));
     }
 
     #[cfg(unix)]
@@ -241,7 +233,6 @@ mod tests {
                 is_symlink_or_reparse_open_error(&err),
                 "code {code} should be true"
             );
-            assert!(is_symlink_open_error(&err), "code {code} should be true");
         }
 
         for code in [
@@ -258,7 +249,6 @@ mod tests {
                 !is_symlink_or_reparse_open_error(&err),
                 "code {code} should be false"
             );
-            assert!(!is_symlink_open_error(&err), "code {code} should be false");
         }
     }
 

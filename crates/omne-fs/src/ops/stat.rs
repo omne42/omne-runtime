@@ -24,10 +24,7 @@ pub enum StatKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatResponse {
     pub path: PathBuf,
-    // Kept as `Option` for response-shape compatibility with other ops; this endpoint always
-    // returns `Some(...)`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_path: Option<PathBuf>,
+    pub requested_path: PathBuf,
     #[serde(rename = "type")]
     pub kind: StatKind,
     pub size_bytes: u64,
@@ -159,7 +156,7 @@ pub fn stat(ctx: &Context, request: StatRequest) -> Result<StatResponse> {
 
     Ok(StatResponse {
         path: relative,
-        requested_path: Some(requested_path),
+        requested_path,
         kind,
         size_bytes,
         modified_ms,

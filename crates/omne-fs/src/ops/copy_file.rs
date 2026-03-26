@@ -23,10 +23,8 @@ pub struct CopyFileRequest {
 pub struct CopyFileResponse {
     pub from: PathBuf,
     pub to: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_from: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_to: Option<PathBuf>,
+    pub requested_from: PathBuf,
+    pub requested_to: PathBuf,
     pub copied: bool,
     pub bytes: u64,
 }
@@ -141,8 +139,8 @@ pub fn copy_file(ctx: &Context, request: CopyFileRequest) -> Result<CopyFileResp
     Ok(CopyFileResponse {
         from: paths.from_relative,
         to: destination.relative,
-        requested_from: Some(paths.requested_from),
-        requested_to: Some(paths.requested_to),
+        requested_from: paths.requested_from,
+        requested_to: paths.requested_to,
         copied: true,
         bytes,
     })
@@ -283,8 +281,8 @@ fn noop_response(
     CopyFileResponse {
         from,
         to,
-        requested_from: Some(requested_from),
-        requested_to: Some(requested_to),
+        requested_from,
+        requested_to,
         copied: false,
         bytes: 0,
     }

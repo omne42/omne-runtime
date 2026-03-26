@@ -2,19 +2,18 @@
 use std::path::Component;
 use std::path::{Path, PathBuf};
 
+use policy_meta::{PolicyMetaV1, WriteScope};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-
-pub use policy_meta::{PolicyMetaV1, WriteScope as RootMode};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Root {
     pub id: String,
     pub path: PathBuf,
-    #[serde(default, rename = "write_scope", alias = "mode")]
-    pub mode: RootMode,
+    #[serde(default)]
+    pub write_scope: WriteScope,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
@@ -358,12 +357,16 @@ pub struct SandboxPolicy {
 }
 
 impl SandboxPolicy {
-    pub fn single_root(id: impl Into<String>, path: impl Into<PathBuf>, mode: RootMode) -> Self {
+    pub fn single_root(
+        id: impl Into<String>,
+        path: impl Into<PathBuf>,
+        write_scope: WriteScope,
+    ) -> Self {
         Self {
             roots: vec![Root {
                 id: id.into(),
                 path: path.into(),
-                mode,
+                write_scope,
             }],
             permissions: Permissions::default(),
             limits: Limits::default(),
@@ -374,9 +377,7 @@ impl SandboxPolicy {
         }
     }
 
-    /// Backward-compatible policy validation entrypoint.
-    ///
-    /// This is an alias of [`SandboxPolicy::validate_for_load`].
+    /// Structural policy validation entrypoint.
     /// Structural validation only: validates policy shape and limit values.
     ///
     /// This is a purely *structural* validation: it does **not** perform any filesystem IO
@@ -388,14 +389,6 @@ impl SandboxPolicy {
     /// Pattern syntax (deny globs / traversal skip globs / redact regexes) is also validated in
     /// `ops::Context::new` when compiling rule matchers.
     pub fn validate(&self) -> Result<()> {
-        self.validate_for_load()
-    }
-
-    /// Validation entrypoint for policy loading.
-    ///
-    /// This is intentionally a *load-time structural* check, not a runtime-ready check.
-    /// Runtime IO checks and matcher compilation still happen in `ops::Context::new`.
-    pub fn validate_for_load(&self) -> Result<()> {
         self.validate_structural()
     }
 
@@ -598,20 +591,6 @@ impl SandboxPolicy {
             std::borrow::Cow::Owned(path) => path,
         })
     }
-
-    /// Compatibility alias for unchecked lexical path resolution.
-    ///
-    /// This API does **not** enforce root-boundary checks and must not be used as a
-    /// security decision point.
-    ///
-    /// Prefer [`SandboxPolicy::resolve_path_checked`] for boundary-sensitive flows, or
-    /// [`SandboxPolicy::resolve_path_unchecked`] when unchecked semantics are intentional.
-    #[deprecated(
-        note = "resolve_path is unchecked and must not be used for root-boundary decisions; use resolve_path_checked or resolve_path_unchecked explicitly"
-    )]
-    pub fn resolve_path(&self, root_id: &str, path: &Path) -> Result<PathBuf> {
-        self.resolve_path_unchecked(root_id, path)
-    }
 }
 
 #[cfg(test)]
@@ -625,7 +604,7 @@ mod tests {
         PolicyMetaV1 {
             version: Some(SpecVersion::V1),
             risk_profile: Some(RiskProfile::Standard),
-            write_scope: Some(RootMode::WorkspaceWrite),
+            write_scope: Some(WriteScope::WorkspaceWrite),
             execution_isolation: Some(ExecutionIsolation::BestEffort),
             decision: Some(Decision::Prompt),
         }
@@ -634,7 +613,7 @@ mod tests {
     #[test]
     fn sandbox_policy_omits_empty_metadata_on_serialization() {
         let policy =
-            SandboxPolicy::single_root("workspace", std::env::temp_dir(), RootMode::ReadOnly);
+            SandboxPolicy::single_root("workspace", std::env::temp_dir(), WriteScope::ReadOnly);
 
         let value = serde_json::to_value(&policy).expect("serialize policy");
 
@@ -669,8 +648,8 @@ mod tests {
 
         policy.validate().expect("validate policy");
         assert_eq!(
-            policy.root("workspace").expect("root").mode,
-            RootMode::ReadOnly
+            policy.root("workspace").expect("root").write_scope,
+            WriteScope::ReadOnly
         );
         assert_eq!(
             policy.metadata.policy_meta.as_ref().expect("policy meta"),

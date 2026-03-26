@@ -12,7 +12,7 @@ and policy/tooling.
 - [x] Moved platform no-follow open/error-classification helpers into `omne-fs-primitives`.
 - [x] Switched `omne-fs::platform_open` to re-export the shared primitives implementation.
 - [x] Switched `omne-fs::ops::io` regular-file no-follow open paths to call `omne-fs-primitives`.
-- [x] Switched `omne_foundation/crates/runtime-assets-kit` to depend on `omne-fs-primitives` directly.
+- [x] Switched `omne_foundation/crates/text-assets-kit` to depend on `omne-fs-primitives` directly.
 - [x] Switched `omne_foundation/crates/i18n` to depend on `omne-fs-primitives` directly.
 - [x] Switched `omne_foundation/crates/secret` file-open path to the shared no-follow regular-file
       primitive in `omne-fs-primitives`.
@@ -37,7 +37,7 @@ and policy/tooling.
       multiple consumers. They do not; keep them local to `omne-fs` until a second
       non-policy consumer appears.
 - [x] Evaluated remaining `omne_foundation` fs/platform code:
-      `resources::secure_fs` and `i18n::dynamic::secure_fs` stay as domain adapters,
+      `text-assets-kit::secure_fs` and the `i18n-runtime-kit` directory loader stay as domain adapters,
       `resources::data_root` stays as application root-resolution policy, and
       `secret` process cleanup / platform process control stay outside the fs crates.
 - [x] Added a short public docs index entry for the post-consolidation boundary follow-up note.

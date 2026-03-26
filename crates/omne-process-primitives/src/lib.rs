@@ -26,7 +26,8 @@ mod host_command;
 pub use command_path::{resolve_command_path, resolve_command_path_or_standard_location};
 pub use host_command::{
     HostCommandError, HostCommandExecution, HostCommandOutput, HostCommandRequest,
-    HostCommandSudoMode, command_available, command_exists, command_path_exists, run_host_command,
+    HostCommandSudoMode, HostRecipeError, HostRecipeRequest, command_available, command_exists,
+    command_path_exists, default_recipe_sudo_mode_for_program, run_host_command, run_host_recipe,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

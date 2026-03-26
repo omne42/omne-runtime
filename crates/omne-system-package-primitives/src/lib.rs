@@ -1,14 +1,11 @@
 #![forbid(unsafe_code)]
 
-//! Low-level host system package primitives shared by higher-level tooling.
+//! Low-level system package primitives shared by higher-level tooling.
 //!
 //! This crate owns policy-free helpers for:
-//! - recognizing supported host system package managers
-//! - normalizing package-manager aliases such as `apt` -> `apt-get`
+//! - recognizing supported system package managers
 //! - building install command recipes from a package-manager + package pair
-//! - declaring default package-manager fallback order per host OS
-
-use omne_host_info_primitives::detect_host_platform;
+//! - declaring default package-manager fallback order per OS
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemPackageInstallRecipe {
@@ -17,7 +14,7 @@ pub struct SystemPackageInstallRecipe {
 }
 
 impl SystemPackageInstallRecipe {
-    pub fn new(program: &'static str, leading_args: &[&str], package: &str) -> Self {
+    fn new(program: &'static str, leading_args: &[&str], package: &str) -> Self {
         let mut args = Vec::with_capacity(leading_args.len() + 1);
         args.extend(leading_args.iter().map(|arg| (*arg).to_string()));
         args.push(package.to_string());
@@ -39,7 +36,7 @@ pub enum SystemPackageManager {
 impl SystemPackageManager {
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "apt" | "apt-get" => Some(Self::AptGet),
+            "apt-get" => Some(Self::AptGet),
             "dnf" => Some(Self::Dnf),
             "yum" => Some(Self::Yum),
             "apk" => Some(Self::Apk),
@@ -81,7 +78,7 @@ const LINUX_DEFAULT_SYSTEM_PACKAGE_MANAGERS: &[SystemPackageManager] = &[
 const MACOS_DEFAULT_SYSTEM_PACKAGE_MANAGERS: &[SystemPackageManager] =
     &[SystemPackageManager::Brew];
 
-pub fn default_system_package_managers_for_os(os: &str) -> &'static [SystemPackageManager] {
+fn default_system_package_managers_for_os(os: &str) -> &'static [SystemPackageManager] {
     match os {
         "linux" => LINUX_DEFAULT_SYSTEM_PACKAGE_MANAGERS,
         "macos" => MACOS_DEFAULT_SYSTEM_PACKAGE_MANAGERS,
@@ -100,20 +97,10 @@ pub fn default_system_package_install_recipes_for_os(
         .collect()
 }
 
-pub fn default_system_package_install_recipes_for_current_host(
-    package: &str,
-) -> Vec<SystemPackageInstallRecipe> {
-    let Some(platform) = detect_host_platform() else {
-        return Vec::new();
-    };
-    default_system_package_install_recipes_for_os(platform.operating_system().as_str(), package)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         SystemPackageInstallRecipe, SystemPackageManager,
-        default_system_package_install_recipes_for_current_host,
         default_system_package_install_recipes_for_os, default_system_package_managers_for_os,
     };
 
@@ -123,11 +110,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_normalizes_apt_aliases() {
-        assert_eq!(
-            SystemPackageManager::parse("apt"),
-            Some(SystemPackageManager::AptGet)
-        );
+    fn parse_accepts_only_canonical_manager_names() {
+        assert_eq!(SystemPackageManager::parse("apt"), None);
         assert_eq!(
             SystemPackageManager::parse("apt-get"),
             Some(SystemPackageManager::AptGet)
@@ -162,10 +146,5 @@ mod tests {
             default_system_package_install_recipes_for_os("macos", "git")[0].program,
             "brew"
         );
-    }
-
-    #[test]
-    fn current_host_recipes_are_safe_to_compute() {
-        let _ = default_system_package_install_recipes_for_current_host("git");
     }
 }

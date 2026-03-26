@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use common::all_permissions_test_policy as test_policy;
 use omne_fs::ops::{Context, ListDirRequest, list_dir};
-use omne_fs::policy::RootMode;
+use policy_meta::WriteScope;
 
 #[test]
 #[ignore = "slow: creates 100k files to validate runtime-cap behavior via public API"]
@@ -19,7 +19,7 @@ fn list_dir_runtime_cap_truncates_public_api_when_request_exceeds_cap() {
         std::fs::File::create(path).expect("create");
     }
 
-    let mut policy = test_policy(dir.path(), RootMode::ReadOnly);
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
     policy.limits.max_results = ENTRY_COUNT;
     policy.limits.max_line_bytes = MAX_LINE_BYTES_FOR_LARGE_RESULTS;
     let ctx = Context::new(policy).expect("ctx");

@@ -2,15 +2,17 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use policy_meta::WriteScope;
+
 use crate::error::{Error, Result};
-use crate::policy::{RootMode, SandboxPolicy};
+use crate::policy::SandboxPolicy;
 use crate::redaction::SecretRedactor;
 
 use super::{
-    Context, ContextBuilder, CopyFileRequest, CopyFileResponse, DeleteRequest, DeleteResponse,
-    EditRequest, EditResponse, ListDirRequest, ListDirResponse, MkdirRequest, MkdirResponse,
-    MovePathRequest, MovePathResponse, PatchRequest, PatchResponse, ReadRequest, ReadResponse,
-    RootRuntime, StatRequest, StatResponse, WriteFileRequest, WriteFileResponse,
+    Context, CopyFileRequest, CopyFileResponse, DeleteRequest, DeleteResponse, EditRequest,
+    EditResponse, ListDirRequest, ListDirResponse, MkdirRequest, MkdirResponse, MovePathRequest,
+    MovePathResponse, PatchRequest, PatchResponse, ReadRequest, ReadResponse, RootRuntime,
+    StatRequest, StatResponse, WriteFileRequest, WriteFileResponse,
 };
 #[cfg(feature = "glob")]
 use super::{GlobRequest, GlobResponse};
@@ -26,11 +28,7 @@ pub struct DecisionTrace {
 
 impl Context {
     pub fn new(policy: SandboxPolicy) -> Result<Self> {
-        Self::builder(policy).build()
-    }
-
-    pub fn builder(policy: SandboxPolicy) -> ContextBuilder {
-        ContextBuilder::new(policy)
+        Self::build_from_policy(policy)
     }
 
     fn build_from_policy(policy: SandboxPolicy) -> Result<Self> {
@@ -64,7 +62,7 @@ impl Context {
                 id: root.id.clone(),
                 declared_path: root.path.clone(),
                 canonical_path: canonical,
-                mode: root.mode,
+                write_scope: root.write_scope,
             });
         }
         validate_canonical_roots_non_overlapping(&canonical_roots)?;
@@ -76,7 +74,7 @@ impl Context {
                 RootRuntime {
                     declared_path: root.declared_path,
                     canonical_path: root.canonical_path,
-                    mode: root.mode,
+                    write_scope: root.write_scope,
                 },
             );
             debug_assert!(
@@ -162,7 +160,7 @@ impl Context {
     pub fn decision_trace_for_error(&self, error: &Error) -> DecisionTrace {
         let _ = self;
         DecisionTrace {
-            reason_code: error.reason_code(),
+            reason_code: error.code(),
             risk_tag: error.risk_tag(),
             policy_rule: error.policy_rule(),
         }
@@ -213,7 +211,10 @@ impl Context {
 
     pub(super) fn ensure_can_write(&self, root_id: &str, op: &str) -> Result<()> {
         let root = self.root_runtime(root_id)?;
-        if !matches!(root.mode, RootMode::WorkspaceWrite | RootMode::FullAccess) {
+        if !matches!(
+            root.write_scope,
+            WriteScope::WorkspaceWrite | WriteScope::FullAccess
+        ) {
             return Err(Error::NotPermitted(format!(
                 "{op} is not allowed: root {root_id} is read_only"
             )));
@@ -258,7 +259,7 @@ struct CanonicalRoot {
     id: String,
     declared_path: PathBuf,
     canonical_path: PathBuf,
-    mode: RootMode,
+    write_scope: WriteScope,
 }
 
 fn overlap_error(a_id: &str, a_path: &Path, b_id: &str, b_path: &Path, same: bool) -> Error {
@@ -396,16 +397,6 @@ fn windows_disk_letter(path: &Path) -> Option<u8> {
     }
 }
 
-impl ContextBuilder {
-    pub fn new(policy: SandboxPolicy) -> Self {
-        Self { policy }
-    }
-
-    pub fn build(self) -> Result<Context> {
-        Context::build_from_policy(self.policy)
-    }
-}
-
 fn canonical_paths_equal(a: &Path, b: &Path) -> bool {
     crate::path_utils::paths_equal_case_insensitive(a, b)
 }
@@ -423,7 +414,7 @@ mod decision_trace_tests {
     #[test]
     fn decision_trace_uses_error_classification_contract() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = SandboxPolicy::single_root("root", dir.path(), RootMode::ReadOnly);
+        let policy = SandboxPolicy::single_root("root", dir.path(), WriteScope::ReadOnly);
         let ctx = Context::new(policy).expect("ctx");
 
         let trace =
@@ -443,14 +434,15 @@ fn canonical_paths_cmp_case_insensitive(a: &Path, b: &Path) -> std::cmp::Orderin
 mod tests {
     use std::path::PathBuf;
 
-    use super::{CanonicalRoot, Error, RootMode, validate_root_group_non_overlapping};
+    use super::{CanonicalRoot, Error, validate_root_group_non_overlapping};
+    use policy_meta::WriteScope;
 
     fn canonical_root(id: &str, canonical_path: &str) -> CanonicalRoot {
         CanonicalRoot {
             id: id.to_string(),
             declared_path: PathBuf::from(canonical_path),
             canonical_path: PathBuf::from(canonical_path),
-            mode: RootMode::ReadOnly,
+            write_scope: WriteScope::ReadOnly,
         }
     }
 

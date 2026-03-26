@@ -1,4 +1,5 @@
-use omne_fs::policy::{Permissions, RootMode, SandboxPolicy};
+use omne_fs::policy::{Permissions, SandboxPolicy};
+use policy_meta::WriteScope;
 
 fn permissive_permissions() -> Permissions {
     Permissions {
@@ -21,7 +22,7 @@ fn permissive_permissions() -> Permissions {
 pub fn test_policy_with_root_id(
     root_id: &str,
     root: &std::path::Path,
-    mode: RootMode,
+    mode: WriteScope,
 ) -> SandboxPolicy {
     let mut policy = SandboxPolicy::single_root(root_id, root.to_path_buf(), mode);
     policy.permissions = permissive_permissions();
@@ -32,28 +33,28 @@ pub fn test_policy_with_root_id(
 }
 
 /// Build a default single-root test policy using root id "root".
-pub fn test_policy(root: &std::path::Path, mode: RootMode) -> SandboxPolicy {
+pub fn test_policy(root: &std::path::Path, mode: WriteScope) -> SandboxPolicy {
     test_policy_with_root_id("root", root, mode)
 }
 
 /// Build a policy with all operation permissions enabled.
 /// This only changes `permissions`; `secrets`, `paths`, `limits`, and `traversal`
 /// remain at their default values from `test_policy`.
-pub fn all_permissions_test_policy(root: &std::path::Path, mode: RootMode) -> SandboxPolicy {
+pub fn all_permissions_test_policy(root: &std::path::Path, mode: WriteScope) -> SandboxPolicy {
     test_policy(root, mode)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{all_permissions_test_policy, test_policy};
-    use omne_fs::policy::RootMode;
+    use policy_meta::WriteScope;
     use std::path::Path;
 
     #[test]
     fn all_permissions_policy_only_changes_permissions() {
         let root = Path::new("test-root");
-        let base = test_policy(root, RootMode::ReadOnly);
-        let policy = all_permissions_test_policy(root, RootMode::ReadOnly);
+        let base = test_policy(root, WriteScope::ReadOnly);
+        let policy = all_permissions_test_policy(root, WriteScope::ReadOnly);
 
         assert_eq!(policy.secrets.deny_globs, base.secrets.deny_globs);
         assert_eq!(policy.secrets.redact_regexes, base.secrets.redact_regexes);

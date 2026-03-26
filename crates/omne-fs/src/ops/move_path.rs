@@ -149,10 +149,8 @@ pub struct MovePathRequest {
 pub struct MovePathResponse {
     pub from: PathBuf,
     pub to: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_from: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_to: Option<PathBuf>,
+    pub requested_from: PathBuf,
+    pub requested_to: PathBuf,
     pub moved: bool,
     #[serde(rename = "type")]
     pub kind: String,
@@ -219,8 +217,8 @@ pub fn move_path(ctx: &Context, request: MovePathRequest) -> Result<MovePathResp
         return Ok(MovePathResponse {
             from: from_relative,
             to: to_relative,
-            requested_from: Some(requested_from),
-            requested_to: Some(requested_to),
+            requested_from,
+            requested_to,
             moved: false,
             kind: kind.to_string(),
         });
@@ -239,8 +237,8 @@ pub fn move_path(ctx: &Context, request: MovePathRequest) -> Result<MovePathResp
         return Ok(MovePathResponse {
             from: from_relative,
             to: to_relative,
-            requested_from: Some(requested_from),
-            requested_to: Some(requested_to),
+            requested_from,
+            requested_to,
             moved: false,
             kind: kind.to_string(),
         });
@@ -299,8 +297,8 @@ pub fn move_path(ctx: &Context, request: MovePathRequest) -> Result<MovePathResp
         return Ok(MovePathResponse {
             from: from_relative,
             to: to_relative,
-            requested_from: Some(requested_from),
-            requested_to: Some(requested_to),
+            requested_from,
+            requested_to,
             moved: false,
             kind: kind.to_string(),
         });
@@ -346,8 +344,8 @@ pub fn move_path(ctx: &Context, request: MovePathRequest) -> Result<MovePathResp
     Ok(MovePathResponse {
         from: from_relative,
         to: to_relative,
-        requested_from: Some(requested_from),
-        requested_to: Some(requested_to),
+        requested_from,
+        requested_to,
         moved: true,
         kind: kind.to_string(),
     })

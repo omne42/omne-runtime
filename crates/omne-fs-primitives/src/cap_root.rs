@@ -8,14 +8,6 @@ use cap_std::fs::OpenOptions;
 pub use cap_std::fs::{Dir, File};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryKind {
-    Directory,
-    File,
-    Symlink,
-    Other,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissingRootPolicy {
     Error,
     ReturnNone,
@@ -33,46 +25,12 @@ impl RootDir {
         &self.path
     }
 
-    #[must_use]
-    pub fn dir(&self) -> &Dir {
-        &self.dir
-    }
-
-    pub fn try_clone_dir(&self) -> io::Result<Dir> {
-        self.dir.try_clone()
-    }
-
     pub fn into_dir(self) -> Dir {
         self.dir
     }
 }
 
-pub struct OpenRootReport {
-    root: RootDir,
-    created_directories: Vec<PathBuf>,
-}
-
-impl OpenRootReport {
-    #[must_use]
-    pub fn root(&self) -> &RootDir {
-        &self.root
-    }
-
-    #[must_use]
-    pub fn created_directories(&self) -> &[PathBuf] {
-        &self.created_directories
-    }
-
-    pub fn into_parts(self) -> (RootDir, Vec<PathBuf>) {
-        (self.root, self.created_directories)
-    }
-
-    pub fn into_root(self) -> RootDir {
-        self.root
-    }
-}
-
-pub fn materialize_root(root: &Path, label: &str) -> io::Result<PathBuf> {
+fn materialize_root(root: &Path, label: &str) -> io::Result<PathBuf> {
     let root = normalize_root(root, label)?;
     validate_existing_ancestors(&root, label)
 }
@@ -87,7 +45,7 @@ where
     F: FnMut(&Dir, &Path, &Path, io::Error) -> io::Error,
 {
     open_root_with_report(root, label, missing_root_policy, map_error)
-        .map(|report| report.map(OpenRootReport::into_root))
+        .map(|report| report.map(|(root, _)| root))
 }
 
 pub fn open_ambient_root<F>(
@@ -100,15 +58,15 @@ where
     F: FnMut(&Dir, &Path, &Path, io::Error) -> io::Error,
 {
     open_ambient_root_with_report(root, label, missing_root_policy, map_error)
-        .map(|report| report.map(OpenRootReport::into_root))
+        .map(|report| report.map(|(root, _)| root))
 }
 
-pub fn open_root_with_report<F>(
+fn open_root_with_report<F>(
     root: &Path,
     label: &str,
     missing_root_policy: MissingRootPolicy,
     mut map_error: F,
-) -> io::Result<Option<OpenRootReport>>
+) -> io::Result<Option<(RootDir, Vec<PathBuf>)>>
 where
     F: FnMut(&Dir, &Path, &Path, io::Error) -> io::Error,
 {
@@ -145,21 +103,21 @@ where
         }
     }
 
-    Ok(Some(OpenRootReport {
-        root: RootDir {
+    Ok(Some((
+        RootDir {
             path: root,
             dir: current,
         },
         created_directories,
-    }))
+    )))
 }
 
-pub fn open_ambient_root_with_report<F>(
+fn open_ambient_root_with_report<F>(
     root: &Path,
     label: &str,
     missing_root_policy: MissingRootPolicy,
     mut map_error: F,
-) -> io::Result<Option<OpenRootReport>>
+) -> io::Result<Option<(RootDir, Vec<PathBuf>)>>
 where
     F: FnMut(&Dir, &Path, &Path, io::Error) -> io::Error,
 {
@@ -197,13 +155,13 @@ where
         }
     }
 
-    Ok(Some(OpenRootReport {
-        root: RootDir {
+    Ok(Some((
+        RootDir {
             path: root,
             dir: current,
         },
         created_directories,
-    }))
+    )))
 }
 
 pub fn open_directory_component(directory: &Dir, component: &Path) -> io::Result<Dir> {
@@ -242,32 +200,6 @@ pub fn create_regular_file_at(directory: &Dir, component: &Path) -> io::Result<F
     options.write(true).create_new(true);
     options.follow(FollowSymlinks::No);
     directory.open_with(component, &options)
-}
-
-pub fn remove_file_or_symlink_at(directory: &Dir, component: &Path) -> io::Result<()> {
-    directory.remove_file_or_symlink(component)
-}
-
-pub fn entry_kind_at(directory: &Dir, component: &Path) -> io::Result<EntryKind> {
-    let metadata = directory.symlink_metadata(component)?;
-    let file_type = metadata.file_type();
-    Ok(if file_type.is_symlink() {
-        EntryKind::Symlink
-    } else if metadata.is_dir() {
-        EntryKind::Directory
-    } else if metadata.is_file() {
-        EntryKind::File
-    } else {
-        EntryKind::Other
-    })
-}
-
-pub fn read_directory_names(directory: &Dir) -> io::Result<Vec<OsString>> {
-    let mut names = Vec::new();
-    for entry in directory.entries()? {
-        names.push(entry?.file_name());
-    }
-    Ok(names)
 }
 
 fn ensure_regular_file(file: File) -> io::Result<File> {
@@ -465,7 +397,7 @@ mod tests {
         fs::create_dir_all(&existing).expect("mkdir existing");
         let root = existing.join("nested").join("root");
 
-        let report = open_root_with_report(
+        let (opened, created_directories) = open_root_with_report(
             &root,
             "test root",
             MissingRootPolicy::Create,
@@ -474,10 +406,10 @@ mod tests {
         .expect("create root")
         .expect("created root");
 
-        assert_eq!(report.root().path(), root.as_path());
+        assert_eq!(opened.path(), root.as_path());
         assert_eq!(
-            report.created_directories(),
-            &[existing.join("nested"), root.clone()]
+            created_directories,
+            vec![existing.join("nested"), root.clone()]
         );
     }
 

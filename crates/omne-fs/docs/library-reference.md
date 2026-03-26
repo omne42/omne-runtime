@@ -7,6 +7,7 @@ Crate: `omne-fs`
 ```toml
 [dependencies]
 omne-fs = { version = "0.2.0" }
+policy-meta = { version = "0.1.0" }
 ```
 
 With policy file loading helpers:
@@ -14,38 +15,31 @@ With policy file loading helpers:
 ```toml
 [dependencies]
 omne-fs = { version = "0.2.0", features = ["policy-io"] }
+policy-meta = { version = "0.1.0" }
 ```
 
-## Top-Level API Surface
+## Public API Surface
 
-Re-exported key types:
+Module-organized entrypoints:
 
-- `Context`
-- `SandboxPolicy`, `Root`, `Permissions`, `Limits`, `SecretRules`, `TraversalRules`, `PathRules`
-- Request/response structs for all operations
-- `Error`, `Result`
+- `omne_fs::ops`: `Context`, request/response structs, and free functions for operations
+- `omne_fs::policy`: `SandboxPolicy`, `Root`, `Permissions`, `Limits`, `SecretRules`, `TraversalRules`, `PathRules`
+- `omne_fs::policy_io`: optional policy loading/parsing helpers
+- `omne_fs::Error`, `omne_fs::Result`: crate-wide error types
 
 ## Constructing Context
 
 ### Basic
 
 ```rust
-use omne_fs::{Context, RootMode, SandboxPolicy};
+use omne_fs::ops::Context;
+use omne_fs::policy::SandboxPolicy;
+use policy_meta::WriteScope;
 
-let mut policy = SandboxPolicy::single_root("workspace", "/abs/workspace", RootMode::ReadOnly);
+let mut policy = SandboxPolicy::single_root("workspace", "/abs/workspace", WriteScope::ReadOnly);
 policy.permissions.read = true;
 
 let ctx = Context::new(policy)?;
-# Ok::<(), omne_fs::Error>(())
-```
-
-### Builder Entry Point
-
-```rust
-use omne_fs::{Context, RootMode, SandboxPolicy};
-
-let policy = SandboxPolicy::single_root("workspace", "/abs/workspace", RootMode::ReadOnly);
-let ctx = Context::builder(policy).build()?;
 # Ok::<(), omne_fs::Error>(())
 ```
 
@@ -53,7 +47,7 @@ let ctx = Context::builder(policy).build()?;
 
 ```rust
 let policy = omne_fs::policy_io::load_policy("./policy.toml")?;
-let ctx = omne_fs::Context::from_policy_path("./policy.toml")?;
+let ctx = omne_fs::ops::Context::from_policy_path("./policy.toml")?;
 # Ok::<(), omne_fs::Error>(())
 ```
 
@@ -62,9 +56,11 @@ let ctx = omne_fs::Context::from_policy_path("./policy.toml")?;
 You can call via free functions or context methods.
 
 ```rust
-use omne_fs::{Context, ReadRequest, RootMode, SandboxPolicy};
+use omne_fs::ops::{Context, ReadRequest};
+use omne_fs::policy::SandboxPolicy;
+use policy_meta::WriteScope;
 
-let mut policy = SandboxPolicy::single_root("workspace", "/abs/workspace", RootMode::ReadOnly);
+let mut policy = SandboxPolicy::single_root("workspace", "/abs/workspace", WriteScope::ReadOnly);
 policy.permissions.read = true;
 let ctx = Context::new(policy)?;
 
