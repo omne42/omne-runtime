@@ -69,6 +69,7 @@ fn deny_globs_apply_to_absolute_paths_even_when_parent_is_missing() {
     let dir = tempfile::tempdir().expect("tempdir");
 
     let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
+    policy.paths.allow_absolute = true;
     policy.secrets.deny_globs = vec!["missing/**".to_string()];
     let ctx = Context::new(policy).expect("ctx");
 
