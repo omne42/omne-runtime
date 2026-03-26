@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use policy_meta::ExecutionIsolation;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct GatewayPolicy {
     pub allow_isolation_none: bool,
     pub enforce_allowlisted_program_for_mutation: bool,
@@ -75,7 +75,10 @@ fn executable_stem(name: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn default_policy_denies_none_and_enforces_mutation_allowlist() {
@@ -103,5 +106,29 @@ mod tests {
     fn allowlist_matches_windows_program_basename_with_exe_suffix() {
         let policy = GatewayPolicy::default();
         assert!(policy.is_mutating_program_allowlisted("C:\\tools\\OMNE-FS.EXE"));
+    }
+
+    #[test]
+    fn load_json_rejects_unknown_fields() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("policy.json");
+        fs::write(
+            &path,
+            r#"{
+                "allow_isolation_none": false,
+                "enforce_allowlisted_program_for_mutation": true,
+                "mutating_program_allowlist": ["omne-fs"],
+                "default_isolation": "best_effort",
+                "unexpected_field": true
+            }"#,
+        )
+        .expect("write policy");
+
+        let err = GatewayPolicy::load_json(&path).expect_err("unknown fields should be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("unknown field"),
+            "unexpected error: {err}"
+        );
     }
 }

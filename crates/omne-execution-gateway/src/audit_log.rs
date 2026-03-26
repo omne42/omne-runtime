@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use fs2::FileExt;
 use serde::Serialize;
 
 use crate::audit::ExecEvent;
@@ -48,7 +49,11 @@ impl AuditLogger {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        writeln!(file, "{line}")?;
+        file.lock_exclusive()?;
+        let write_result = writeln!(file, "{line}").and_then(|_| file.flush());
+        let unlock_result = file.unlock();
+        write_result?;
+        unlock_result?;
         Ok(())
     }
 }
@@ -156,8 +161,11 @@ fn exit_status_signal(_: &ExitStatus) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::fs;
     use std::process::Command;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     use serde_json::json;
     use tempfile::tempdir;
@@ -172,20 +180,7 @@ mod tests {
         let path = dir.path().join("audit.jsonl");
         let logger = AuditLogger::new(&path);
 
-        let event = ExecEvent {
-            decision: ExecDecision::Run,
-            requested_isolation: ExecutionIsolation::BestEffort,
-            requested_policy_meta: crate::audit::requested_policy_meta(
-                ExecutionIsolation::BestEffort,
-            ),
-            supported_isolation: ExecutionIsolation::BestEffort,
-            program: "echo".into(),
-            cwd: ".".into(),
-            workspace_root: ".".into(),
-            declared_mutation: false,
-            reason: None,
-            sandbox_runtime: None,
-        };
+        let event = sample_event("echo");
 
         logger.write_prepare_record(&event, &Ok(()));
 
@@ -210,20 +205,7 @@ mod tests {
         let path = dir.path().join("audit.jsonl");
         let logger = AuditLogger::new(&path);
 
-        let event = ExecEvent {
-            decision: ExecDecision::Run,
-            requested_isolation: ExecutionIsolation::BestEffort,
-            requested_policy_meta: crate::audit::requested_policy_meta(
-                ExecutionIsolation::BestEffort,
-            ),
-            supported_isolation: ExecutionIsolation::BestEffort,
-            program: "false".into(),
-            cwd: ".".into(),
-            workspace_root: ".".into(),
-            declared_mutation: false,
-            reason: None,
-            sandbox_runtime: None,
-        };
+        let event = sample_event("false");
 
         logger.write_execution_record(&event, &Ok(nonzero_exit_status()));
 
@@ -240,6 +222,59 @@ mod tests {
                 "execution_isolation": "best_effort"
             })
         );
+    }
+
+    #[test]
+    fn concurrent_prepare_writes_preserve_jsonl_lines() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("audit.jsonl");
+        let logger = Arc::new(AuditLogger::new(&path));
+        let thread_count = 8;
+        let writes_per_thread = 25;
+        let barrier = Arc::new(Barrier::new(thread_count));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|index| {
+                let logger = Arc::clone(&logger);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    let event = sample_event(&format!("echo-{index}"));
+                    barrier.wait();
+                    for _ in 0..writes_per_thread {
+                        logger.write_prepare_record(&event, &Ok(()));
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("writer thread should not panic");
+        }
+
+        let content = fs::read_to_string(path).expect("read audit");
+        let lines: Vec<_> = content.lines().collect();
+        assert_eq!(lines.len(), thread_count * writes_per_thread);
+        for line in lines {
+            let record: serde_json::Value = serde_json::from_str(line).expect("valid json line");
+            assert_eq!(record["result"]["status"], "prepared");
+        }
+    }
+
+    fn sample_event(program: impl Into<OsString>) -> ExecEvent {
+        ExecEvent {
+            decision: ExecDecision::Run,
+            requested_isolation: ExecutionIsolation::BestEffort,
+            requested_policy_meta: crate::audit::requested_policy_meta(
+                ExecutionIsolation::BestEffort,
+            ),
+            supported_isolation: ExecutionIsolation::BestEffort,
+            program: program.into(),
+            cwd: ".".into(),
+            workspace_root: ".".into(),
+            declared_mutation: false,
+            reason: None,
+            sandbox_runtime: None,
+        }
     }
 
     #[cfg(windows)]

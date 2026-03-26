@@ -24,6 +24,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - On Linux, `BestEffort` now attempts a Landlock sandbox opportunistically, but it does not fail closed if the host cannot enforce it.
 - Linux execution events now report the observed best-effort Landlock runtime outcome when the command is actually spawned.
 - Linux `Strict` currently enforces a workspace write boundary, but still allows read/execute access outside the workspace.
+- macOS and Windows currently do not implement a native `BestEffort` sandbox; they report only `None` support and fail closed if `BestEffort` or `Strict` is requested.
 - mutation allowlist checks rely on caller-declared mutation plus requested program/path form; they do not prove binary provenance.
 - `prepare_command` rejects a `Command` when its program/args diverge from the validated `ExecRequest`.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.
@@ -31,10 +32,12 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 ## Platform Capability (v0.1.0)
 
 - Linux: detects Landlock support at runtime; `Strict` when available, otherwise `BestEffort`
-- macOS: `BestEffort`
-- Windows: `BestEffort`
+- macOS: `None`
+- Windows: `None`
 
 If `Strict` is requested but unsupported, execution is denied (no silent downgrade).
+If `BestEffort` is requested on a host that reports only `None`, execution is also denied instead
+of falling through to an unsandboxed spawn.
 
 ## Quick Usage
 

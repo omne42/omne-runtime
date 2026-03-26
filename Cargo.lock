@@ -1262,6 +1262,7 @@ dependencies = [
 name = "omne-execution-gateway"
 version = "0.1.0"
 dependencies = [
+ "fs2",
  "landlock",
  "policy-meta",
  "serde",
