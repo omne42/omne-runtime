@@ -674,7 +674,7 @@ mod tests {
         let path = dir.join(format!("{name}.cmd"));
         std::fs::write(
             &path,
-            "@echo off\r\n<nul set /p =stdout-message\r\n<nul set /p =stderr-message 1>&2\r\nexit /b 7\r\n",
+            "@echo off\r\n<nul set /p =stdout-message\r\n1>&2 <nul set /p =stderr-message\r\nexit /b 7\r\n",
         )
         .expect("write windows failing command");
         path
