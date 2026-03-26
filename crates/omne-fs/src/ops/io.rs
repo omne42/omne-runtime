@@ -464,6 +464,9 @@ fn write_bytes_atomic_impl(
     .map_err(|err| Error::io_path("preserve_metadata", relative, err))?;
     // A single post-write/post-metadata sync is enough before the atomic replace.
     tmp_file.sync_all(relative)?;
+    // Windows replacement APIs reject replacing a destination that this process still has open.
+    // Close the original handle before any recheck and before the final replace.
+    drop(existing_file);
 
     if recheck_before_commit {
         // Best-effort conflict detection: re-open with no-follow and re-check identity
@@ -476,10 +479,6 @@ fn write_bytes_atomic_impl(
         )?;
         drop(recheck_file);
     }
-
-    // Windows replacement APIs reject replacing a destination that this process still has open.
-    // Close the original handle after we've copied metadata and finished identity checks.
-    drop(existing_file);
 
     match file_matches_path(tmp_file.as_file(), tmp_file.path()) {
         Some(true) => {}
