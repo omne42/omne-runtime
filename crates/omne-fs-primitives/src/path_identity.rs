@@ -90,19 +90,29 @@ mod tests {
     #[test]
     fn filesystem_is_case_sensitive_when_probe_path_is_distinct() {
         let temp = TempDir::new().expect("temp dir");
-        let path = temp.path().join("Catalog");
+        let base = temp.path().canonicalize().expect("canonicalize temp dir");
+        let path = base.join("Catalog");
         fs::create_dir_all(&path).expect("mkdir");
+        let probe_path = base.join("catalog");
 
-        assert!(filesystem_is_case_sensitive(&path));
+        assert_eq!(
+            filesystem_is_case_sensitive(&path),
+            !probe_path.exists(),
+            "case sensitivity should match whether alternate-case probe resolves to an existing path"
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn filesystem_is_case_insensitive_when_probe_hits_same_inode() {
         let temp = TempDir::new().expect("temp dir");
-        let path = temp.path().join("Catalog");
+        let base = temp.path().canonicalize().expect("canonicalize temp dir");
+        let path = base.join("Catalog");
         fs::create_dir_all(&path).expect("mkdir");
-        symlink(&path, temp.path().join("catalog")).expect("symlink alternate case");
+        let probe_path = base.join("catalog");
+        if !probe_path.exists() {
+            symlink(&path, &probe_path).expect("symlink alternate case");
+        }
 
         assert!(!filesystem_is_case_sensitive(&path));
     }
