@@ -124,6 +124,8 @@ Notes:
 
 - Rejects root-like target (must be non-root leaf).
 - Revalidates parent/target to reduce race windows.
+- When `create_parents=true`, missing parent creation fails closed if the parent directory identity
+  cannot be re-verified on the current platform.
 
 ## `write`
 
@@ -136,6 +138,7 @@ Notes:
 - UTF-8 content input.
 - Enforces `max_write_bytes`.
 - Uses temp-file + checked atomic replace.
+- `create_parents=true` inherits the same fail-closed parent-identity revalidation as `mkdir`.
 
 ## `move`
 
@@ -148,6 +151,7 @@ Notes:
 - Same-entity moves may no-op (`moved=false`).
 - Destination parent may be created if requested.
 - Rejects unsafe or inconsistent root-resolution cases.
+- `create_parents=true` inherits the same fail-closed parent-identity revalidation as `mkdir`.
 
 ## `copy_file`
 
@@ -160,6 +164,7 @@ Notes:
 - Source must be regular file.
 - Enforces write-size limits.
 - Uses checked temp + replace commit semantics.
+- `create_parents=true` inherits the same fail-closed parent-identity revalidation as `mkdir`.
 
 ## `delete`
 
