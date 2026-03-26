@@ -4,6 +4,11 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
+use crate::command_path::{
+    is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
+    resolve_command_path_os,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostCommandSudoMode {
     Never,
@@ -166,12 +171,6 @@ impl std::error::Error for HostRecipeError {
 pub fn run_host_command(
     request: &HostCommandRequest<'_>,
 ) -> Result<HostCommandOutput, HostCommandError> {
-    if !command_exists_os(request.program) {
-        return Err(HostCommandError::CommandNotFound {
-            program: request.program.to_os_string(),
-        });
-    }
-
     let execution = if should_try_sudo(request.program, request.sudo_mode) {
         HostCommandExecution::Sudo
     } else {
@@ -179,11 +178,7 @@ pub fn run_host_command(
     };
     let output = build_command(request, execution)
         .output()
-        .map_err(|source| HostCommandError::SpawnFailed {
-            program: request.program.to_os_string(),
-            execution,
-            source,
-        })?;
+        .map_err(|source| map_spawn_error(request.program, execution, source))?;
     Ok(HostCommandOutput { execution, output })
 }
 
@@ -215,28 +210,22 @@ pub fn command_exists(command: &str) -> bool {
 }
 
 fn command_exists_os(command: &OsStr) -> bool {
-    let mut cmd = Command::new(command);
-    cmd.arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    cmd.status().is_ok()
+    if is_explicit_command_path(command) {
+        return is_spawnable_command_path(Path::new(command));
+    }
+    resolve_command_path_os(command).is_some()
 }
 
 pub fn command_path_exists(command: &Path) -> bool {
-    command_exists_os(command.as_os_str())
+    is_spawnable_command_path(command)
 }
 
 pub fn command_available(command: &str) -> bool {
-    let mut cmd = Command::new(command);
-    cmd.arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    match cmd.status() {
-        Ok(_) => true,
-        Err(err) => err.kind() != io::ErrorKind::NotFound,
+    let command = OsStr::new(command);
+    if is_explicit_command_path(command) {
+        return is_regular_command_path(Path::new(command));
     }
+    resolve_available_command_path(command.to_string_lossy().as_ref()).is_some()
 }
 
 pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoMode {
@@ -244,7 +233,6 @@ pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoM
         return HostCommandSudoMode::Never;
     };
     match program {
-        // Homebrew explicitly rejects root execution, so macOS package installs must stay direct.
         "brew" => HostCommandSudoMode::Never,
         "apt-get" | "dnf" | "yum" | "apk" | "pacman" | "zypper" => {
             HostCommandSudoMode::IfNonRootSystemCommand
@@ -318,16 +306,39 @@ fn has_path_separator(command: &OsStr) -> bool {
         .any(|ch| ch == '/' || ch == '\\')
 }
 
+fn is_explicit_command_path(command: &OsStr) -> bool {
+    has_path_separator(command) || Path::new(command).is_absolute()
+}
+
+fn map_spawn_error(
+    program: &OsStr,
+    execution: HostCommandExecution,
+    source: io::Error,
+) -> HostCommandError {
+    if source.kind() == io::ErrorKind::NotFound {
+        HostCommandError::CommandNotFound {
+            program: program.to_os_string(),
+        }
+    } else {
+        HostCommandError::SpawnFailed {
+            program: program.to_os_string(),
+            execution,
+            source,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
+    use std::io;
     use std::path::{Path, PathBuf};
 
     use super::{
-        HostCommandExecution, HostCommandRequest, HostCommandSudoMode, HostRecipeError,
-        HostRecipeRequest, command_available, command_exists, command_path_exists,
-        default_recipe_sudo_mode_for_program, run_host_command, run_host_recipe,
-        should_try_sudo_with_status,
+        HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
+        HostRecipeError, HostRecipeRequest, command_available, command_exists,
+        command_path_exists, default_recipe_sudo_mode_for_program, run_host_command,
+        run_host_recipe, should_try_sudo_with_status,
     };
 
     #[test]
@@ -435,6 +446,46 @@ mod tests {
     }
 
     #[test]
+    fn run_host_command_classifies_missing_program_as_not_found() {
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: OsStr::new("omne-process-primitives-missing-command"),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let error = run_host_command(&request).expect_err("missing command should fail");
+        assert!(matches!(error, HostCommandError::CommandNotFound { .. }));
+    }
+
+    #[test]
+    fn run_host_command_does_not_probe_by_executing_the_program_twice() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_count_command(temp.path(), "count");
+        let count_file = temp.path().join("count.txt");
+        let args = Vec::new();
+        let env = vec![(
+            "OMNE_COUNT_FILE".to_string(),
+            count_file.to_string_lossy().into_owned(),
+        )];
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &args,
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let output = run_host_command(&request).expect("run host command");
+        assert!(output.output.status.success());
+
+        let recorded = std::fs::read_to_string(&count_file).expect("read count file");
+        assert_eq!(recorded.lines().count(), 1);
+    }
+
+    #[test]
     fn run_host_recipe_captures_success_output() {
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = write_test_command(temp.path(), "echoenv");
@@ -474,52 +525,84 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn write_test_command(dir: &Path, name: &str) -> PathBuf {
+    #[test]
+    fn non_executable_paths_are_available_but_not_spawnable() {
         use std::os::unix::fs::PermissionsExt;
 
-        let path = dir.join(name);
-        std::fs::write(
-            &path,
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = temp.path().join("plain-script");
+        std::fs::write(&command_path, "#!/bin/sh\nexit 0\n").expect("write plain script");
+        let mut permissions = std::fs::metadata(&command_path)
+            .expect("stat plain script")
+            .permissions();
+        permissions.set_mode(0o644);
+        std::fs::set_permissions(&command_path, permissions).expect("chmod plain script");
+
+        let command_path_string = command_path.to_string_lossy().into_owned();
+        assert!(command_available(&command_path_string));
+        assert!(!command_path_exists(&command_path));
+
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let error = run_host_command(&request).expect_err("non-executable path should fail");
+        match error {
+            HostCommandError::CommandNotFound { .. } => {
+                panic!("non-executable path must not be classified as not found");
+            }
+            HostCommandError::SpawnFailed { source, .. } => {
+                assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_test_command(dir: &Path, name: &str) -> PathBuf {
+        write_unix_executable(
+            dir,
+            name,
             "#!/bin/sh\nprintf 'arg=%s\\n' \"$1\"\nprintf 'env=%s\\n' \"$OMNE_TEST_VALUE\"\n",
         )
-        .expect("write unix command");
-        let mut perms = std::fs::metadata(&path)
-            .expect("stat unix command")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms).expect("chmod unix command");
-        path
     }
 
     #[cfg(unix)]
     fn write_pwd_command(dir: &Path, name: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
+        write_unix_executable(dir, name, "#!/bin/sh\npwd\n")
+    }
 
-        let path = dir.join(name);
-        std::fs::write(&path, "#!/bin/sh\npwd\n").expect("write unix pwd command");
-        let mut perms = std::fs::metadata(&path)
-            .expect("stat unix pwd command")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms).expect("chmod unix pwd command");
-        path
+    #[cfg(unix)]
+    fn write_count_command(dir: &Path, name: &str) -> PathBuf {
+        write_unix_executable(dir, name, "#!/bin/sh\nprintf 'run\\n' >> \"$OMNE_COUNT_FILE\"\n")
     }
 
     #[cfg(unix)]
     fn write_failing_command(dir: &Path, name: &str) -> PathBuf {
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\nprintf 'stdout-message'\nprintf 'stderr-message' >&2\nexit 7\n",
+        )
+    }
+
+    #[cfg(unix)]
+    fn write_unix_executable(dir: &Path, name: &str, content: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
 
         let path = dir.join(name);
-        std::fs::write(
-            &path,
-            "#!/bin/sh\nprintf 'stdout-message'\nprintf 'stderr-message' >&2\nexit 7\n",
-        )
-        .expect("write unix failing command");
-        let mut perms = std::fs::metadata(&path)
-            .expect("stat unix failing command")
+        let temp_path = dir.join(format!("{name}.tmp"));
+        std::fs::write(&temp_path, content).expect("write unix command");
+        let mut perms = std::fs::metadata(&temp_path)
+            .expect("stat unix command")
             .permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms).expect("chmod unix failing command");
+        std::fs::set_permissions(&temp_path, perms).expect("chmod unix command");
+        std::fs::rename(&temp_path, &path).expect("rename unix command");
         path
     }
 
@@ -538,6 +621,14 @@ mod tests {
     fn write_pwd_command(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(format!("{name}.cmd"));
         std::fs::write(&path, "@echo off\r\ncd\r\n").expect("write windows pwd command");
+        path
+    }
+
+    #[cfg(windows)]
+    fn write_count_command(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.cmd"));
+        std::fs::write(&path, "@echo off\r\necho run>> \"%OMNE_COUNT_FILE%\"\r\n")
+            .expect("write windows count command");
         path
     }
 
