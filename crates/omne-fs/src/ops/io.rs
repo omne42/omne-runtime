@@ -304,7 +304,9 @@ impl StagedTempFile {
     where
         F: FnOnce(RenameReplaceError) -> Error,
     {
-        rename_replace(self.path.as_ref(), destination, overwrite).map_err(map_rename_error)
+        let Self { file, path } = self;
+        drop(file);
+        rename_replace(path.as_ref(), destination, overwrite).map_err(map_rename_error)
     }
 }
 
