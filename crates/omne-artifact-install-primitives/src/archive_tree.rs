@@ -16,6 +16,9 @@ use crate::artifact_download::{
     download_candidate_to_writer_with_options, failed_candidates_error,
 };
 
+const DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
+const DEFAULT_MAX_ARCHIVE_TREE_ENTRIES: u64 = 65_536;
+
 #[derive(Debug, Clone, Copy)]
 pub struct ArchiveTreeInstallRequest<'a> {
     pub canonical_url: &'a str,
@@ -36,7 +39,12 @@ pub fn install_archive_tree_from_bytes(
     archive_bytes: &[u8],
     destination: &Path,
 ) -> Result<(), ArtifactInstallError> {
-    install_archive_tree_from_reader(asset_name, Cursor::new(archive_bytes), destination)
+    install_archive_tree_from_reader_with_limits(
+        asset_name,
+        Cursor::new(archive_bytes),
+        destination,
+        ArchiveExtractionLimits::default(),
+    )
 }
 
 pub async fn download_and_install_archive_tree(
@@ -117,13 +125,30 @@ fn install_archive_tree_from_reader<R>(
 where
     R: Read + Seek,
 {
+    install_archive_tree_from_reader_with_limits(
+        asset_name,
+        reader,
+        destination,
+        ArchiveExtractionLimits::default(),
+    )
+}
+
+fn install_archive_tree_from_reader_with_limits<R>(
+    asset_name: &str,
+    reader: R,
+    destination: &Path,
+    limits: ArchiveExtractionLimits,
+) -> Result<(), ArtifactInstallError>
+where
+    R: Read + Seek,
+{
     let staging_dir = create_archive_tree_staging_dir(destination)?;
     let extract_result = if asset_name.ends_with(".zip") {
-        extract_zip_tree(reader, &staging_dir)
+        extract_zip_tree(reader, &staging_dir, limits)
     } else if asset_name.ends_with(".tar.gz") {
-        extract_tar_tree(GzDecoder::new(reader), &staging_dir)
+        extract_tar_tree(GzDecoder::new(reader), &staging_dir, limits)
     } else if asset_name.ends_with(".tar.xz") {
-        extract_tar_tree(XzDecoder::new(reader), &staging_dir)
+        extract_tar_tree(XzDecoder::new(reader), &staging_dir, limits)
     } else {
         Err(ArtifactInstallError::install(format!(
             "unsupported archive tree asset `{asset_name}`"
@@ -138,10 +163,15 @@ where
     replace_destination_with_staged_tree(destination, &staging_dir)
 }
 
-fn extract_zip_tree<R>(reader: R, destination: &Path) -> Result<(), ArtifactInstallError>
+fn extract_zip_tree<R>(
+    reader: R,
+    destination: &Path,
+    limits: ArchiveExtractionLimits,
+) -> Result<(), ArtifactInstallError>
 where
     R: Read + Seek,
 {
+    let mut budget = ExtractionBudget::new(limits);
     let mut archive =
         ZipArchive::new(reader).map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     for index in 0..archive.len() {
@@ -154,12 +184,14 @@ where
                 ArtifactInstallError::install(format!("unsafe archive entry path at index {index}"))
             })?
             .to_path_buf();
+        budget.record_entry(&enclosed)?;
         let output_path = destination.join(&enclosed);
         if entry.is_dir() {
             fs::create_dir_all(&output_path)
                 .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
             continue;
         }
+        budget.reserve_bytes(&enclosed, entry.size())?;
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
@@ -179,10 +211,15 @@ where
     Ok(())
 }
 
-fn extract_tar_tree<R>(reader: R, destination: &Path) -> Result<(), ArtifactInstallError>
+fn extract_tar_tree<R>(
+    reader: R,
+    destination: &Path,
+    limits: ArchiveExtractionLimits,
+) -> Result<(), ArtifactInstallError>
 where
     R: Read,
 {
+    let mut budget = ExtractionBudget::new(limits);
     let mut archive = TarArchive::new(reader);
     let entries = archive
         .entries()
@@ -194,6 +231,7 @@ where
             .map_err(|err| ArtifactInstallError::install(err.to_string()))?
             .into_owned();
         let sanitized = sanitize_archive_path(&path)?;
+        budget.record_entry(&sanitized)?;
         let output_path = destination.join(sanitized);
         let entry_type = entry.header().entry_type();
         if entry_type.is_dir() {
@@ -202,6 +240,7 @@ where
             continue;
         }
         if entry_type.is_file() {
+            budget.reserve_bytes(&path, entry.size())?;
             let extracted = entry
                 .unpack_in(destination)
                 .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
@@ -486,6 +525,66 @@ fn archive_download_stage_options() -> AtomicWriteOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ArchiveExtractionLimits {
+    max_extracted_bytes: u64,
+    max_entries: u64,
+}
+
+impl Default for ArchiveExtractionLimits {
+    fn default() -> Self {
+        Self {
+            max_extracted_bytes: DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES,
+            max_entries: DEFAULT_MAX_ARCHIVE_TREE_ENTRIES,
+        }
+    }
+}
+
+struct ExtractionBudget {
+    limits: ArchiveExtractionLimits,
+    extracted_bytes: u64,
+    entries: u64,
+}
+
+impl ExtractionBudget {
+    fn new(limits: ArchiveExtractionLimits) -> Self {
+        Self {
+            limits,
+            extracted_bytes: 0,
+            entries: 0,
+        }
+    }
+
+    fn record_entry(&mut self, path: &Path) -> Result<(), ArtifactInstallError> {
+        self.entries = self.entries.saturating_add(1);
+        if self.entries > self.limits.max_entries {
+            return Err(ArtifactInstallError::install(format!(
+                "archive entry count exceeds limit of {} while extracting `{}`",
+                self.limits.max_entries,
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn reserve_bytes(&mut self, path: &Path, bytes: u64) -> Result<(), ArtifactInstallError> {
+        self.extracted_bytes = self.extracted_bytes.checked_add(bytes).ok_or_else(|| {
+            ArtifactInstallError::install(format!(
+                "archive extracted byte budget overflow while extracting `{}`",
+                path.display()
+            ))
+        })?;
+        if self.extracted_bytes > self.limits.max_extracted_bytes {
+            return Err(ArtifactInstallError::install(format!(
+                "archive extracted bytes exceed limit of {} while extracting `{}`",
+                self.limits.max_extracted_bytes,
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -497,7 +596,10 @@ mod tests {
 
     use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
 
-    use super::{ArchiveTreeInstallRequest, download_and_install_archive_tree};
+    use super::{
+        ArchiveExtractionLimits, ArchiveTreeInstallRequest, download_and_install_archive_tree,
+        install_archive_tree_from_reader_with_limits,
+    };
 
     fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut writer = Cursor::new(Vec::new());
@@ -605,6 +707,63 @@ mod tests {
         assert!(destination.join("LICENSE").exists());
 
         handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[test]
+    fn archive_tree_extract_rejects_extracted_byte_budget_overflow() -> Result<(), Box<dyn Error>> {
+        let archive = make_zip_archive(&[("bin/demo", b"0123456789abcdef".as_slice(), 0o755)])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+
+        let err = install_archive_tree_from_reader_with_limits(
+            "demo.zip",
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits {
+                max_extracted_bytes: 8,
+                max_entries: 16,
+            },
+        )
+        .expect_err("archive should exceed extracted-byte budget");
+
+        assert_eq!(
+            err.kind(),
+            crate::artifact_download::ArtifactInstallErrorKind::Install
+        );
+        assert!(
+            err.to_string()
+                .contains("archive extracted bytes exceed limit"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn archive_tree_extract_rejects_entry_count_budget_overflow() -> Result<(), Box<dyn Error>> {
+        let archive = make_zip_archive(&[
+            ("bin/demo", b"demo".as_slice(), 0o755),
+            ("LICENSE", b"license".as_slice(), 0o644),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+
+        let err = install_archive_tree_from_reader_with_limits(
+            "demo.zip",
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits {
+                max_extracted_bytes: 1024,
+                max_entries: 1,
+            },
+        )
+        .expect_err("archive should exceed entry-count budget");
+
+        assert!(
+            err.to_string()
+                .contains("archive entry count exceeds limit"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 }

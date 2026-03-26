@@ -1,6 +1,8 @@
 use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
 
+const DEFAULT_MAX_EXTRACTED_BINARY_BYTES: u64 = 64 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryArchiveFormat {
     TarGz,
@@ -73,6 +75,15 @@ pub enum ExtractBinaryFromArchiveError {
         archive_format: BinaryArchiveFormat,
         binary_name: String,
     },
+    MatchedEntryNotRegularFile {
+        archive_format: BinaryArchiveFormat,
+        archive_path: String,
+    },
+    ExtractionBudgetExceeded {
+        archive_format: BinaryArchiveFormat,
+        archive_path: String,
+        limit_bytes: u64,
+    },
 }
 
 impl ExtractBinaryFromArchiveError {
@@ -110,6 +121,21 @@ impl fmt::Display for ExtractBinaryFromArchiveError {
                 f,
                 "binary `{binary_name}` not found in {archive_format} archive"
             ),
+            Self::MatchedEntryNotRegularFile {
+                archive_format,
+                archive_path,
+            } => write!(
+                f,
+                "matched archive entry `{archive_path}` in {archive_format} archive is not a regular file"
+            ),
+            Self::ExtractionBudgetExceeded {
+                archive_format,
+                archive_path,
+                limit_bytes,
+            } => write!(
+                f,
+                "matched archive entry `{archive_path}` in {archive_format} archive exceeds extraction budget of {limit_bytes} bytes"
+            ),
         }
     }
 }
@@ -132,6 +158,23 @@ fn extract_binary_from_archive_reader<R>(
 where
     R: Read + Seek,
 {
+    extract_binary_from_archive_reader_with_limit(
+        asset_name,
+        reader,
+        request,
+        DEFAULT_MAX_EXTRACTED_BINARY_BYTES,
+    )
+}
+
+fn extract_binary_from_archive_reader_with_limit<R>(
+    asset_name: &str,
+    reader: R,
+    request: &BinaryArchiveRequest<'_>,
+    max_entry_bytes: u64,
+) -> Result<ExtractedArchiveBinary, ExtractBinaryFromArchiveError>
+where
+    R: Read + Seek,
+{
     let archive_format = BinaryArchiveFormat::from_asset_name(asset_name).ok_or_else(|| {
         ExtractBinaryFromArchiveError::UnsupportedArchiveType {
             asset_name: asset_name.to_string(),
@@ -139,9 +182,9 @@ where
     })?;
 
     match archive_format {
-        BinaryArchiveFormat::TarGz => extract_from_tar_gz(reader, request),
-        BinaryArchiveFormat::TarXz => extract_from_tar_xz(reader, request),
-        BinaryArchiveFormat::Zip => extract_from_zip(reader, request),
+        BinaryArchiveFormat::TarGz => extract_from_tar_gz(reader, request, max_entry_bytes),
+        BinaryArchiveFormat::TarXz => extract_from_tar_xz(reader, request, max_entry_bytes),
+        BinaryArchiveFormat::Zip => extract_from_zip(reader, request, max_entry_bytes),
     }
 }
 
@@ -155,6 +198,26 @@ where
     R: Read + Seek,
     W: Write + ?Sized,
 {
+    extract_binary_from_archive_reader_to_writer_with_limit(
+        asset_name,
+        reader,
+        request,
+        writer,
+        DEFAULT_MAX_EXTRACTED_BINARY_BYTES,
+    )
+}
+
+fn extract_binary_from_archive_reader_to_writer_with_limit<R, W>(
+    asset_name: &str,
+    reader: R,
+    request: &BinaryArchiveRequest<'_>,
+    writer: &mut W,
+    max_entry_bytes: u64,
+) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
+where
+    R: Read + Seek,
+    W: Write + ?Sized,
+{
     let archive_format = BinaryArchiveFormat::from_asset_name(asset_name).ok_or_else(|| {
         ExtractBinaryFromArchiveError::UnsupportedArchiveType {
             asset_name: asset_name.to_string(),
@@ -162,15 +225,22 @@ where
     })?;
 
     match archive_format {
-        BinaryArchiveFormat::TarGz => extract_from_tar_gz_to_writer(reader, request, writer),
-        BinaryArchiveFormat::TarXz => extract_from_tar_xz_to_writer(reader, request, writer),
-        BinaryArchiveFormat::Zip => extract_from_zip_to_writer(reader, request, writer),
+        BinaryArchiveFormat::TarGz => {
+            extract_from_tar_gz_to_writer(reader, request, writer, max_entry_bytes)
+        }
+        BinaryArchiveFormat::TarXz => {
+            extract_from_tar_xz_to_writer(reader, request, writer, max_entry_bytes)
+        }
+        BinaryArchiveFormat::Zip => {
+            extract_from_zip_to_writer(reader, request, writer, max_entry_bytes)
+        }
     }
 }
 
 fn extract_from_tar_gz<R>(
     reader: R,
     request: &BinaryArchiveRequest<'_>,
+    max_entry_bytes: u64,
 ) -> Result<ExtractedArchiveBinary, ExtractBinaryFromArchiveError>
 where
     R: Read,
@@ -206,7 +276,8 @@ where
             request.tool_name,
             request.archive_binary_hint,
         ) {
-            return read_matched_entry(archive_format, path, &mut entry);
+            ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
+            return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
         }
     }
     Err(ExtractBinaryFromArchiveError::BinaryNotFound {
@@ -219,6 +290,7 @@ fn extract_from_tar_gz_to_writer<R, W>(
     reader: R,
     request: &BinaryArchiveRequest<'_>,
     writer: &mut W,
+    max_entry_bytes: u64,
 ) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
 where
     R: Read,
@@ -255,7 +327,8 @@ where
             request.tool_name,
             request.archive_binary_hint,
         ) {
-            return write_matched_entry(archive_format, path, &mut entry, writer);
+            ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
+            return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
         }
     }
     Err(ExtractBinaryFromArchiveError::BinaryNotFound {
@@ -267,6 +340,7 @@ where
 fn extract_from_tar_xz<R>(
     reader: R,
     request: &BinaryArchiveRequest<'_>,
+    max_entry_bytes: u64,
 ) -> Result<ExtractedArchiveBinary, ExtractBinaryFromArchiveError>
 where
     R: Read,
@@ -302,7 +376,8 @@ where
             request.tool_name,
             request.archive_binary_hint,
         ) {
-            return read_matched_entry(archive_format, path, &mut entry);
+            ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
+            return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
         }
     }
     Err(ExtractBinaryFromArchiveError::BinaryNotFound {
@@ -315,6 +390,7 @@ fn extract_from_tar_xz_to_writer<R, W>(
     reader: R,
     request: &BinaryArchiveRequest<'_>,
     writer: &mut W,
+    max_entry_bytes: u64,
 ) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
 where
     R: Read,
@@ -351,7 +427,8 @@ where
             request.tool_name,
             request.archive_binary_hint,
         ) {
-            return write_matched_entry(archive_format, path, &mut entry, writer);
+            ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
+            return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
         }
     }
     Err(ExtractBinaryFromArchiveError::BinaryNotFound {
@@ -363,6 +440,7 @@ where
 fn extract_from_zip<R>(
     reader: R,
     request: &BinaryArchiveRequest<'_>,
+    max_entry_bytes: u64,
 ) -> Result<ExtractedArchiveBinary, ExtractBinaryFromArchiveError>
 where
     R: Read + Seek,
@@ -379,9 +457,6 @@ where
                 format!("entry #{index}: {err}"),
             )
         })?;
-        if entry.is_dir() {
-            continue;
-        }
         let path = entry.name().replace('\\', "/");
         if is_binary_entry_match(
             &path,
@@ -389,7 +464,11 @@ where
             request.tool_name,
             request.archive_binary_hint,
         ) {
-            return read_matched_entry(archive_format, path, &mut entry);
+            ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
+            return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
+        }
+        if entry.is_dir() {
+            continue;
         }
     }
     Err(ExtractBinaryFromArchiveError::BinaryNotFound {
@@ -402,6 +481,7 @@ fn extract_from_zip_to_writer<R, W>(
     reader: R,
     request: &BinaryArchiveRequest<'_>,
     writer: &mut W,
+    max_entry_bytes: u64,
 ) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
 where
     R: Read + Seek,
@@ -419,9 +499,6 @@ where
                 format!("entry #{index}: {err}"),
             )
         })?;
-        if entry.is_dir() {
-            continue;
-        }
         let path = entry.name().replace('\\', "/");
         if is_binary_entry_match(
             &path,
@@ -429,7 +506,11 @@ where
             request.tool_name,
             request.archive_binary_hint,
         ) {
-            return write_matched_entry(archive_format, path, &mut entry, writer);
+            ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
+            return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
+        }
+        if entry.is_dir() {
+            continue;
         }
     }
     Err(ExtractBinaryFromArchiveError::BinaryNotFound {
@@ -442,12 +523,19 @@ fn read_matched_entry<R>(
     archive_format: BinaryArchiveFormat,
     archive_path: String,
     reader: &mut R,
+    max_entry_bytes: u64,
 ) -> Result<ExtractedArchiveBinary, ExtractBinaryFromArchiveError>
 where
     R: Read,
 {
     let mut bytes = Vec::new();
-    write_matched_entry(archive_format, archive_path.clone(), reader, &mut bytes)?;
+    write_matched_entry(
+        archive_format,
+        archive_path.clone(),
+        reader,
+        &mut bytes,
+        max_entry_bytes,
+    )?;
     Ok(ExtractedArchiveBinary {
         archive_path,
         bytes,
@@ -459,22 +547,102 @@ fn write_matched_entry<R, W>(
     archive_path: String,
     reader: &mut R,
     writer: &mut W,
+    max_entry_bytes: u64,
 ) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
 where
     R: Read,
     W: Write + ?Sized,
 {
-    std::io::copy(reader, writer).map_err(|err| {
-        ExtractBinaryFromArchiveError::archive_read(
-            archive_format,
-            "read_entry_content",
-            format!("{archive_path}: {err}"),
-        )
-    })?;
+    copy_entry_with_limit(
+        reader,
+        writer,
+        archive_format,
+        &archive_path,
+        max_entry_bytes,
+    )?;
     Ok(ArchiveBinaryMatch {
         archive_format,
         archive_path,
     })
+}
+
+fn copy_entry_with_limit<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    archive_format: BinaryArchiveFormat,
+    archive_path: &str,
+    max_entry_bytes: u64,
+) -> Result<(), ExtractBinaryFromArchiveError>
+where
+    R: Read,
+    W: Write + ?Sized,
+{
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer).map_err(|err| {
+            ExtractBinaryFromArchiveError::archive_read(
+                archive_format,
+                "read_entry_content",
+                format!("{archive_path}: {err}"),
+            )
+        })?;
+        if read == 0 {
+            return Ok(());
+        }
+        copied = copied.saturating_add(read as u64);
+        if copied > max_entry_bytes {
+            return Err(ExtractBinaryFromArchiveError::ExtractionBudgetExceeded {
+                archive_format,
+                archive_path: archive_path.to_string(),
+                limit_bytes: max_entry_bytes,
+            });
+        }
+        writer.write_all(&buffer[..read]).map_err(|err| {
+            ExtractBinaryFromArchiveError::archive_read(
+                archive_format,
+                "write_entry_content",
+                format!("{archive_path}: {err}"),
+            )
+        })?;
+    }
+}
+
+fn ensure_tar_entry_is_regular_file(
+    archive_format: BinaryArchiveFormat,
+    archive_path: &str,
+    entry_type: tar::EntryType,
+) -> Result<(), ExtractBinaryFromArchiveError> {
+    if entry_type.is_file() {
+        return Ok(());
+    }
+    Err(ExtractBinaryFromArchiveError::MatchedEntryNotRegularFile {
+        archive_format,
+        archive_path: archive_path.to_string(),
+    })
+}
+
+fn ensure_zip_entry_is_regular_file(
+    archive_format: BinaryArchiveFormat,
+    archive_path: &str,
+    entry: &zip::read::ZipFile<'_>,
+) -> Result<(), ExtractBinaryFromArchiveError> {
+    if entry.is_dir() {
+        return Err(ExtractBinaryFromArchiveError::MatchedEntryNotRegularFile {
+            archive_format,
+            archive_path: archive_path.to_string(),
+        });
+    }
+    if let Some(mode) = entry.unix_mode() {
+        let file_type = mode & 0o170000;
+        if file_type != 0 && file_type != 0o100000 {
+            return Err(ExtractBinaryFromArchiveError::MatchedEntryNotRegularFile {
+                archive_format,
+                archive_path: archive_path.to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn is_binary_entry_match(
@@ -486,7 +654,7 @@ fn is_binary_entry_match(
     if let Some(hint) = archive_binary_hint {
         let hint = hint.trim().trim_start_matches('/').replace('\\', "/");
         if !hint.is_empty() {
-            return path == hint || path.ends_with(&format!("/{hint}"));
+            return path == hint;
         }
     }
     if path.ends_with(&format!("/bin/{binary_name}")) {
@@ -509,7 +677,8 @@ mod tests {
         ArchiveBinaryMatch, BinaryArchiveFormat, BinaryArchiveRequest,
         ExtractBinaryFromArchiveError, extract_binary_from_archive,
         extract_binary_from_archive_reader, extract_binary_from_archive_reader_to_writer,
-        is_binary_archive_asset_name,
+        extract_binary_from_archive_reader_to_writer_with_limit,
+        extract_binary_from_archive_reader_with_limit, is_binary_archive_asset_name,
     };
 
     #[test]
@@ -562,6 +731,30 @@ mod tests {
 
         assert_eq!(extracted.archive_path, "node-v1.0.0-linux-x64/bin/node");
         assert_eq!(extracted.bytes, b"mock-node");
+    }
+
+    #[test]
+    fn archive_binary_hint_requires_exact_path_match() {
+        let archive = make_tar_xz_archive(&[(
+            "node-v1.0.0-linux-x64/bin/node",
+            b"mock-node".as_slice(),
+            0o755,
+        )]);
+        let err = extract_binary_from_archive(
+            "node-v1.0.0-linux-x64.tar.xz",
+            &archive,
+            &BinaryArchiveRequest {
+                binary_name: "node",
+                tool_name: "node",
+                archive_binary_hint: Some("bin/node"),
+            },
+        )
+        .expect_err("suffix-only hint should not match");
+
+        assert!(matches!(
+            err,
+            ExtractBinaryFromArchiveError::BinaryNotFound { .. }
+        ));
     }
 
     #[test]
@@ -679,6 +872,94 @@ mod tests {
         }
     }
 
+    #[test]
+    fn matched_tar_symlink_is_rejected() {
+        let archive = make_special_tar_gz_archive(&[TarEntry::symlink(
+            "gh_9.9.9_linux_amd64/bin/gh",
+            "../lib/gh",
+        )]);
+        let err = extract_binary_from_archive(
+            "gh_9.9.9_linux_amd64.tar.gz",
+            &archive,
+            &BinaryArchiveRequest {
+                binary_name: "gh",
+                tool_name: "gh",
+                archive_binary_hint: None,
+            },
+        )
+        .expect_err("symlink should be rejected");
+
+        assert!(matches!(
+            err,
+            ExtractBinaryFromArchiveError::MatchedEntryNotRegularFile { .. }
+        ));
+    }
+
+    #[test]
+    fn matched_zip_directory_is_rejected() {
+        let archive = make_zip_archive_with_directory("demo/bin/demo/", 0o755);
+        let err = extract_binary_from_archive(
+            "demo.zip",
+            &archive,
+            &BinaryArchiveRequest {
+                binary_name: "demo",
+                tool_name: "demo",
+                archive_binary_hint: Some("demo/bin/demo/"),
+            },
+        )
+        .expect_err("zip directory should be rejected");
+
+        assert!(matches!(
+            err,
+            ExtractBinaryFromArchiveError::MatchedEntryNotRegularFile { .. }
+        ));
+    }
+
+    #[test]
+    fn matched_entry_respects_extraction_budget() {
+        let archive = make_repeat_tar_gz_archive("demo/bin/demo", 32, 0o755, b'X');
+        let err = extract_binary_from_archive_reader_with_limit(
+            "demo.tar.gz",
+            Cursor::new(archive),
+            &BinaryArchiveRequest {
+                binary_name: "demo",
+                tool_name: "demo",
+                archive_binary_hint: None,
+            },
+            16,
+        )
+        .expect_err("entry should exceed budget");
+
+        assert!(matches!(
+            err,
+            ExtractBinaryFromArchiveError::ExtractionBudgetExceeded { .. }
+        ));
+    }
+
+    #[test]
+    fn writer_extraction_path_respects_budget() {
+        let archive = make_repeat_tar_gz_archive("demo/bin/demo", 32, 0o755, b'X');
+        let mut out = Vec::new();
+        let err = extract_binary_from_archive_reader_to_writer_with_limit(
+            "demo.tar.gz",
+            Cursor::new(archive),
+            &BinaryArchiveRequest {
+                binary_name: "demo",
+                tool_name: "demo",
+                archive_binary_hint: None,
+            },
+            &mut out,
+            16,
+        )
+        .expect_err("entry should exceed budget");
+
+        assert!(matches!(
+            err,
+            ExtractBinaryFromArchiveError::ExtractionBudgetExceeded { .. }
+        ));
+        assert!(out.len() <= 16);
+    }
+
     fn make_tar_gz_archive(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut builder = tar::Builder::new(encoder);
@@ -711,6 +992,50 @@ mod tests {
         encoder.finish().expect("finalize xz stream")
     }
 
+    fn make_repeat_tar_gz_archive(path: &str, size: usize, mode: u32, byte: u8) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_size(size as u64);
+        header.set_mode(mode);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                path,
+                RepeatReader {
+                    remaining: size,
+                    byte,
+                },
+            )
+            .expect("append repeated tar.gz entry");
+        let encoder = builder.into_inner().expect("finalize tar.gz builder");
+        encoder.finish().expect("finalize gzip stream")
+    }
+
+    fn make_special_tar_gz_archive(entries: &[TarEntry<'_>]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        for entry in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(entry.mode);
+            match entry.kind {
+                TarEntryKind::Symlink(target) => {
+                    header.set_entry_type(tar::EntryType::Symlink);
+                    header.set_size(0);
+                    header.set_link_name(target).expect("set symlink target");
+                    header.set_cksum();
+                    builder
+                        .append_data(&mut header, entry.path, std::io::empty())
+                        .expect("append symlink entry");
+                }
+            }
+        }
+        let encoder = builder.into_inner().expect("finalize tar.gz builder");
+        encoder.finish().expect("finalize gzip stream")
+    }
+
     fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
         use std::io::Write;
 
@@ -727,5 +1052,57 @@ mod tests {
             archive.finish().expect("finish zip archive");
         }
         writer.into_inner()
+    }
+
+    fn make_zip_archive_with_directory(path: &str, mode: u32) -> Vec<u8> {
+        let mut writer = Cursor::new(Vec::new());
+        {
+            let mut archive = zip::ZipWriter::new(&mut writer);
+            let options = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+                .unix_permissions(mode);
+            archive
+                .add_directory(path, options)
+                .expect("add zip directory entry");
+            archive.finish().expect("finish zip archive");
+        }
+        writer.into_inner()
+    }
+
+    struct RepeatReader {
+        remaining: usize,
+        byte: u8,
+    }
+
+    impl std::io::Read for RepeatReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.remaining == 0 {
+                return Ok(0);
+            }
+            let len = self.remaining.min(buf.len());
+            buf[..len].fill(self.byte);
+            self.remaining -= len;
+            Ok(len)
+        }
+    }
+
+    struct TarEntry<'a> {
+        path: &'a str,
+        kind: TarEntryKind<'a>,
+        mode: u32,
+    }
+
+    impl<'a> TarEntry<'a> {
+        fn symlink(path: &'a str, target: &'a str) -> Self {
+            Self {
+                path,
+                kind: TarEntryKind::Symlink(target),
+                mode: 0o777,
+            }
+        }
+    }
+
+    enum TarEntryKind<'a> {
+        Symlink(&'a str),
     }
 }
