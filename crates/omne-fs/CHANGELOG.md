@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Documented and regression-tested the fail-closed `create_parents` parent-directory identity
+  verification path on Windows so missing-handle/unverifiable cases cannot silently degrade to
+  success.
 - Renamed the public crate family from `omne-systems-*` to `omne-*` (`omne-fs`, `omne-fs-cli`,
   `omne-fs-primitives`, `omne-process-primitives`) so crate names no longer repeat the workspace
   prefix and instead expose the capability boundary directly.

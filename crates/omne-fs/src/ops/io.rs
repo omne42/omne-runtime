@@ -540,3 +540,38 @@ pub(super) fn rename_replace(
 ) -> std::result::Result<(), RenameReplaceError> {
     crate::platform::rename::rename_replace(src_path, dest_path, replace_existing)
 }
+
+#[cfg(test)]
+mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn ensure_verified_rejects_unverifiable_directory_identity() {
+        use std::fs;
+        use std::path::Path;
+
+        use crate::error::Error;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("created");
+        fs::create_dir(&target).expect("create target dir");
+        let metadata = fs::symlink_metadata(&target).expect("target metadata");
+        let identity = super::DirectoryIdentity {
+            metadata: super::PathIdentity::from_metadata(metadata),
+            handle: None,
+        };
+
+        let err = identity
+            .ensure_verified(
+                &target,
+                Path::new("created"),
+                || Error::InvalidPath("changed".to_string()),
+                || Error::InvalidPath("unverifiable".to_string()),
+            )
+            .expect_err("unverifiable identity must fail closed");
+
+        match err {
+            Error::InvalidPath(message) => assert!(message.contains("unverifiable")),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+}
