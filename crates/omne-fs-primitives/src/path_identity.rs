@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 #[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -14,11 +16,13 @@ pub fn filesystem_is_case_sensitive(path: &Path) -> bool {
 
     #[cfg(windows)]
     {
+        let _ = path;
         false
     }
 
     #[cfg(all(not(unix), not(windows)))]
     {
+        let _ = path;
         true
     }
 }
@@ -72,8 +76,8 @@ fn case_variant_component(component: &std::ffi::OsStr) -> Option<std::ffi::OsStr
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
+    #[cfg(unix)]
+    use super::filesystem_is_case_sensitive;
     #[cfg(unix)]
     use std::fs;
     #[cfg(unix)]

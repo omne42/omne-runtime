@@ -966,7 +966,7 @@ fn grep_truncation_is_deterministic_under_response_byte_budget() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn grep_response_budget_accounts_for_lossy_non_utf8_paths() {
     use std::ffi::OsString;

@@ -114,7 +114,7 @@ where
             }
         }
 
-        return predicate(&candidate).then_some(candidate);
+        predicate(&candidate).then_some(candidate)
     }
 
     #[cfg(not(windows))]
@@ -135,12 +135,14 @@ fn windows_path_extensions() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
-
+    use super::resolve_command_path;
+    #[cfg(unix)]
     use super::{
         is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
-        resolve_command_in_dir, resolve_command_path, resolve_command_path_or_standard_location,
+        resolve_command_in_dir, resolve_command_path_or_standard_location,
     };
+    #[cfg(unix)]
+    use std::ffi::OsStr;
 
     #[test]
     fn missing_command_returns_none() {

@@ -748,10 +748,10 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
 
+    #[cfg(unix)]
+    use super::{JsonGlobResponse, JsonGrepResponse, JsonListDirResponse};
     use super::{
-        JsonGlobResponse, JsonGrepResponse, JsonListDirResponse,
-        command_requires_mutation_confirmation, ensure_mutating_confirmation,
-        scan_limit_reason_str,
+        command_requires_mutation_confirmation, ensure_mutating_confirmation, scan_limit_reason_str,
     };
 
     #[cfg(unix)]

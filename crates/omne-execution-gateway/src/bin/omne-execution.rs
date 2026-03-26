@@ -185,6 +185,7 @@ mod tests {
             .resolve_request(&request)
     }
 
+    #[cfg(unix)]
     fn sample_policy_default_request_resolution() -> RequestResolution {
         let request = ExecRequest::with_policy_default_isolation(
             "echo",

@@ -176,8 +176,7 @@ pub fn run_host_command(
     } else {
         HostCommandExecution::Direct
     };
-    let output = build_command(request, execution)
-        .output()
+    let output = run_command_output(request, execution)
         .map_err(|source| map_spawn_error(request.program, execution, source))?;
     Ok(HostCommandOutput { execution, output })
 }
@@ -265,6 +264,39 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
     cmd
 }
 
+fn run_command_output(
+    request: &HostCommandRequest<'_>,
+    execution: HostCommandExecution,
+) -> io::Result<Output> {
+    #[cfg(unix)]
+    {
+        const EXECUTABLE_BUSY_RETRIES: usize = 3;
+        const EXECUTABLE_BUSY_BACKOFF_MS: u64 = 10;
+
+        for attempt in 0..=EXECUTABLE_BUSY_RETRIES {
+            match build_command(request, execution).output() {
+                Ok(output) => return Ok(output),
+                Err(err)
+                    if err.kind() == io::ErrorKind::ExecutableFileBusy
+                        && attempt < EXECUTABLE_BUSY_RETRIES =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        EXECUTABLE_BUSY_BACKOFF_MS,
+                    ));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        unreachable!("retry loop must return on success or final error");
+    }
+
+    #[cfg(not(unix))]
+    {
+        build_command(request, execution).output()
+    }
+}
+
 fn should_try_sudo(program: &OsStr, sudo_mode: HostCommandSudoMode) -> bool {
     should_try_sudo_with_status(
         program,
@@ -331,6 +363,7 @@ fn map_spawn_error(
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
+    #[cfg(unix)]
     use std::io;
     use std::path::{Path, PathBuf};
 
