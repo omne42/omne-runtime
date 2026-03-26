@@ -764,6 +764,6 @@ mod tests {
 
     #[cfg(windows)]
     fn relative_command_path(name: &str) -> String {
-        format!("./{name}.cmd")
+        format!(".\\{name}.cmd")
     }
 }
