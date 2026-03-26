@@ -29,6 +29,7 @@ impl SandboxMonitor {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn ready(observation: SandboxRuntimeObservation) -> Self {
         Self {
             observation: Some(observation),
