@@ -10,8 +10,8 @@
 - 以受限响应体流式下载 artifact。
 - 对下载结果执行可选的 SHA-256 校验。
 - 把直接二进制资产原子安装到目标路径。
-- 从受支持的 archive 中提取目标二进制并安装到目标路径。
-- 把受支持的 archive 目录树解到 staging 目录，并在成功后替换目标目录。
+- 从受支持的 archive 中提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束。
+- 把受支持的 archive 目录树解到 staging 目录，并在默认 extracted-byte / entry-count 预算内成功后替换目标目录。
 
 ## 不负责什么
 

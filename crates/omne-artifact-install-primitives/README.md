@@ -14,8 +14,8 @@ Reusable artifact download and install primitives shared by higher-level callers
 - ordered artifact download candidate execution
 - optional SHA-256 verification for downloaded artifacts
 - direct binary artifact atomic installation
-- binary-from-archive installation
-- archive-tree staging and replace installation
+- binary-from-archive installation with a default extracted-byte budget
+- archive-tree staging and replace installation with default extracted-byte and entry-count budgets
 
 ## Non-Goals
 
