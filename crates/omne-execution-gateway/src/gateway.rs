@@ -26,13 +26,13 @@ struct PreparedExecRequest {
 
 #[derive(Debug)]
 pub struct PreflightError {
-    event: ExecEvent,
+    event: Box<ExecEvent>,
     error: ExecError,
 }
 
 impl PreflightError {
     pub fn into_parts(self) -> (ExecEvent, ExecError) {
-        (self.event, self.error)
+        (*self.event, self.error)
     }
 }
 
@@ -109,7 +109,7 @@ impl ExecGateway {
     pub fn evaluate(&self, request: &ExecRequest) -> ExecEvent {
         match self.prepare_request(request) {
             Ok(prepared) => prepared.event,
-            Err(err) => err.event,
+            Err(err) => *err.event,
         }
     }
 
@@ -286,7 +286,7 @@ impl ExecGateway {
 
     fn deny_preflight(&self, event: ExecEvent, reason: &str, err: ExecError) -> PreflightError {
         PreflightError {
-            event: self.deny_event(event, reason),
+            event: Box::new(self.deny_event(event, reason)),
             error: err,
         }
     }
@@ -621,10 +621,11 @@ mod tests {
             allow_isolation_none: true,
             ..GatewayPolicy::default()
         };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            ExecutionIsolation::BestEffort,
-        );
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(
+                policy,
+                ExecutionIsolation::BestEffort,
+            );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "echo",
@@ -646,10 +647,11 @@ mod tests {
             allow_isolation_none: true,
             ..GatewayPolicy::default()
         };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            ExecutionIsolation::BestEffort,
-        );
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(
+                policy,
+                ExecutionIsolation::BestEffort,
+            );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "echo",
@@ -679,10 +681,11 @@ mod tests {
             allow_isolation_none: true,
             ..GatewayPolicy::default()
         };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            ExecutionIsolation::BestEffort,
-        );
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(
+                policy,
+                ExecutionIsolation::BestEffort,
+            );
         let workspace = tempdir().expect("create temp workspace");
         let real_dir = workspace.path().join("real");
         let link_dir = workspace.path().join("link");
@@ -713,10 +716,11 @@ mod tests {
             audit_log_path: Some(audit_path.clone()),
             ..GatewayPolicy::default()
         };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            ExecutionIsolation::BestEffort,
-        );
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(
+                policy,
+                ExecutionIsolation::BestEffort,
+            );
         let (program, args) = shell_exit_nonzero_command();
         let request = ExecRequest::new(
             program,
@@ -745,10 +749,11 @@ mod tests {
             allow_isolation_none: true,
             ..GatewayPolicy::default()
         };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            ExecutionIsolation::BestEffort,
-        );
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(
+                policy,
+                ExecutionIsolation::BestEffort,
+            );
         let request = ExecRequest::new(
             "sh",
             vec!["-c", "exit 0"],
@@ -785,10 +790,11 @@ mod tests {
             allow_isolation_none: true,
             ..GatewayPolicy::default()
         };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            ExecutionIsolation::BestEffort,
-        );
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(
+                policy,
+                ExecutionIsolation::BestEffort,
+            );
         let request = ExecRequest::new(
             "sh",
             vec!["-c", "exec 3<>/dev/null"],
@@ -812,10 +818,11 @@ mod tests {
             audit_log_path: Some(audit_path.clone()),
             ..GatewayPolicy::default()
         };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            ExecutionIsolation::BestEffort,
-        );
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(
+                policy,
+                ExecutionIsolation::BestEffort,
+            );
         let request = ExecRequest::new(
             "__omne_exec_gateway_missing_program__",
             Vec::<OsString>::new(),
