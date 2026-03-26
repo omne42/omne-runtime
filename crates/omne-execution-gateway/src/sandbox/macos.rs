@@ -6,7 +6,7 @@ use crate::sandbox::SandboxMonitor;
 use policy_meta::ExecutionIsolation;
 
 pub(crate) fn detect_supported_isolation() -> ExecutionIsolation {
-    ExecutionIsolation::BestEffort
+    ExecutionIsolation::None
 }
 
 pub(crate) fn apply_sandbox(
@@ -14,13 +14,59 @@ pub(crate) fn apply_sandbox(
     required_isolation: ExecutionIsolation,
     workspace_root: &Path,
 ) -> ExecResult<SandboxMonitor> {
+    let _ = (command, workspace_root);
     match required_isolation {
-        ExecutionIsolation::None | ExecutionIsolation::BestEffort => {
-            command.env("AGENT_EXEC_GATEWAY_WORKSPACE_ROOT", workspace_root);
-            Ok(SandboxMonitor::none())
+        ExecutionIsolation::None => Ok(SandboxMonitor::none()),
+        ExecutionIsolation::BestEffort | ExecutionIsolation::Strict => {
+            Err(ExecError::IsolationNotSupported {
+                requested: required_isolation,
+                supported: ExecutionIsolation::None,
+            })
         }
-        ExecutionIsolation::Strict => Err(ExecError::Sandbox(
-            "macOS strict isolation is not available in native mode".to_string(),
-        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_only_none_isolation_as_supported() {
+        assert_eq!(detect_supported_isolation(), ExecutionIsolation::None);
+    }
+
+    #[test]
+    fn best_effort_and_strict_fail_closed() {
+        let workspace = std::env::current_dir().expect("current_dir");
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 0"]);
+
+        let best_effort = apply_sandbox(
+            &mut command,
+            ExecutionIsolation::BestEffort,
+            workspace.as_path(),
+        )
+        .expect_err("best_effort should fail closed on macOS");
+        assert!(matches!(
+            best_effort,
+            ExecError::IsolationNotSupported {
+                requested: ExecutionIsolation::BestEffort,
+                supported: ExecutionIsolation::None,
+            }
+        ));
+
+        let strict = apply_sandbox(
+            &mut command,
+            ExecutionIsolation::Strict,
+            workspace.as_path(),
+        )
+        .expect_err("strict should fail closed on macOS");
+        assert!(matches!(
+            strict,
+            ExecError::IsolationNotSupported {
+                requested: ExecutionIsolation::Strict,
+                supported: ExecutionIsolation::None,
+            }
+        ));
     }
 }

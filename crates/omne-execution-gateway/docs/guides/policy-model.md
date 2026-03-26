@@ -38,6 +38,7 @@
 
 - mutation enforcement relies on caller declaration; the gateway does not parse tool-specific CLI syntax or infer arbitrary shell intent.
 - allowlist matching is name/path based; it is not binary provenance verification.
+- macOS 和 Windows 当前只报告 `None` 为受支持能力；如果 policy/default/request 仍要求 `best_effort` 或 `strict`，gateway 会按 `isolation_not_supported` fail-closed。
 
 ## Denial Reasons
 

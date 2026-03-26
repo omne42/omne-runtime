@@ -12,6 +12,12 @@
 - 平台 sandbox 编排与 runtime 观测。
 - 结构化审计事件和日志输出。
 
+当前平台语义补充：
+
+- Linux 可以报告并尝试执行 `BestEffort` / `Strict`。
+- macOS 和 Windows 当前只报告 `None` 为受支持隔离级别。
+- 当请求的隔离级别高于宿主报告能力时，gateway 必须 fail-closed 拒绝，而不是回退到未隔离执行。
+
 ## 不负责什么
 
 - 高层文件系统读写 API。
