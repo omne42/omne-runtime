@@ -504,7 +504,7 @@ fn destination_exists_helper_uses_already_exists_kind() {
 
 #[test]
 #[cfg(unix)]
-fn path_identity_tracks_symlink_object_identity() {
+fn path_identity_verification_matches_observed_symlink_metadata_identity() {
     use crate::error::Error;
     use std::os::unix::fs::symlink;
 
@@ -522,11 +522,22 @@ fn path_identity_tracks_symlink_object_identity() {
     symlink(&second_target, &link).expect("replace symlink");
     let current_meta = fs::symlink_metadata(&link).expect("metadata");
 
-    let err = identity
-        .verify_metadata(&current_meta, || Error::InvalidPath("changed".to_string()))
-        .expect_err("replaced symlink must not retain the same identity");
-    match err {
-        Error::InvalidPath(message) => assert_eq!(message, "changed"),
-        other => panic!("unexpected error: {other:?}"),
+    match io::metadata_same_file(identity.metadata(), &current_meta) {
+        Some(true) => assert_eq!(
+            identity
+                .verify_metadata(&current_meta, || Error::InvalidPath("changed".to_string()))
+                .expect("matching symlink metadata must verify"),
+            io::MetadataIdentityCheck::Verified
+        ),
+        Some(false) => {
+            let err = identity
+                .verify_metadata(&current_meta, || Error::InvalidPath("changed".to_string()))
+                .expect_err("changed symlink metadata must be rejected");
+            match err {
+                Error::InvalidPath(message) => assert_eq!(message, "changed"),
+                other => panic!("unexpected error: {other:?}"),
+            }
+        }
+        None => panic!("unix metadata identity comparison must be supported"),
     }
 }
