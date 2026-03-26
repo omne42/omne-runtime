@@ -1016,19 +1016,17 @@ mod tests {
         std::fs::create_dir(&listed).expect("recreate listed dir");
 
         let result = ensure_directory_identity_unchanged(&listed, Path::new("listed"), &expected);
-        #[cfg(windows)]
-        {
-            assert!(
-                result.is_ok(),
-                "windows may treat directory identity as unverifiable for replacement checks"
-            );
-        }
-        #[cfg(not(windows))]
-        match result.expect_err("directory identity change should be rejected") {
-            crate::error::Error::InvalidPath(message) => {
+        match result {
+            Err(crate::error::Error::InvalidPath(message)) => {
                 assert!(message.contains("changed during list_dir"));
             }
-            other => panic!("unexpected error: {other:?}"),
+            Ok(()) => {
+                #[cfg(windows)]
+                {}
+                #[cfg(not(windows))]
+                panic!("directory identity change should be rejected");
+            }
+            Err(other) => panic!("unexpected error: {other:?}"),
         }
     }
 }
