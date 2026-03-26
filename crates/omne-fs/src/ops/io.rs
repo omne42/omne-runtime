@@ -472,7 +472,12 @@ fn write_bytes_atomic_impl(
             expected_identity,
             FileIdentity::from_file(&recheck_file),
         )?;
+        drop(recheck_file);
     }
+
+    // Windows replacement APIs reject replacing a destination that this process still has open.
+    // Close the original handle after we've copied metadata and finished identity checks.
+    drop(existing_file);
 
     match file_matches_path(tmp_file.as_file(), tmp_file.path()) {
         Some(true) => {}
