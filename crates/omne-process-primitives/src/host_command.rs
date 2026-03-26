@@ -245,7 +245,19 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
         HostCommandExecution::Direct => Command::new(request.program),
         HostCommandExecution::Sudo => {
             let mut cmd = Command::new("sudo");
-            cmd.arg("-n").arg(request.program);
+            cmd.arg("-n");
+            if !request.env.is_empty() {
+                cmd.arg(format!(
+                    "--preserve-env={}",
+                    request
+                        .env
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+            cmd.arg("--").arg(request.program);
             cmd
         }
     };
@@ -369,9 +381,9 @@ mod tests {
 
     use super::{
         HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
-        HostRecipeError, HostRecipeRequest, command_available, command_exists, command_path_exists,
-        default_recipe_sudo_mode_for_program, run_host_command, run_host_recipe,
-        should_try_sudo_with_status,
+        HostRecipeError, HostRecipeRequest, build_command, command_available, command_exists,
+        command_path_exists, default_recipe_sudo_mode_for_program, run_host_command,
+        run_host_recipe, should_try_sudo_with_status,
     };
 
     #[test]
@@ -435,6 +447,59 @@ mod tests {
             false,
             true,
         ));
+    }
+
+    #[test]
+    fn sudo_command_preserves_explicit_environment_for_target_command() {
+        let args = vec!["install".to_string(), "curl".to_string()];
+        let env = vec![
+            ("OMNE_TEST_VALUE".to_string(), "world".to_string()),
+            ("OMNE_SECOND".to_string(), "value".to_string()),
+        ];
+        let request = HostCommandRequest {
+            program: OsStr::new("apt-get"),
+            args: &args,
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let command = build_command(&request, HostCommandExecution::Sudo);
+        let collected_args = command
+            .get_args()
+            .map(|arg: &OsStr| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            collected_args,
+            vec![
+                "-n".to_string(),
+                "--preserve-env=OMNE_TEST_VALUE,OMNE_SECOND".to_string(),
+                "--".to_string(),
+                "apt-get".to_string(),
+                "install".to_string(),
+                "curl".to_string(),
+            ]
+        );
+
+        let mut collected_env = command
+            .get_envs()
+            .map(|(name, value): (&OsStr, Option<&OsStr>)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value
+                        .map(|value: &OsStr| value.to_string_lossy().into_owned())
+                        .expect("explicit env value should exist"),
+                )
+            })
+            .collect::<Vec<_>>();
+        collected_env.sort();
+        assert_eq!(
+            collected_env,
+            vec![
+                ("OMNE_SECOND".to_string(), "value".to_string()),
+                ("OMNE_TEST_VALUE".to_string(), "world".to_string()),
+            ]
+        );
     }
 
     #[test]

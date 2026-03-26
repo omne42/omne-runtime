@@ -8,11 +8,13 @@
 
 - 探测命令是否存在和是否可执行。
 - 运行宿主机命令并捕获输出。
+- 当命中 `sudo` 路径时，把调用方显式提供的环境变量通过 `sudo --preserve-env=...` 继续传给目标命令。
 - 运行 host recipe，并把非零退出统一建模成结构化错误。
 - 为常见系统包命令提供默认 `sudo` 模式选择。
 - Unix 下对 bare system command 做 `sudo -n` 试探。
 - 配置子进程以支持进程树清理。
 - 捕获进程树清理标识并执行 best-effort 终止。
+- 在非 Linux Unix 上，当原始 leader 已退出时对 orphan process-group 清理 fail-closed，避免仅凭复用 PGID 误杀无关进程。
 
 ## 不负责什么
 

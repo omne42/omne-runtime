@@ -11,6 +11,8 @@
 //!
 //! Unix uses per-child process groups. Linux additionally verifies the original leader identity
 //! before killing an orphaned group so PID/PGID reuse is less likely to hit unrelated processes.
+//! Other Unix targets only kill the process group while the original leader is still present; if
+//! the leader has already exited, cleanup fails closed instead of trusting a reused PGID.
 //!
 //! Windows prefers Job Objects. When the current process cannot attach the child to a kill-on-close
 //! job, cleanup falls back to best-effort tree cleanup rooted at the captured child PID:
@@ -146,11 +148,8 @@ fn kill_process_tree(cleanup: &ProcessTreeCleanup) {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
-    use rustix::io::Errno;
-
     match rustix::process::getpgid(Some(identity.leader_pid)) {
         Ok(current) => current == identity.process_group_id,
-        Err(Errno::SRCH) => unix_process_group_exists(identity.process_group_id),
         Err(_) => false,
     }
 }
@@ -165,17 +164,6 @@ fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             linux_process_group_exists(identity.process_group_id)
         }
-        Err(_) => false,
-    }
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn unix_process_group_exists(process_group_id: rustix::process::Pid) -> bool {
-    use rustix::io::Errno;
-
-    match rustix::process::test_kill_process_group(process_group_id) {
-        Ok(()) | Err(Errno::PERM) => true,
-        Err(Errno::SRCH) => false,
         Err(_) => false,
     }
 }
@@ -598,7 +586,7 @@ mod tests {
 mod unix_tests {
     use super::{CleanupDisposition, ProcessTreeCleanup, configure_command_for_process_tree};
     use rustix::io::Errno;
-    use rustix::process::{Pid, test_kill_process_group};
+    use rustix::process::{Pid, Signal, kill_process, test_kill_process_group};
     use std::io;
     use std::path::Path;
     use std::process::Stdio;
@@ -670,7 +658,7 @@ mod unix_tests {
     }
 
     #[tokio::test]
-    async fn cleanup_kills_orphaned_process_group() -> io::Result<()> {
+    async fn cleanup_does_not_kill_orphaned_process_group_after_leader_exit() -> io::Result<()> {
         let dir = tempfile::tempdir()?;
         let shell_pid_file = dir.path().join("shell.pid");
         let bg_pid_file = dir.path().join("background.pid");
@@ -695,9 +683,12 @@ mod unix_tests {
             .await
             .expect("shell pid file should be written");
         let process_group = pid_to_process_group(shell_pid);
-        let _bg_pid = wait_for_pid(&bg_pid_file)
+        let bg_pid = wait_for_pid(&bg_pid_file)
             .await
             .expect("background pid file should be written");
+        let background_pid =
+            Pid::from_raw(i32::try_from(bg_pid).expect("background pid should fit in i32"))
+                .expect("background pid must be non-zero");
 
         tokio::time::timeout(Duration::from_secs(5), child.wait())
             .await
@@ -709,20 +700,32 @@ mod unix_tests {
         );
         cleanup.kill_tree();
 
-        let mut gone = false;
+        let mut still_present = false;
         for _ in 0..300 {
-            if process_group_gone(process_group) {
-                gone = true;
+            if !process_group_gone(process_group) {
+                still_present = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
         assert!(
-            gone,
-            "orphaned background process group should be terminated"
+            still_present,
+            "cleanup must fail closed instead of killing an orphaned process group after the leader exits"
         );
-        Ok(())
+
+        let _ = kill_process(background_pid, Signal::KILL);
+        for _ in 0..300 {
+            if process_group_gone(process_group) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "background process group did not exit after explicit cleanup",
+        ))
     }
 }
 
