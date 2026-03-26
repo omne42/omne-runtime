@@ -53,6 +53,16 @@ jobs:
         run: |
           cargo +nightly test --locked -p omne-fs --target x86_64-unknown-linux-gnu -Zbuild-std
 
+      - name: Run unix xattr metadata tests with AddressSanitizer
+        working-directory: omne-runtime
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+          ASAN_OPTIONS: detect_leaks=1:strict_init_order=1
+          CC: clang
+          CXX: clang++
+        run: |
+          cargo +nightly test --locked -p omne-fs --target x86_64-unknown-linux-gnu -Zbuild-std --lib preserve_unix_security_metadata
+
   benchmark:
     name: Benchmark (criterion)
     runs-on: ubuntu-latest

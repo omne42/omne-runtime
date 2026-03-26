@@ -519,6 +519,27 @@ mod tests {
     }
 
     #[test]
+    fn run_host_command_resolves_relative_program_against_working_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let working_directory = temp.path().join("cwd");
+        std::fs::create_dir_all(&working_directory).expect("create working directory");
+        write_pwd_command(&working_directory, "pwd");
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: OsStr::new("./pwd"),
+            args: &args,
+            env: &[],
+            working_directory: Some(&working_directory),
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let output = run_host_command(&request).expect("run host command");
+        assert!(output.output.status.success());
+        let stdout = String::from_utf8_lossy(&output.output.stdout);
+        assert!(stdout.contains(&working_directory.display().to_string()));
+    }
+
+    #[test]
     fn run_host_recipe_captures_success_output() {
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = write_test_command(temp.path(), "echoenv");
