@@ -824,8 +824,9 @@ mod tests {
     #[test]
     fn canonical_root_duplicate_is_skipped_when_equal_to_declared_root() {
         let dir = tempfile::tempdir().expect("tempdir");
+        let canonical_dir = dir.path().canonicalize().expect("canonicalize");
         let policy =
-            SandboxPolicy::single_root("root", dir.path(), policy_meta::WriteScope::ReadOnly);
+            SandboxPolicy::single_root("root", &canonical_dir, policy_meta::WriteScope::ReadOnly);
 
         let redaction = PathRedaction::from_policy(&policy);
         assert_eq!(redaction.roots.len(), 1);
@@ -835,7 +836,8 @@ mod tests {
     #[test]
     fn canonical_root_duplicate_is_skipped_when_lexically_equivalent_to_declared_root() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let declared_with_curdir = dir.path().join(".");
+        let canonical_dir = dir.path().canonicalize().expect("canonicalize");
+        let declared_with_curdir = canonical_dir.join(".");
         let policy = SandboxPolicy::single_root(
             "root",
             &declared_with_curdir,
