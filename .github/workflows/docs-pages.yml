@@ -46,7 +46,7 @@ jobs:
             omne-runtime -> target
 
       - name: Setup Python
-        uses: actions/setup-python@42375524f8ff6da1a8ebd5e3f7c6f6d88d548ec2 # v5.4.0
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
