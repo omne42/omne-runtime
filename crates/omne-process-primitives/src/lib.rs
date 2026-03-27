@@ -19,7 +19,7 @@
 //! `taskkill /T /F` while the leader is still alive, and a descendant sweep after the leader exits.
 
 use std::io;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use std::sync::{Mutex, MutexGuard};
 
 mod command_path;
@@ -253,29 +253,47 @@ fn kill_process_tree(_cleanup: &ProcessTreeCleanup) {}
 
 #[cfg(windows)]
 fn kill_process_tree(cleanup: &ProcessTreeCleanup) {
-    if cleanup.windows_job.is_some() {
-        return;
-    }
-
-    let Some(pid) = take_windows_process_id(&cleanup.windows_process_id) else {
-        return;
-    };
-
-    if windows_taskkill_tree(pid).is_err() {
-        kill_windows_orphan_descendants(pid);
-    }
+    kill_windows_process_tree(
+        cleanup.windows_job.is_some(),
+        &cleanup.windows_process_id,
+        windows_taskkill_tree,
+        kill_windows_orphan_descendants,
+    );
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn take_windows_process_id(process_id: &Mutex<Option<u32>>) -> Option<u32> {
     lock_windows_process_id(process_id).take()
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn lock_windows_process_id(process_id: &Mutex<Option<u32>>) -> MutexGuard<'_, Option<u32>> {
     process_id
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(any(windows, test))]
+fn kill_windows_process_tree<F, G>(
+    has_windows_job: bool,
+    process_id: &Mutex<Option<u32>>,
+    taskkill_tree: F,
+    fallback: G,
+) where
+    F: FnOnce(u32) -> io::Result<()>,
+    G: FnOnce(u32),
+{
+    if has_windows_job {
+        return;
+    }
+
+    let Some(pid) = take_windows_process_id(process_id) else {
+        return;
+    };
+
+    if taskkill_tree(pid).is_err() {
+        fallback(pid);
+    }
 }
 
 #[cfg(windows)]
@@ -300,13 +318,19 @@ fn windows_taskkill_tree(pid: u32) -> io::Result<()> {
         ));
     }
 
-    std::process::Command::new(windows_taskkill_program())
+    let status = std::process::Command::new(windows_taskkill_program())
         .args(["/T", "/F", "/PID", &pid.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
+        .status()?;
+    if status.success() {
+        return Ok(());
+    }
+
+    Err(io::Error::other(format!(
+        "taskkill exited unsuccessfully for pid {pid}: {status}"
+    )))
 }
 
 #[cfg(windows)]
@@ -386,7 +410,10 @@ fn collect_descendant_pids(
 
 #[cfg(test)]
 mod descendant_tests {
-    use super::collect_descendant_pids;
+    use std::io;
+    use std::sync::Mutex;
+
+    use super::{collect_descendant_pids, kill_windows_process_tree};
 
     #[test]
     fn collect_descendant_pids_returns_postorder_descendants_only() {
@@ -407,6 +434,48 @@ mod descendant_tests {
         let processes = [(10, None), (11, Some(10)), (21, Some(22)), (22, Some(21))];
 
         assert_eq!(collect_descendant_pids(processes, 10), vec![11]);
+    }
+
+    #[test]
+    fn windows_fallback_runs_when_taskkill_returns_error() {
+        let process_id = Mutex::new(Some(42));
+        let mut taskkill_attempts = Vec::new();
+        let mut fallback_pids = Vec::new();
+
+        kill_windows_process_tree(
+            false,
+            &process_id,
+            |pid| {
+                taskkill_attempts.push(pid);
+                Err(io::Error::other("taskkill failed"))
+            },
+            |pid| fallback_pids.push(pid),
+        );
+
+        assert_eq!(taskkill_attempts, vec![42]);
+        assert_eq!(fallback_pids, vec![42]);
+        assert_eq!(*process_id.lock().expect("lock pid"), None);
+    }
+
+    #[test]
+    fn windows_fallback_skips_when_taskkill_succeeds() {
+        let process_id = Mutex::new(Some(42));
+        let mut taskkill_attempts = Vec::new();
+        let mut fallback_pids = Vec::new();
+
+        kill_windows_process_tree(
+            false,
+            &process_id,
+            |pid| {
+                taskkill_attempts.push(pid);
+                Ok(())
+            },
+            |pid| fallback_pids.push(pid),
+        );
+
+        assert_eq!(taskkill_attempts, vec![42]);
+        assert!(fallback_pids.is_empty());
+        assert_eq!(*process_id.lock().expect("lock pid"), None);
     }
 }
 
