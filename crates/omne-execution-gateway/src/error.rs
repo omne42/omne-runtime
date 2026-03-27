@@ -50,6 +50,9 @@ pub enum ExecError {
     #[error("audit log is unavailable at {path}: {detail}")]
     AuditLogUnavailable { path: PathBuf, detail: String },
 
+    #[error("failed to write audit log at {path}: {detail}")]
+    AuditLogWriteFailed { path: PathBuf, detail: String },
+
     #[error("failed to spawn process: {0}")]
     Spawn(#[source] std::io::Error),
 }
