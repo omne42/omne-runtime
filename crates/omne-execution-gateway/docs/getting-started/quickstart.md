@@ -11,15 +11,19 @@ policy-meta = { path = "../../omne_foundation/crates/policy-meta" }
 ## 2. Minimal Rust Example
 
 ```rust
-use omne_execution_gateway::{ExecGateway, ExecRequest};
+use omne_execution_gateway::{ExecGateway, ExecRequest, GatewayPolicy};
 use policy_meta::ExecutionIsolation;
 
-let gateway = ExecGateway::new();
+let gateway = ExecGateway::with_policy(GatewayPolicy {
+    allow_isolation_none: true,
+    enforce_allowlisted_program_for_mutation: false,
+    ..GatewayPolicy::default()
+});
 let req = ExecRequest::new(
     "echo",
     ["hello"],
     ".",
-    ExecutionIsolation::BestEffort,
+    ExecutionIsolation::None,
     ".",
 );
 
@@ -41,14 +45,14 @@ cargo run --bin omne-execution-capability -- --policy ./policy.json --json
 Example output:
 
 ```text
-supported_isolation=BestEffort
+supported_isolation=None
 ```
 
 JSON mode example:
 
 ```json
 {
-  "supported_isolation": "best_effort",
+  "supported_isolation": "none",
   "policy_default_isolation": "best_effort"
 }
 ```
@@ -75,22 +79,22 @@ Example fragment:
     "cwd": ".",
     "workspace_root": ".",
     "declared_mutation": false,
-    "requested_isolation": "best_effort",
-    "requested_isolation_source": "policy_default",
+    "requested_isolation": "none",
+    "requested_isolation_source": "request",
     "requested_policy_meta": {
       "version": 1,
-      "execution_isolation": "best_effort"
+      "execution_isolation": "none"
     },
     "policy_default_isolation": "best_effort"
   },
   "event": {
     "decision": "run",
-    "requested_isolation": "best_effort",
+    "requested_isolation": "none",
     "requested_policy_meta": {
       "version": 1,
-      "execution_isolation": "best_effort"
+      "execution_isolation": "none"
     },
-    "supported_isolation": "best_effort",
+    "supported_isolation": "none",
     "program": "echo",
     "cwd": "/abs/workspace",
     "workspace_root": "/abs/workspace",
@@ -106,6 +110,7 @@ Example fragment:
 ## 5. Common Failure Cases
 
 - `cwd` outside `workspace_root` -> denied.
+- requested `best_effort` or `strict` on current hosts -> denied as `isolation_not_supported`.
 - requested `strict` above host support -> denied.
 - mutating request with non-allowlisted program -> denied (when policy enforcement is on).
 - shell-style launchers such as `sh`, `cmd`, and `pwsh` -> denied unless explicitly allowlisted.

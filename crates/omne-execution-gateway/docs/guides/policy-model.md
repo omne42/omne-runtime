@@ -41,7 +41,7 @@
 - shell-like opaque launchers such as `sh`, `cmd`, `powershell`, and `pwsh` are denied unless they are explicitly allowlisted, because the gateway cannot trust `declared_mutation = false` for an interpreter boundary.
 - the gateway still does not parse arbitrary tool-specific CLI syntax or infer arbitrary binary semantics for non-allowlisted direct executables.
 - allowlist matching is name/path based; it is not binary provenance verification.
-- macOS 和 Windows 当前只报告 `None` 为受支持能力；如果 policy/default/request 仍要求 `best_effort` 或 `strict`，gateway 会按 `isolation_not_supported` fail-closed。
+- Linux、macOS 和 Windows 当前都只报告 `None` 为受支持能力；如果 policy/default/request 仍要求 `best_effort` 或 `strict`，gateway 会按 `isolation_not_supported` fail-closed。
 
 ## Denial Reasons
 

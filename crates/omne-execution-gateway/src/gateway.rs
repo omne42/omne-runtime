@@ -976,17 +976,13 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn execute_status_reports_best_effort_landlock_runtime() {
+    fn linux_detected_capability_fails_closed_for_best_effort_requests() {
         let workspace = tempdir().expect("create temp workspace");
         let policy = GatewayPolicy {
-            allow_isolation_none: true,
             enforce_allowlisted_program_for_mutation: false,
             ..GatewayPolicy::default()
         };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            ExecutionIsolation::BestEffort,
-        );
+        let gateway = ExecGateway::with_policy(policy);
         let request = ExecRequest::new(
             "sh",
             vec!["-c", "exit 0"],
@@ -996,50 +992,15 @@ mod tests {
         );
 
         let (event, result) = gateway.execute(&request).into_parts();
-        let status = result.expect("command should execute");
-        assert!(status.success());
-
-        let observation = event
-            .sandbox_runtime
-            .expect("best_effort execution should record landlock runtime state");
-        assert_eq!(
-            observation.mechanism,
-            crate::audit::SandboxRuntimeMechanism::Landlock
-        );
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("isolation_not_supported"));
         assert!(matches!(
-            observation.outcome,
-            crate::audit::SandboxRuntimeOutcome::FullyEnforced
-                | crate::audit::SandboxRuntimeOutcome::PartiallyEnforced
-                | crate::audit::SandboxRuntimeOutcome::NotEnforced
-                | crate::audit::SandboxRuntimeOutcome::Error
+            result,
+            Err(ExecError::IsolationNotSupported {
+                requested: ExecutionIsolation::BestEffort,
+                supported: ExecutionIsolation::None,
+            })
         ));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn execute_status_allows_runtime_device_rw_for_dev_null() {
-        let workspace = tempdir().expect("create temp workspace");
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            ExecutionIsolation::BestEffort,
-        );
-        let request = ExecRequest::new(
-            "sh",
-            vec!["-c", "exec 3<>/dev/null"],
-            workspace.path(),
-            ExecutionIsolation::BestEffort,
-            workspace.path(),
-        );
-
-        let status = gateway
-            .execute_status(&request)
-            .expect("/dev/null should remain available under sandbox");
-        assert!(status.success());
     }
 
     #[test]
@@ -1102,12 +1063,6 @@ mod tests {
         "-c"
     }
 
-    #[cfg(target_os = "linux")]
-    fn host_supported_test_isolation() -> ExecutionIsolation {
-        ExecutionIsolation::BestEffort
-    }
-
-    #[cfg(not(target_os = "linux"))]
     fn host_supported_test_isolation() -> ExecutionIsolation {
         ExecutionIsolation::None
     }

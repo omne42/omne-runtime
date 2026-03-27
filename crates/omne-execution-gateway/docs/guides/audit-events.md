@@ -36,9 +36,8 @@ When `audit_log_path` is set, the gateway appends JSONL records with:
 - `result.exit_code` / `result.success` for completed processes
 - `result.signal` when a process terminated via signal
 
-On Linux `best_effort`, `event.sandbox_runtime` records the observed Landlock outcome as one of:
+Current shipped platforms do not emit `event.sandbox_runtime`, because native `best_effort` /
+`strict` sandbox backends are not enabled.
 
-- `fully_enforced`
-- `partially_enforced`
-- `not_enforced`
-- `error`
+The field remains part of the event schema so future native backends can report realized runtime
+enforcement state without changing the audit contract.
