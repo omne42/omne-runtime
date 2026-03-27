@@ -142,9 +142,14 @@ impl ExecGateway {
                 (event, Err(err))
             }
         };
-        if let Some(audit) = &self.audit {
-            audit.write_execution_record(&event, &result);
-        }
+        let result = if let Some(audit) = &self.audit {
+            promote_success_result_with_audit_write(
+                result,
+                audit.write_execution_record(&event, &result),
+            )
+        } else {
+            result
+        };
         ExecutionOutcome { event, result }
     }
 
@@ -177,9 +182,14 @@ impl ExecGateway {
                 (event, Err(err))
             }
         };
-        if let Some(audit) = &self.audit {
-            audit.write_prepare_record(&event, &result);
-        }
+        let result = if let Some(audit) = &self.audit {
+            promote_success_result_with_audit_write(
+                result,
+                audit.write_prepare_record(&event, &result),
+            )
+        } else {
+            result
+        };
         (event, result)
     }
 
@@ -413,6 +423,16 @@ fn validate_prepared_command_matches_request(
     }
 
     Ok(())
+}
+
+fn promote_success_result_with_audit_write<T>(
+    result: ExecResult<T>,
+    audit_result: ExecResult<()>,
+) -> ExecResult<T> {
+    match (result, audit_result) {
+        (Ok(_), Err(err)) => Err(err),
+        (result, _) => result,
+    }
 }
 
 #[cfg(test)]
@@ -1094,6 +1114,38 @@ mod tests {
         assert!(content.contains("\"status\":\"spawn_error\""));
     }
 
+    #[test]
+    fn execute_status_fails_when_audit_write_breaks_after_preflight() {
+        let workspace = tempdir().expect("create temp workspace");
+        let audit_path = workspace.path().join("audit.jsonl");
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            audit_log_path: Some(audit_path.clone()),
+            mutating_program_allowlist: vec![audit_breaking_shell_program().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let request = ExecRequest::new(
+            audit_breaking_shell_program(),
+            audit_breaking_shell_args(&audit_path),
+            workspace.path(),
+            host_supported_test_isolation(),
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+
+        let err = gateway
+            .execute_status(&request)
+            .expect_err("audit write failure should be surfaced");
+        match err {
+            ExecError::AuditLogWriteFailed { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
     #[cfg(windows)]
     fn dummy_program() -> &'static str {
         "cmd"
@@ -1112,6 +1164,35 @@ mod tests {
     #[cfg(not(windows))]
     fn shell_exit_nonzero_command() -> (&'static str, Vec<&'static str>) {
         ("/bin/sh", vec!["-c", "exit 1"])
+    }
+
+    #[cfg(windows)]
+    fn audit_breaking_shell_program() -> &'static str {
+        r"C:\Windows\System32\cmd.exe"
+    }
+
+    #[cfg(not(windows))]
+    fn audit_breaking_shell_program() -> &'static str {
+        "/bin/sh"
+    }
+
+    #[cfg(windows)]
+    fn audit_breaking_shell_args(audit_path: &Path) -> Vec<OsString> {
+        vec![
+            OsString::from("/C"),
+            OsString::from(format!(
+                "del \"{0}\" && mkdir \"{0}\"",
+                audit_path.display()
+            )),
+        ]
+    }
+
+    #[cfg(not(windows))]
+    fn audit_breaking_shell_args(audit_path: &Path) -> Vec<OsString> {
+        vec![
+            OsString::from("-c"),
+            OsString::from(format!("rm \"{0}\" && mkdir \"{0}\"", audit_path.display())),
+        ]
     }
 
     #[cfg(windows)]

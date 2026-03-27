@@ -22,16 +22,20 @@ impl AuditLogger {
         }
     }
 
-    pub(crate) fn write_prepare_record(&self, event: &ExecEvent, result: &ExecResult<()>) {
-        self.write_record(AuditRecord::from_prepare(event, result));
+    pub(crate) fn write_prepare_record(
+        &self,
+        event: &ExecEvent,
+        result: &ExecResult<()>,
+    ) -> ExecResult<()> {
+        self.write_record(AuditRecord::from_prepare(event, result))
     }
 
     pub(crate) fn write_execution_record(
         &self,
         event: &ExecEvent,
         result: &ExecResult<ExitStatus>,
-    ) {
-        self.write_record(AuditRecord::from_execution(event, result));
+    ) -> ExecResult<()> {
+        self.write_record(AuditRecord::from_execution(event, result))
     }
 
     pub(crate) fn ensure_ready(&self) -> ExecResult<()> {
@@ -43,13 +47,12 @@ impl AuditLogger {
             })
     }
 
-    fn write_record(&self, record: AuditRecord) {
-        if let Err(err) = self.try_write_record(record) {
-            eprintln!(
-                "omne-execution-gateway: failed to write audit log {}: {err}",
-                self.path.display()
-            );
-        }
+    fn write_record(&self, record: AuditRecord) -> ExecResult<()> {
+        self.try_write_record(record)
+            .map_err(|err| ExecError::AuditLogWriteFailed {
+                path: self.path.clone(),
+                detail: err.to_string(),
+            })
     }
 
     fn try_write_record(&self, record: AuditRecord) -> Result<(), Box<dyn std::error::Error>> {
@@ -205,7 +208,9 @@ mod tests {
 
         let event = sample_event("echo");
 
-        logger.write_prepare_record(&event, &Ok(()));
+        logger
+            .write_prepare_record(&event, &Ok(()))
+            .expect("write prepare record");
 
         let content = fs::read_to_string(path).expect("read audit");
         let record: serde_json::Value =
@@ -230,7 +235,9 @@ mod tests {
 
         let event = sample_event("false");
 
-        logger.write_execution_record(&event, &Ok(nonzero_exit_status()));
+        logger
+            .write_execution_record(&event, &Ok(nonzero_exit_status()))
+            .expect("write execution record");
 
         let content = fs::read_to_string(path).expect("read audit");
         let record: serde_json::Value =
@@ -264,7 +271,9 @@ mod tests {
                     let event = sample_event(format!("echo-{index}"));
                     barrier.wait();
                     for _ in 0..writes_per_thread {
-                        logger.write_prepare_record(&event, &Ok(()));
+                        logger
+                            .write_prepare_record(&event, &Ok(()))
+                            .expect("concurrent audit write should succeed");
                     }
                 })
             })
@@ -314,6 +323,28 @@ mod tests {
 
         match err {
             ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn write_prepare_record_surfaces_post_ready_write_failure() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("audit.jsonl");
+        let logger = AuditLogger::new(&path);
+        let event = sample_event("echo");
+
+        logger
+            .ensure_ready()
+            .expect("audit path should be writable before failure injection");
+        fs::remove_file(&path).expect("remove audit file");
+        fs::create_dir(&path).expect("replace audit file with directory");
+
+        let err = logger
+            .write_prepare_record(&event, &Ok(()))
+            .expect_err("write failure should be returned");
+        match err {
+            ExecError::AuditLogWriteFailed { path: err_path, .. } => assert_eq!(err_path, path),
             other => panic!("unexpected error: {other}"),
         }
     }
