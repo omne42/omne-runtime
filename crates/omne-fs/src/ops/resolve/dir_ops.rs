@@ -454,6 +454,7 @@ mod tests {
     #[test]
     fn unverifiable_parent_identity_uses_canonical_recheck() {
         let dir = tempfile::tempdir().expect("tempdir");
+        let canonical_root = dir.path().canonicalize().expect("canonical root");
         let parent = dir.path().join("parent");
         fs::create_dir(&parent).expect("create parent");
         let metadata = fs::symlink_metadata(&parent).expect("parent metadata");
@@ -462,7 +463,7 @@ mod tests {
             path: &parent,
             relative: Path::new(""),
             expected_meta: &identity,
-            canonical_root: dir.path(),
+            canonical_root: &canonical_root,
             root_id: "root",
         };
 
@@ -474,6 +475,7 @@ mod tests {
     #[test]
     fn unverifiable_parent_identity_rejects_canonical_parent_substitution() {
         let dir = tempfile::tempdir().expect("tempdir");
+        let canonical_root = dir.path().canonicalize().expect("canonical root");
         let expected_parent = dir.path().join("parent");
         let substituted_parent = dir.path().join("other");
         fs::create_dir(&expected_parent).expect("create expected parent");
@@ -484,7 +486,7 @@ mod tests {
             path: &substituted_parent,
             relative: Path::new(""),
             expected_meta: &identity,
-            canonical_root: dir.path(),
+            canonical_root: &canonical_root,
             root_id: "root",
         };
 
