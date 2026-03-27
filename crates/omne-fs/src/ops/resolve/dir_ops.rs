@@ -98,24 +98,22 @@ fn ensure_rechecked_parent_matches_expected(
     )))
 }
 
+struct ParentVerificationContext<'a> {
+    path: &'a Path,
+    relative: &'a Path,
+    expected_meta: &'a super::super::io::DirectoryIdentity,
+    canonical_root: &'a Path,
+    root_id: &'a str,
+}
+
 fn cleanup_created_dir(
-    parent: &Path,
-    parent_relative: &Path,
-    expected_parent_meta: &super::super::io::DirectoryIdentity,
+    parent_ctx: &ParentVerificationContext<'_>,
     next: &Path,
     relative: &Path,
     created_meta: &super::super::io::DirectoryIdentity,
     validation_err: &Error,
-    canonical_root: &Path,
-    root_id: &str,
 ) -> Result<()> {
-    verify_parent_identity(
-        parent,
-        parent_relative,
-        expected_parent_meta,
-        canonical_root,
-        root_id,
-    )?;
+    verify_parent_identity(parent_ctx)?;
     created_meta.ensure_verified(
         next,
         relative,
@@ -155,28 +153,28 @@ fn capture_parent_identity(
     })
 }
 
-fn verify_parent_identity(
-    parent: &Path,
-    parent_relative: &Path,
-    expected_parent_meta: &super::super::io::DirectoryIdentity,
-    canonical_root: &Path,
-    root_id: &str,
-) -> Result<()> {
-    match expected_parent_meta.verify(parent, parent_relative, || {
-        Error::InvalidPath(format!(
-            "parent path {} changed during operation",
-            parent_relative.display()
-        ))
-    })? {
+fn verify_parent_identity(parent_ctx: &ParentVerificationContext<'_>) -> Result<()> {
+    match parent_ctx
+        .expected_meta
+        .verify(parent_ctx.path, parent_ctx.relative, || {
+            Error::InvalidPath(format!(
+                "parent path {} changed during operation",
+                parent_ctx.relative.display()
+            ))
+        })? {
         super::super::io::MetadataIdentityCheck::Verified => Ok(()),
         super::super::io::MetadataIdentityCheck::Unverifiable => {
-            let canonical_parent =
-                canonicalize_checked(parent, parent_relative, canonical_root, root_id)?;
+            let canonical_parent = canonicalize_checked(
+                parent_ctx.path,
+                parent_ctx.relative,
+                parent_ctx.canonical_root,
+                parent_ctx.root_id,
+            )?;
             ensure_rechecked_parent_matches_expected(
                 &canonical_parent,
-                canonical_root,
-                root_id,
-                parent_relative,
+                parent_ctx.canonical_root,
+                parent_ctx.root_id,
+                parent_ctx.relative,
             )
         }
     }
@@ -252,19 +250,26 @@ pub(super) fn ensure_dir_under_root(
         let Some(segment) = validate_relative_component(relative, component)? else {
             continue;
         };
-        let parent_meta_snapshot = if create_missing {
-            Some(capture_parent_identity(
-                &current,
-                current_relative.as_path(),
-            )?)
-        } else {
-            None
-        };
         current_relative.push(segment);
         let next_relative = current_relative.as_path();
         let parent_relative = next_relative.parent().unwrap_or_else(|| Path::new(""));
+        let parent_meta_snapshot = if create_missing {
+            Some(capture_parent_identity(&current, parent_relative)?)
+        } else {
+            None
+        };
         let next = current.join(segment);
         let mut created_meta: Option<super::super::io::DirectoryIdentity> = None;
+        let parent_ctx =
+            parent_meta_snapshot
+                .as_ref()
+                .map(|expected_meta| ParentVerificationContext {
+                    path: &current,
+                    relative: parent_relative,
+                    expected_meta,
+                    canonical_root,
+                    root_id,
+                });
 
         let resolved_current = match fs::symlink_metadata(&next) {
             Ok(meta) => handle_existing_component(
@@ -287,13 +292,14 @@ pub(super) fn ensure_dir_under_root(
                         ));
                     }
                 };
-                verify_parent_identity(
-                    &current,
-                    parent_relative,
-                    expected_parent_meta,
-                    canonical_root,
-                    root_id,
-                )?;
+                let verified_parent_ctx = parent_ctx
+                    .as_ref()
+                    .expect("create_missing always populates parent verification context");
+                debug_assert!(std::ptr::eq(
+                    verified_parent_ctx.expected_meta,
+                    expected_parent_meta
+                ));
+                verify_parent_identity(verified_parent_ctx)?;
                 reject_secret_canonical_path(ctx, &next, canonical_root, root_id, next_relative)?;
                 let created_now = match fs::create_dir(&next) {
                     Ok(()) => true,
@@ -325,24 +331,14 @@ pub(super) fn ensure_dir_under_root(
                     )?;
                     created_meta = Some(created_identity);
                 }
-                if let Err(err) = verify_parent_identity(
-                    &current,
-                    parent_relative,
-                    expected_parent_meta,
-                    canonical_root,
-                    root_id,
-                ) {
+                if let Err(err) = verify_parent_identity(verified_parent_ctx) {
                     if let Some(created_meta) = created_meta.as_ref() {
                         cleanup_created_dir(
-                            &current,
-                            parent_relative,
-                            expected_parent_meta,
+                            verified_parent_ctx,
                             &next,
                             next_relative,
                             created_meta,
                             &err,
-                            canonical_root,
-                            root_id,
                         )?;
                     }
                     return Err(err);
@@ -367,19 +363,15 @@ pub(super) fn ensure_dir_under_root(
                 ) {
                     Ok(canonical) => canonical,
                     Err(err) => {
-                        if let (Some(created_meta), Some(expected_parent_meta)) =
-                            (created_meta.as_ref(), parent_meta_snapshot.as_ref())
+                        if let (Some(created_meta), Some(parent_ctx)) =
+                            (created_meta.as_ref(), parent_ctx.as_ref())
                         {
                             cleanup_created_dir(
-                                &current,
-                                parent_relative,
-                                expected_parent_meta,
+                                parent_ctx,
                                 &next,
                                 next_relative,
                                 created_meta,
                                 &err,
-                                canonical_root,
-                                root_id,
                             )?;
                         }
                         return Err(err);
@@ -395,20 +387,10 @@ pub(super) fn ensure_dir_under_root(
             root_id,
             next_relative,
         ) {
-            if let (Some(created_meta), Some(expected_parent_meta)) =
-                (created_meta.as_ref(), parent_meta_snapshot.as_ref())
+            if let (Some(created_meta), Some(parent_ctx)) =
+                (created_meta.as_ref(), parent_ctx.as_ref())
             {
-                cleanup_created_dir(
-                    &current,
-                    parent_relative,
-                    expected_parent_meta,
-                    &next,
-                    next_relative,
-                    created_meta,
-                    &err,
-                    canonical_root,
-                    root_id,
-                )?;
+                cleanup_created_dir(parent_ctx, &next, next_relative, created_meta, &err)?;
             }
             return Err(err);
         }
