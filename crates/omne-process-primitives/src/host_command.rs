@@ -253,26 +253,20 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
         HostCommandExecution::Sudo => {
             let mut cmd = Command::new(resolve_sudo_program(request.env));
             cmd.arg("-n");
-            if !request.env.is_empty() {
-                cmd.arg(format!(
-                    "--preserve-env={}",
-                    request
-                        .env
-                        .iter()
-                        .map(|(name, _)| name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ));
+            for (name, value) in request.env {
+                cmd.arg(format!("{name}={value}"));
             }
-            cmd.arg("--").arg(&program);
+            cmd.arg(&program);
             cmd
         }
     };
     for arg in request.args {
         cmd.arg(arg);
     }
-    for (name, value) in request.env {
-        cmd.env(name, value);
+    if execution == HostCommandExecution::Direct {
+        for (name, value) in request.env {
+            cmd.env(name, value);
+        }
     }
     if let Some(working_directory) = request.working_directory {
         cmd.current_dir(working_directory);
@@ -618,15 +612,15 @@ mod tests {
             collected_args,
             vec![
                 "-n".to_string(),
-                "--preserve-env=OMNE_TEST_VALUE,OMNE_SECOND".to_string(),
-                "--".to_string(),
+                "OMNE_TEST_VALUE=world".to_string(),
+                "OMNE_SECOND=value".to_string(),
                 "apt-get".to_string(),
                 "install".to_string(),
                 "curl".to_string(),
             ]
         );
 
-        let mut collected_env = command
+        let collected_env = command
             .get_envs()
             .map(|(name, value): (&OsStr, Option<&OsStr>)| {
                 (
@@ -637,13 +631,35 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        collected_env.sort();
+        assert!(collected_env.is_empty());
+    }
+
+    #[test]
+    fn direct_command_keeps_explicit_environment_on_spawned_process() {
+        let env = vec![("OMNE_TEST_VALUE".to_string(), "world".to_string())];
+        let request = HostCommandRequest {
+            program: OsStr::new("echo"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let command = build_command(&request, HostCommandExecution::Direct);
+        let collected_env = command
+            .get_envs()
+            .map(|(name, value): (&OsStr, Option<&OsStr>)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value
+                        .map(|value: &OsStr| value.to_string_lossy().into_owned())
+                        .expect("explicit env value should exist"),
+                )
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
             collected_env,
-            vec![
-                ("OMNE_SECOND".to_string(), "value".to_string()),
-                ("OMNE_TEST_VALUE".to_string(), "world".to_string()),
-            ]
+            vec![("OMNE_TEST_VALUE".to_string(), "world".to_string())]
         );
     }
 
