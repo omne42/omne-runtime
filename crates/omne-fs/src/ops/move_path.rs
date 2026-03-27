@@ -64,18 +64,20 @@ fn revalidate_source_before_move(
     source_relative: &Path,
     expected_source_identity: &super::io::PathIdentity,
 ) -> Result<()> {
-    let current_source_meta = fs::symlink_metadata(source)
-        .map_err(|err| Error::io_path("symlink_metadata", source_relative, err))?;
-    match expected_source_identity.verify_metadata(&current_source_meta, || {
-        Error::InvalidPath("source identity changed during move; refusing to continue".to_string())
-    })? {
-        super::io::MetadataIdentityCheck::Verified => {}
-        super::io::MetadataIdentityCheck::Unverifiable => {
-            // Best-effort fallback for filesystems that do not expose stable file IDs.
-            // The source path has already been lexically/canonically revalidated.
-        }
-    }
-    Ok(())
+    expected_source_identity.ensure_verified(
+        source,
+        source_relative,
+        || {
+            Error::InvalidPath(
+                "source identity changed during move; refusing to continue".to_string(),
+            )
+        },
+        || {
+            Error::InvalidPath(
+                "cannot verify source identity during move; refusing to continue".to_string(),
+            )
+        },
+    )
 }
 
 fn validate_destination_before_move(
@@ -182,7 +184,7 @@ pub fn move_path(ctx: &Context, request: MovePathRequest) -> Result<MovePathResp
 
     let source_meta = fs::symlink_metadata(&source)
         .map_err(|err| Error::io_path("symlink_metadata", &from_relative, err))?;
-    let source_identity = super::io::PathIdentity::from_metadata(source_meta);
+    let source_identity = super::io::PathIdentity::from_metadata(&source, source_meta);
     let kind = if source_identity.metadata().file_type().is_file() {
         "file"
     } else if source_identity.metadata().file_type().is_dir() {
@@ -349,4 +351,32 @@ pub fn move_path(ctx: &Context, request: MovePathRequest) -> Result<MovePathResp
         moved: true,
         kind: kind.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use super::revalidate_source_before_move;
+    use crate::error::Error;
+
+    #[test]
+    fn move_source_revalidation_rejects_unverifiable_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("file.txt");
+        fs::write(&source, "hello").expect("write");
+        let meta = fs::symlink_metadata(&source).expect("metadata");
+        let identity = super::super::io::PathIdentity::unverifiable_for_tests(meta);
+
+        let err = revalidate_source_before_move(&source, Path::new("file.txt"), &identity)
+            .expect_err("unverifiable source identity must fail closed");
+        match err {
+            Error::InvalidPath(message) => assert_eq!(
+                message,
+                "cannot verify source identity during move; refusing to continue"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }

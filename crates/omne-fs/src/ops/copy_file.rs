@@ -51,7 +51,7 @@ pub fn copy_file(ctx: &Context, request: CopyFileRequest) -> Result<CopyFileResp
 
     let (mut input, source_meta) =
         super::io::open_regular_file_for_read(&paths.source, &paths.from_relative)?;
-    let source_identity = super::io::PathIdentity::from_metadata(source_meta);
+    let source_identity = super::io::PathIdentity::from_metadata(&paths.source, source_meta);
 
     ensure_destination_parent_identity_verification_supported()?;
     let destination =
