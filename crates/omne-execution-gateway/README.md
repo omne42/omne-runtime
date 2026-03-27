@@ -30,6 +30,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - shell-like opaque launchers are denied by default because the gateway cannot trust `declared_mutation = false` for an interpreter that can execute arbitrary subcommands.
 - bare allowlist entries only match bare program names; explicit path entries only match that explicit path. This avoids granting mutation rights to arbitrary same-basename binaries in other directories.
 - mutation checks remain name/path based; they do not prove binary provenance or infer arbitrary binary semantics.
+- if `audit_log_path` is configured, preflight creates missing parent directories and rejects requests fail-closed when the audit log cannot be opened for append
 - `prepare_command` rejects a `Command` when its program/args diverge from the validated `ExecRequest`.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.
 

@@ -47,6 +47,9 @@ pub enum ExecError {
     #[error("policy denied request: {0}")]
     PolicyDenied(String),
 
+    #[error("audit log is unavailable at {path}: {detail}")]
+    AuditLogUnavailable { path: PathBuf, detail: String },
+
     #[error("failed to spawn process: {0}")]
     Spawn(#[source] std::io::Error),
 }
