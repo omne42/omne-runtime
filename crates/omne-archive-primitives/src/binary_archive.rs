@@ -784,11 +784,7 @@ mod tests {
     #[test]
     fn archive_binary_hint_requires_exact_archive_path() {
         let archive = make_tar_xz_archive(&[
-            (
-                "node-v1.0.0-linux-x64/bin/node",
-                b"first".as_slice(),
-                0o755,
-            ),
+            ("node-v1.0.0-linux-x64/bin/node", b"first".as_slice(), 0o755),
             (
                 "node-v1.0.0-linux-arm64/bin/node",
                 b"second".as_slice(),
