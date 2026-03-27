@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `move_path` now re-verifies the source object with a stable handle when available and fails
+  closed if the source identity cannot be revalidated before rename, closing the remaining
+  Windows `Unverifiable` fallback that could otherwise move a replaced path.
 - Documented and regression-tested the fail-closed `create_parents` parent-directory identity
   verification path on Windows so missing-handle/unverifiable cases cannot silently degrade to
   success.
