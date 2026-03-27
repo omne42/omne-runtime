@@ -1,6 +1,8 @@
 name: Perf And Safety
 
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
   schedule:
     - cron: "0 4 * * 1"
