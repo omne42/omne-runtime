@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
 
-const DEFAULT_MAX_EXTRACTED_BINARY_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_MAX_EXTRACTED_BINARY_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryArchiveFormat {
@@ -958,6 +958,31 @@ mod tests {
         assert!(out.len() <= 16);
     }
 
+    #[test]
+    fn default_budget_accepts_large_windows_binary_entries() {
+        let archive = make_repeat_zip_archive(
+            "node-v22.14.0-win-x64/node.exe",
+            80 * 1024 * 1024,
+            0o755,
+            b'Z',
+        );
+        let mut out = CountingWriter::default();
+        let matched = extract_binary_from_archive_reader_to_writer(
+            "node-v22.14.0-win-x64.zip",
+            Cursor::new(archive),
+            &BinaryArchiveRequest {
+                binary_name: "node.exe",
+                tool_name: "node",
+                archive_binary_hint: Some("node.exe"),
+            },
+            &mut out,
+        )
+        .expect("large windows binary should fit within the default extraction budget");
+
+        assert_eq!(matched.archive_path, "node-v22.14.0-win-x64/node.exe");
+        assert_eq!(out.bytes_written, 80 * 1024 * 1024);
+    }
+
     fn make_tar_gz_archive(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut builder = tar::Builder::new(encoder);
@@ -1052,6 +1077,32 @@ mod tests {
         writer.into_inner()
     }
 
+    fn make_repeat_zip_archive(path: &str, size: usize, mode: u32, byte: u8) -> Vec<u8> {
+        use std::io::Write;
+
+        let mut writer = Cursor::new(Vec::new());
+        {
+            let mut archive = zip::ZipWriter::new(&mut writer);
+            let options = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .unix_permissions(mode);
+            archive.start_file(path, options).expect("start zip entry");
+            let chunk = vec![byte; 64 * 1024];
+            let full_chunks = size / chunk.len();
+            let tail = size % chunk.len();
+            for _ in 0..full_chunks {
+                archive.write_all(&chunk).expect("write zip chunk");
+            }
+            if tail > 0 {
+                archive
+                    .write_all(&chunk[..tail])
+                    .expect("write zip tail chunk");
+            }
+            archive.finish().expect("finish zip archive");
+        }
+        writer.into_inner()
+    }
+
     fn make_zip_archive_with_directory(path: &str, mode: u32) -> Vec<u8> {
         let mut writer = Cursor::new(Vec::new());
         {
@@ -1081,6 +1132,22 @@ mod tests {
             buf[..len].fill(self.byte);
             self.remaining -= len;
             Ok(len)
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingWriter {
+        bytes_written: usize,
+    }
+
+    impl std::io::Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.bytes_written += buf.len();
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
         }
     }
 
