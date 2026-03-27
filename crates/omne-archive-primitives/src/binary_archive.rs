@@ -654,7 +654,7 @@ fn is_binary_entry_match(
     if let Some(hint) = archive_binary_hint {
         let hint = hint.trim().trim_start_matches('/').replace('\\', "/");
         if !hint.is_empty() {
-            return path == hint;
+            return path == hint || path.ends_with(&format!("/{hint}"));
         }
     }
     if path.ends_with(&format!("/bin/{binary_name}")) {
@@ -734,13 +734,13 @@ mod tests {
     }
 
     #[test]
-    fn archive_binary_hint_requires_exact_path_match() {
+    fn archive_binary_hint_matches_archive_relative_suffix() {
         let archive = make_tar_xz_archive(&[(
             "node-v1.0.0-linux-x64/bin/node",
             b"mock-node".as_slice(),
             0o755,
         )]);
-        let err = extract_binary_from_archive(
+        let extracted = extract_binary_from_archive(
             "node-v1.0.0-linux-x64.tar.xz",
             &archive,
             &BinaryArchiveRequest {
@@ -749,12 +749,10 @@ mod tests {
                 archive_binary_hint: Some("bin/node"),
             },
         )
-        .expect_err("suffix-only hint should not match");
+        .expect("suffix-only hint should match the archive-relative path");
 
-        assert!(matches!(
-            err,
-            ExtractBinaryFromArchiveError::BinaryNotFound { .. }
-        ));
+        assert_eq!(extracted.archive_path, "node-v1.0.0-linux-x64/bin/node");
+        assert_eq!(extracted.bytes, b"mock-node");
     }
 
     #[test]
