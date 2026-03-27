@@ -26,8 +26,9 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - Linux execution events now report the observed best-effort Landlock runtime outcome when the command is actually spawned.
 - Linux `Strict` currently enforces a workspace write boundary, but still allows read/execute access outside the workspace.
 - macOS and Windows currently do not implement a native `BestEffort` sandbox; they report only `None` support and fail closed if `BestEffort` or `Strict` is requested.
-- allowlisted mutating programs must explicitly set `declared_mutation = true`, and declared mutations must still use an allowlisted program/path.
+- allowlisted mutating programs must explicitly set `declared_mutation = true`, and declared mutations must still use an allowlisted bare program name or exact allowlisted path.
 - shell-like opaque launchers are denied by default because the gateway cannot trust `declared_mutation = false` for an interpreter that can execute arbitrary subcommands.
+- bare allowlist entries only match bare program names; explicit path entries only match that explicit path. This avoids granting mutation rights to arbitrary same-basename binaries in other directories.
 - mutation checks remain name/path based; they do not prove binary provenance or infer arbitrary binary semantics.
 - `prepare_command` rejects a `Command` when its program/args diverge from the validated `ExecRequest`.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.

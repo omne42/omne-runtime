@@ -17,6 +17,7 @@
 - Linux 可以报告并尝试执行 `BestEffort` / `Strict`。
 - macOS 和 Windows 当前只报告 `None` 为受支持隔离级别。
 - 当请求的隔离级别高于宿主报告能力时，gateway 必须 fail-closed 拒绝，而不是回退到未隔离执行。
+- mutating allowlist 的 bare name 和 explicit path 分开解释：bare name 只匹配 bare request，explicit path 只匹配同一路径，避免同 basename 的任意二进制越权。
 
 ## 不负责什么
 

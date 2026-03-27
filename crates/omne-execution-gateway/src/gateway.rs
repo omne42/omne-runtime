@@ -638,6 +638,31 @@ mod tests {
     }
 
     #[test]
+    fn denies_mutation_for_explicit_path_that_only_matches_allowlisted_basename() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        #[cfg(windows)]
+        let program = "C:\\tmp\\omne-fs.exe";
+        #[cfg(not(windows))]
+        let program = "/tmp/omne-fs";
+        let request = ExecRequest::new(
+            program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("mutation_requires_allowlisted_program")
+        );
+    }
+
+    #[test]
     fn denies_opaque_command_launcher_without_allowlist() {
         let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");

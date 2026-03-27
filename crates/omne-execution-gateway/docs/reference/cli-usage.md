@@ -37,6 +37,8 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 `declared_mutation` is required in `request.json`; the CLI no longer defaults it to `false`.
 When `program` matches `mutating_program_allowlist`, the gateway requires
 `declared_mutation = true`; declared mutations still must use an allowlisted program.
+Bare allowlist entries only match bare program names. If a request uses an explicit path, that
+same explicit path must be allowlisted.
 Shell-like opaque launchers such as `sh`, `cmd`, `powershell`, and `pwsh` are denied unless
 they are explicitly allowlisted. The gateway does not parse `omne-fs` subcommands to infer
 mutation intent.

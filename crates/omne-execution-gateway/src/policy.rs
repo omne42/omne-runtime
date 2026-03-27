@@ -30,12 +30,15 @@ impl Default for GatewayPolicy {
 
 impl GatewayPolicy {
     pub fn is_mutating_program_allowlisted(&self, program: &str) -> bool {
-        let program_basename = Path::new(program)
-            .file_name()
-            .and_then(|name| name.to_str());
         self.mutating_program_allowlist.iter().any(|item| {
-            program_name_matches(item, program)
-                || program_basename.is_some_and(|name| program_name_matches(item, name))
+            match (
+                is_explicit_program_path(item),
+                is_explicit_program_path(program),
+            ) {
+                (false, false) => program_name_matches(item, program),
+                (true, true) => program_path_matches(item, program),
+                _ => false,
+            }
         })
     }
 
@@ -45,6 +48,45 @@ impl GatewayPolicy {
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
         Ok(policy)
     }
+}
+
+fn is_explicit_program_path(program: &str) -> bool {
+    Path::new(program).is_absolute() || program.chars().any(|ch| ch == '/' || ch == '\\')
+}
+
+#[cfg(windows)]
+fn program_path_matches(expected: &str, actual: &str) -> bool {
+    if normalize_windows_path_text(expected) == normalize_windows_path_text(actual) {
+        return true;
+    }
+
+    let expected_path = Path::new(expected);
+    let actual_path = Path::new(actual);
+    match (expected_path.parent(), actual_path.parent()) {
+        (Some(expected_parent), Some(actual_parent))
+            if normalize_windows_path_text(&expected_parent.to_string_lossy())
+                == normalize_windows_path_text(&actual_parent.to_string_lossy()) =>
+        {
+            expected_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .zip(actual_path.file_name().and_then(|name| name.to_str()))
+                .is_some_and(|(expected_name, actual_name)| {
+                    program_name_matches(expected_name, actual_name)
+                })
+        }
+        _ => false,
+    }
+}
+
+#[cfg(not(windows))]
+fn program_path_matches(expected: &str, actual: &str) -> bool {
+    expected == actual
+}
+
+#[cfg(windows)]
+fn normalize_windows_path_text(path: &str) -> String {
+    path.replace('/', "\\").to_ascii_lowercase()
 }
 
 #[cfg(windows)]
@@ -89,23 +131,39 @@ mod tests {
     }
 
     #[test]
-    fn allowlist_matches_program_basename_for_explicit_paths() {
+    fn bare_program_allowlist_does_not_match_explicit_path_by_basename() {
         let policy = GatewayPolicy::default();
+        assert!(!policy.is_mutating_program_allowlisted("/usr/local/bin/omne-fs"));
+    }
+
+    #[test]
+    fn explicit_path_allowlist_requires_exact_path_match() {
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["/usr/local/bin/omne-fs".to_string()],
+            ..GatewayPolicy::default()
+        };
+
         assert!(policy.is_mutating_program_allowlisted("/usr/local/bin/omne-fs"));
+        assert!(!policy.is_mutating_program_allowlisted("/tmp/omne-fs"));
     }
 
     #[cfg(windows)]
     #[test]
-    fn allowlist_matches_windows_program_basename_for_explicit_paths() {
+    fn bare_program_allowlist_does_not_match_windows_explicit_path_by_basename() {
         let policy = GatewayPolicy::default();
-        assert!(policy.is_mutating_program_allowlisted("C:\\tools\\omne-fs-cli"));
+        assert!(!policy.is_mutating_program_allowlisted("C:\\tools\\omne-fs-cli"));
     }
 
     #[cfg(windows)]
     #[test]
-    fn allowlist_matches_windows_program_basename_with_exe_suffix() {
-        let policy = GatewayPolicy::default();
-        assert!(policy.is_mutating_program_allowlisted("C:\\tools\\OMNE-FS.EXE"));
+    fn explicit_path_allowlist_matches_windows_path_case_and_exe_variants_only_for_same_path() {
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["C:\\tools\\omne-fs".to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(policy.is_mutating_program_allowlisted("C:/TOOLS/OMNE-FS.EXE"));
+        assert!(!policy.is_mutating_program_allowlisted("C:\\tmp\\OMNE-FS.EXE"));
     }
 
     #[test]
