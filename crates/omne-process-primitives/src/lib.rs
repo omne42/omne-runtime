@@ -194,38 +194,55 @@ fn linux_process_group_exists(process_group_id: rustix::process::Pid) -> bool {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return false;
     };
+    linux_process_group_exists_with(
+        process_group_id,
+        entries.map(parse_linux_proc_entry_pid),
+        read_linux_process_identity,
+    )
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn linux_process_group_exists_with<I, F>(
+    process_group_id: rustix::process::Pid,
+    entries: I,
+    mut read_identity: F,
+) -> bool
+where
+    I: IntoIterator<Item = io::Result<Option<rustix::process::Pid>>>,
+    F: FnMut(rustix::process::Pid) -> io::Result<LinuxProcessIdentity>,
+{
     for entry in entries {
-        let Ok(entry) = entry else {
-            return false;
-        };
-        let file_name = entry.file_name();
-        let Some(raw_pid) = file_name.to_str() else {
-            continue;
-        };
-        let Ok(pid) = raw_pid.parse::<i32>() else {
-            continue;
-        };
-        let Some(pid) = rustix::process::Pid::from_raw(pid) else {
+        let Some(pid) = (match entry {
+            Ok(pid) => pid,
+            Err(_) => continue,
+        }) else {
             continue;
         };
 
-        match read_linux_process_identity(pid) {
+        match read_identity(pid) {
             Ok(identity) if identity.process_group_id == process_group_id.as_raw_pid() => {
                 return true;
             }
-            Ok(_) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound
-                        | io::ErrorKind::PermissionDenied
-                        | io::ErrorKind::InvalidData
-                ) => {}
-            Err(_) => return false,
+            Ok(_) | Err(_) => {}
         }
     }
 
     false
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn parse_linux_proc_entry_pid(
+    entry: io::Result<std::fs::DirEntry>,
+) -> io::Result<Option<rustix::process::Pid>> {
+    let entry = entry?;
+    let file_name = entry.file_name();
+    let Some(raw_pid) = file_name.to_str() else {
+        return Ok(None);
+    };
+    let Ok(pid) = raw_pid.parse::<i32>() else {
+        return Ok(None);
+    };
+    Ok(rustix::process::Pid::from_raw(pid))
 }
 
 #[cfg(all(unix, target_os = "linux"))]
@@ -541,7 +558,8 @@ const WINDOWS_ERROR_NOT_SUPPORTED: i32 = 50;
 mod tests {
     use super::{
         CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
-        configure_command_for_process_tree, should_kill_linux_process_group_with,
+        configure_command_for_process_tree, linux_process_group_exists_with,
+        should_kill_linux_process_group_with,
     };
     use rustix::process::Pid;
     use std::io;
@@ -582,6 +600,48 @@ mod tests {
                 start_ticks: 22,
             }),
             |_| false,
+        ));
+    }
+
+    #[test]
+    fn linux_process_group_scan_ignores_entry_iteration_errors() {
+        let process_group_id = Pid::from_raw(31337).expect("process group id must be non-zero");
+        let matching_pid = Pid::from_raw(4242).expect("pid must be non-zero");
+
+        assert!(linux_process_group_exists_with(
+            process_group_id,
+            [
+                Err(io::Error::other("transient /proc iteration failure")),
+                Ok(Some(matching_pid)),
+            ],
+            |pid| {
+                assert_eq!(pid, matching_pid);
+                Ok(LinuxProcessIdentity {
+                    process_group_id: process_group_id.as_raw_pid(),
+                    start_ticks: 22,
+                })
+            },
+        ));
+    }
+
+    #[test]
+    fn linux_process_group_scan_ignores_identity_read_errors_for_other_entries() {
+        let process_group_id = Pid::from_raw(31337).expect("process group id must be non-zero");
+        let noisy_pid = Pid::from_raw(4242).expect("pid must be non-zero");
+        let matching_pid = Pid::from_raw(5252).expect("pid must be non-zero");
+
+        assert!(linux_process_group_exists_with(
+            process_group_id,
+            [Ok(Some(noisy_pid)), Ok(Some(matching_pid))],
+            |pid| {
+                if pid == noisy_pid {
+                    return Err(io::Error::other("transient /proc stat read failure"));
+                }
+                Ok(LinuxProcessIdentity {
+                    process_group_id: process_group_id.as_raw_pid(),
+                    start_ticks: 22,
+                })
+            },
         ));
     }
 
