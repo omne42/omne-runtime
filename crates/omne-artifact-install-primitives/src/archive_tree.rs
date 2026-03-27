@@ -658,12 +658,12 @@ mod tests {
 
     use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
 
+    #[cfg(unix)]
+    use super::extract_tar_tree;
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, download_and_install_archive_tree,
         install_archive_tree_from_reader_with_limits,
     };
-    #[cfg(unix)]
-    use super::extract_tar_tree;
 
     fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut writer = Cursor::new(Vec::new());
