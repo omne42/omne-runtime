@@ -104,7 +104,11 @@ pub(crate) fn candidate_failure_message(
 ) -> CandidateFailure {
     CandidateFailure {
         kind: err.kind(),
-        message: format!("{}:{} -> {err}", candidate.kind.label(), candidate.url),
+        message: format!(
+            "{}:{} -> {err}",
+            candidate.kind.label(),
+            redact_url_for_error(&candidate.url)
+        ),
     }
 }
 
@@ -118,6 +122,7 @@ pub(crate) fn failed_candidates_error(
         .map(|error| error.message)
         .collect::<Vec<_>>()
         .join(" | ");
+    let canonical_url = redact_url_for_error(canonical_url);
     match kind {
         ArtifactInstallErrorKind::Download => ArtifactInstallError::download(format!(
             "all download candidates failed for {canonical_url}: {details}"
@@ -126,6 +131,17 @@ pub(crate) fn failed_candidates_error(
             "all download candidates failed for {canonical_url}: {details}"
         )),
     }
+}
+
+fn redact_url_for_error(raw: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(raw) else {
+        return "<invalid-url>".to_string();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
 }
 
 fn aggregate_failure_kind(errors: &[CandidateFailure]) -> ArtifactInstallErrorKind {
@@ -181,5 +197,21 @@ mod tests {
 
         assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
         assert!(err.to_string().contains("archive extraction failed"));
+    }
+
+    #[test]
+    fn failed_candidate_messages_redact_url_credentials_and_query() {
+        let candidate = ArtifactDownloadCandidate {
+            url: "https://token@example.invalid/demo.zip?sig=secret#frag".to_string(),
+            kind: ArtifactDownloadCandidateKind::Canonical,
+        };
+
+        let failure =
+            candidate_failure_message(&candidate, &ArtifactInstallError::download("HTTP 403"));
+        assert_eq!(failure.kind, ArtifactInstallErrorKind::Download);
+        assert!(failure.message.contains("https://example.invalid/demo.zip"));
+        assert!(!failure.message.contains("token@"));
+        assert!(!failure.message.contains("sig=secret"));
+        assert!(!failure.message.contains("#frag"));
     }
 }
