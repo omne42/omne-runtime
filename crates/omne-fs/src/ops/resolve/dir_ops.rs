@@ -77,6 +77,27 @@ fn reject_secret_canonical_path(
     Ok(())
 }
 
+fn ensure_rechecked_parent_matches_expected(
+    canonical_parent: &Path,
+    canonical_root: &Path,
+    root_id: &str,
+    parent_relative: &Path,
+) -> Result<()> {
+    let canonical_relative =
+        canonical_relative_checked(canonical_parent, canonical_root, root_id, parent_relative)?;
+    if crate::path_utils::paths_equal_case_insensitive_normalized(
+        &canonical_relative,
+        parent_relative,
+    ) {
+        return Ok(());
+    }
+
+    Err(Error::InvalidPath(format!(
+        "parent path {} changed during operation",
+        parent_relative.display()
+    )))
+}
+
 fn cleanup_created_dir(
     parent: &Path,
     parent_relative: &Path,
@@ -85,8 +106,16 @@ fn cleanup_created_dir(
     relative: &Path,
     created_meta: &super::super::io::DirectoryIdentity,
     validation_err: &Error,
+    canonical_root: &Path,
+    root_id: &str,
 ) -> Result<()> {
-    verify_parent_identity(parent, parent_relative, expected_parent_meta)?;
+    verify_parent_identity(
+        parent,
+        parent_relative,
+        expected_parent_meta,
+        canonical_root,
+        root_id,
+    )?;
     created_meta.ensure_verified(
         next,
         relative,
@@ -130,23 +159,27 @@ fn verify_parent_identity(
     parent: &Path,
     parent_relative: &Path,
     expected_parent_meta: &super::super::io::DirectoryIdentity,
+    canonical_root: &Path,
+    root_id: &str,
 ) -> Result<()> {
-    expected_parent_meta.ensure_verified(
-        parent,
-        parent_relative,
-        || {
-            Error::InvalidPath(format!(
-                "parent path {} changed during operation",
-                parent_relative.display()
-            ))
-        },
-        || {
-            Error::InvalidPath(format!(
-                "parent path {} identity could not be verified during operation",
-                parent_relative.display()
-            ))
-        },
-    )
+    match expected_parent_meta.verify(parent, parent_relative, || {
+        Error::InvalidPath(format!(
+            "parent path {} changed during operation",
+            parent_relative.display()
+        ))
+    })? {
+        super::super::io::MetadataIdentityCheck::Verified => Ok(()),
+        super::super::io::MetadataIdentityCheck::Unverifiable => {
+            let canonical_parent =
+                canonicalize_checked(parent, parent_relative, canonical_root, root_id)?;
+            ensure_rechecked_parent_matches_expected(
+                &canonical_parent,
+                canonical_root,
+                root_id,
+                parent_relative,
+            )
+        }
+    }
 }
 
 fn handle_existing_component(
@@ -254,7 +287,13 @@ pub(super) fn ensure_dir_under_root(
                         ));
                     }
                 };
-                verify_parent_identity(&current, parent_relative, expected_parent_meta)?;
+                verify_parent_identity(
+                    &current,
+                    parent_relative,
+                    expected_parent_meta,
+                    canonical_root,
+                    root_id,
+                )?;
                 reject_secret_canonical_path(ctx, &next, canonical_root, root_id, next_relative)?;
                 let created_now = match fs::create_dir(&next) {
                     Ok(()) => true,
@@ -286,9 +325,13 @@ pub(super) fn ensure_dir_under_root(
                     )?;
                     created_meta = Some(created_identity);
                 }
-                if let Err(err) =
-                    verify_parent_identity(&current, parent_relative, expected_parent_meta)
-                {
+                if let Err(err) = verify_parent_identity(
+                    &current,
+                    parent_relative,
+                    expected_parent_meta,
+                    canonical_root,
+                    root_id,
+                ) {
                     if let Some(created_meta) = created_meta.as_ref() {
                         cleanup_created_dir(
                             &current,
@@ -298,6 +341,8 @@ pub(super) fn ensure_dir_under_root(
                             next_relative,
                             created_meta,
                             &err,
+                            canonical_root,
+                            root_id,
                         )?;
                     }
                     return Err(err);
@@ -333,6 +378,8 @@ pub(super) fn ensure_dir_under_root(
                                 next_relative,
                                 created_meta,
                                 &err,
+                                canonical_root,
+                                root_id,
                             )?;
                         }
                         return Err(err);
@@ -359,6 +406,8 @@ pub(super) fn ensure_dir_under_root(
                     next_relative,
                     created_meta,
                     &err,
+                    canonical_root,
+                    root_id,
                 )?;
             }
             return Err(err);
@@ -367,4 +416,50 @@ pub(super) fn ensure_dir_under_root(
     }
 
     Ok(current)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::error::Error;
+
+    use super::ensure_rechecked_parent_matches_expected;
+
+    #[test]
+    fn rechecked_parent_matches_expected_relative_path() {
+        ensure_rechecked_parent_matches_expected(
+            Path::new("/root/parent"),
+            Path::new("/root"),
+            "root",
+            Path::new("parent"),
+        )
+        .expect("rechecked parent should still match expected relative path");
+    }
+
+    #[test]
+    fn rechecked_parent_rejects_changed_relative_path() {
+        let err = ensure_rechecked_parent_matches_expected(
+            Path::new("/root/other"),
+            Path::new("/root"),
+            "root",
+            Path::new("parent"),
+        )
+        .expect_err("rechecked parent should reject a substituted path");
+        assert!(
+            matches!(err, Error::InvalidPath(message) if message.contains("changed during operation"))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rechecked_parent_is_case_insensitive_on_windows() {
+        ensure_rechecked_parent_matches_expected(
+            Path::new(r"C:\Root\Parent"),
+            Path::new(r"c:\root"),
+            "root",
+            Path::new("parent"),
+        )
+        .expect("Windows recheck should preserve case-insensitive parent matches");
+    }
 }
