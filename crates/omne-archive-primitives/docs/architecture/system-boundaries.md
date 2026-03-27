@@ -8,7 +8,7 @@
 
 - 识别受支持的 archive 资产格式。
 - 遍历归档条目并归一化条目路径。
-- 按二进制名、工具名和 `archive_binary` hint 匹配目标条目；hint 可以是完整 archive 路径，也可以是 archive 根目录下的相对后缀路径。
+- 按二进制名、工具名和 `archive_binary` hint 匹配目标条目；hint 可以是完整 archive 路径，也可以是 archive 根目录下唯一可判定的相对后缀路径。
 - 在读取内容前验证命中的目标条目确实是 regular file。
 - 在默认 extracted-byte 预算内读取并返回匹配条目的二进制字节；预算需要覆盖大型官方单文件 release。
 

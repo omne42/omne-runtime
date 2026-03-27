@@ -246,6 +246,7 @@ where
     R: Read,
 {
     let archive_format = BinaryArchiveFormat::TarGz;
+    let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let decoder = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive.entries().map_err(|err| {
@@ -270,12 +271,18 @@ where
             })?
             .to_string_lossy()
             .replace('\\', "/");
-        if is_binary_entry_match(
-            &path,
-            request.binary_name,
-            request.tool_name,
-            request.archive_binary_hint,
-        ) {
+        if let Some(hint) = normalized_hint.as_deref() {
+            if path == hint {
+                ensure_tar_entry_is_regular_file(
+                    archive_format,
+                    &path,
+                    entry.header().entry_type(),
+                )?;
+                return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
+            }
+            continue;
+        }
+        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
             return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
         }
@@ -297,6 +304,7 @@ where
     W: Write + ?Sized,
 {
     let archive_format = BinaryArchiveFormat::TarGz;
+    let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let decoder = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive.entries().map_err(|err| {
@@ -321,12 +329,24 @@ where
             })?
             .to_string_lossy()
             .replace('\\', "/");
-        if is_binary_entry_match(
-            &path,
-            request.binary_name,
-            request.tool_name,
-            request.archive_binary_hint,
-        ) {
+        if let Some(hint) = normalized_hint.as_deref() {
+            if path == hint {
+                ensure_tar_entry_is_regular_file(
+                    archive_format,
+                    &path,
+                    entry.header().entry_type(),
+                )?;
+                return write_matched_entry(
+                    archive_format,
+                    path,
+                    &mut entry,
+                    writer,
+                    max_entry_bytes,
+                );
+            }
+            continue;
+        }
+        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
             return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
         }
@@ -346,11 +366,13 @@ where
     R: Read,
 {
     let archive_format = BinaryArchiveFormat::TarXz;
+    let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let decoder = xz2::read::XzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive.entries().map_err(|err| {
         ExtractBinaryFromArchiveError::archive_read(archive_format, "read_entries", err.to_string())
     })?;
+    let mut suffix_match: Option<ExtractedArchiveBinary> = None;
     for entry in entries {
         let mut entry = entry.map_err(|err| {
             ExtractBinaryFromArchiveError::archive_read(
@@ -370,15 +392,42 @@ where
             })?
             .to_string_lossy()
             .replace('\\', "/");
-        if is_binary_entry_match(
-            &path,
-            request.binary_name,
-            request.tool_name,
-            request.archive_binary_hint,
-        ) {
+        if let Some(hint) = normalized_hint.as_deref() {
+            match classify_hint_match(&path, hint) {
+                HintMatch::Exact => {
+                    ensure_tar_entry_is_regular_file(
+                        archive_format,
+                        &path,
+                        entry.header().entry_type(),
+                    )?;
+                    return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
+                }
+                HintMatch::Suffix => {
+                    ensure_tar_entry_is_regular_file(
+                        archive_format,
+                        &path,
+                        entry.header().entry_type(),
+                    )?;
+                    let matched =
+                        read_matched_entry(archive_format, path, &mut entry, max_entry_bytes)?;
+                    record_hint_suffix_match(
+                        archive_format,
+                        hint,
+                        &mut suffix_match,
+                        matched,
+                    )?;
+                }
+                HintMatch::None => {}
+            }
+            continue;
+        }
+        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
             return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
         }
+    }
+    if let Some(matched) = suffix_match {
+        return Ok(matched);
     }
     Err(ExtractBinaryFromArchiveError::BinaryNotFound {
         archive_format,
@@ -397,11 +446,13 @@ where
     W: Write + ?Sized,
 {
     let archive_format = BinaryArchiveFormat::TarXz;
+    let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let decoder = xz2::read::XzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive.entries().map_err(|err| {
         ExtractBinaryFromArchiveError::archive_read(archive_format, "read_entries", err.to_string())
     })?;
+    let mut suffix_match: Option<BufferedArchiveBinary> = None;
     for entry in entries {
         let mut entry = entry.map_err(|err| {
             ExtractBinaryFromArchiveError::archive_read(
@@ -421,15 +472,52 @@ where
             })?
             .to_string_lossy()
             .replace('\\', "/");
-        if is_binary_entry_match(
-            &path,
-            request.binary_name,
-            request.tool_name,
-            request.archive_binary_hint,
-        ) {
+        if let Some(hint) = normalized_hint.as_deref() {
+            match classify_hint_match(&path, hint) {
+                HintMatch::Exact => {
+                    ensure_tar_entry_is_regular_file(
+                        archive_format,
+                        &path,
+                        entry.header().entry_type(),
+                    )?;
+                    return write_matched_entry(
+                        archive_format,
+                        path,
+                        &mut entry,
+                        writer,
+                        max_entry_bytes,
+                    );
+                }
+                HintMatch::Suffix => {
+                    ensure_tar_entry_is_regular_file(
+                        archive_format,
+                        &path,
+                        entry.header().entry_type(),
+                    )?;
+                    let matched = read_buffered_match(
+                        archive_format,
+                        path,
+                        &mut entry,
+                        max_entry_bytes,
+                    )?;
+                    record_hint_suffix_match(
+                        archive_format,
+                        hint,
+                        &mut suffix_match,
+                        matched,
+                    )?;
+                }
+                HintMatch::None => {}
+            }
+            continue;
+        }
+        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
             return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
         }
+    }
+    if let Some(matched) = suffix_match {
+        return write_buffered_match(archive_format, matched, writer);
     }
     Err(ExtractBinaryFromArchiveError::BinaryNotFound {
         archive_format,
@@ -446,9 +534,11 @@ where
     R: Read + Seek,
 {
     let archive_format = BinaryArchiveFormat::Zip;
+    let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let mut archive = zip::ZipArchive::new(reader).map_err(|err| {
         ExtractBinaryFromArchiveError::archive_read(archive_format, "open_archive", err.to_string())
     })?;
+    let mut suffix_match: Option<ExtractedArchiveBinary> = None;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|err| {
             ExtractBinaryFromArchiveError::archive_read(
@@ -458,18 +548,37 @@ where
             )
         })?;
         let path = entry.name().replace('\\', "/");
-        if is_binary_entry_match(
-            &path,
-            request.binary_name,
-            request.tool_name,
-            request.archive_binary_hint,
-        ) {
+        if let Some(hint) = normalized_hint.as_deref() {
+            match classify_hint_match(&path, hint) {
+                HintMatch::Exact => {
+                    ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
+                    return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
+                }
+                HintMatch::Suffix => {
+                    ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
+                    let matched =
+                        read_matched_entry(archive_format, path, &mut entry, max_entry_bytes)?;
+                    record_hint_suffix_match(
+                        archive_format,
+                        hint,
+                        &mut suffix_match,
+                        matched,
+                    )?;
+                }
+                HintMatch::None => {}
+            }
+            continue;
+        }
+        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
             ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
             return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
         }
         if entry.is_dir() {
             continue;
         }
+    }
+    if let Some(matched) = suffix_match {
+        return Ok(matched);
     }
     Err(ExtractBinaryFromArchiveError::BinaryNotFound {
         archive_format,
@@ -488,9 +597,11 @@ where
     W: Write + ?Sized,
 {
     let archive_format = BinaryArchiveFormat::Zip;
+    let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let mut archive = zip::ZipArchive::new(reader).map_err(|err| {
         ExtractBinaryFromArchiveError::archive_read(archive_format, "open_archive", err.to_string())
     })?;
+    let mut suffix_match: Option<BufferedArchiveBinary> = None;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|err| {
             ExtractBinaryFromArchiveError::archive_read(
@@ -500,12 +611,38 @@ where
             )
         })?;
         let path = entry.name().replace('\\', "/");
-        if is_binary_entry_match(
-            &path,
-            request.binary_name,
-            request.tool_name,
-            request.archive_binary_hint,
-        ) {
+        if let Some(hint) = normalized_hint.as_deref() {
+            match classify_hint_match(&path, hint) {
+                HintMatch::Exact => {
+                    ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
+                    return write_matched_entry(
+                        archive_format,
+                        path,
+                        &mut entry,
+                        writer,
+                        max_entry_bytes,
+                    );
+                }
+                HintMatch::Suffix => {
+                    ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
+                    let matched = read_buffered_match(
+                        archive_format,
+                        path,
+                        &mut entry,
+                        max_entry_bytes,
+                    )?;
+                    record_hint_suffix_match(
+                        archive_format,
+                        hint,
+                        &mut suffix_match,
+                        matched,
+                    )?;
+                }
+                HintMatch::None => {}
+            }
+            continue;
+        }
+        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
             ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
             return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
         }
@@ -513,10 +650,26 @@ where
             continue;
         }
     }
+    if let Some(matched) = suffix_match {
+        return write_buffered_match(archive_format, matched, writer);
+    }
     Err(ExtractBinaryFromArchiveError::BinaryNotFound {
         archive_format,
         binary_name: request.binary_name.to_string(),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HintMatch {
+    None,
+    Exact,
+    Suffix,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BufferedArchiveBinary {
+    archive_path: String,
+    bytes: Vec<u8>,
 }
 
 fn read_matched_entry<R>(
@@ -563,6 +716,44 @@ where
     Ok(ArchiveBinaryMatch {
         archive_format,
         archive_path,
+    })
+}
+
+fn read_buffered_match<R>(
+    archive_format: BinaryArchiveFormat,
+    archive_path: String,
+    reader: &mut R,
+    max_entry_bytes: u64,
+) -> Result<BufferedArchiveBinary, ExtractBinaryFromArchiveError>
+where
+    R: Read,
+{
+    let mut bytes = Vec::new();
+    copy_entry_with_limit(reader, &mut bytes, archive_format, &archive_path, max_entry_bytes)?;
+    Ok(BufferedArchiveBinary {
+        archive_path,
+        bytes,
+    })
+}
+
+fn write_buffered_match<W>(
+    archive_format: BinaryArchiveFormat,
+    matched: BufferedArchiveBinary,
+    writer: &mut W,
+) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
+where
+    W: Write + ?Sized,
+{
+    writer.write_all(&matched.bytes).map_err(|err| {
+        ExtractBinaryFromArchiveError::archive_read(
+            archive_format,
+            "write_entry_content",
+            format!("{}: {err}", matched.archive_path),
+        )
+    })?;
+    Ok(ArchiveBinaryMatch {
+        archive_format,
+        archive_path: matched.archive_path,
     })
 }
 
@@ -645,18 +836,60 @@ fn ensure_zip_entry_is_regular_file(
     Ok(())
 }
 
-fn is_binary_entry_match(
-    path: &str,
-    binary_name: &str,
-    tool_name: &str,
-    archive_binary_hint: Option<&str>,
-) -> bool {
-    if let Some(hint) = archive_binary_hint {
-        let hint = hint.trim().trim_start_matches('/').replace('\\', "/");
-        if !hint.is_empty() {
-            return path == hint || path.ends_with(&format!("/{hint}"));
-        }
+fn normalize_archive_binary_hint(archive_binary_hint: Option<&str>) -> Option<String> {
+    let hint = archive_binary_hint?;
+    let hint = hint.trim().trim_start_matches('/').replace('\\', "/");
+    (!hint.is_empty()).then_some(hint)
+}
+
+fn classify_hint_match(path: &str, hint: &str) -> HintMatch {
+    if path == hint {
+        return HintMatch::Exact;
     }
+    if path.ends_with(&format!("/{hint}")) {
+        return HintMatch::Suffix;
+    }
+    HintMatch::None
+}
+
+fn record_hint_suffix_match<T>(
+    archive_format: BinaryArchiveFormat,
+    archive_binary_hint: &str,
+    current_match: &mut Option<T>,
+    new_match: T,
+) -> Result<(), ExtractBinaryFromArchiveError>
+where
+    T: HintMatchPath,
+{
+    if let Some(existing) = current_match.as_ref() {
+        return Err(ExtractBinaryFromArchiveError::AmbiguousBinaryHint {
+            archive_format,
+            archive_binary_hint: archive_binary_hint.to_string(),
+            first_match: existing.archive_path().to_string(),
+            second_match: new_match.archive_path().to_string(),
+        });
+    }
+    *current_match = Some(new_match);
+    Ok(())
+}
+
+trait HintMatchPath {
+    fn archive_path(&self) -> &str;
+}
+
+impl HintMatchPath for ExtractedArchiveBinary {
+    fn archive_path(&self) -> &str {
+        &self.archive_path
+    }
+}
+
+impl HintMatchPath for BufferedArchiveBinary {
+    fn archive_path(&self) -> &str {
+        &self.archive_path
+    }
+}
+
+fn is_binary_entry_match_without_hint(path: &str, binary_name: &str, tool_name: &str) -> bool {
     if path.ends_with(&format!("/bin/{binary_name}")) {
         return true;
     }
@@ -753,6 +986,47 @@ mod tests {
 
         assert_eq!(extracted.archive_path, "node-v1.0.0-linux-x64/bin/node");
         assert_eq!(extracted.bytes, b"mock-node");
+    }
+
+    #[test]
+    fn archive_binary_hint_rejects_ambiguous_archive_relative_suffix() {
+        let archive = make_tar_xz_archive(&[
+            (
+                "node-v1.0.0-linux-x64/bin/node",
+                b"first".as_slice(),
+                0o755,
+            ),
+            (
+                "node-v1.0.0-linux-arm64/bin/node",
+                b"second".as_slice(),
+                0o755,
+            ),
+        ]);
+        let err = extract_binary_from_archive(
+            "node-v1.0.0.tar.xz",
+            &archive,
+            &BinaryArchiveRequest {
+                binary_name: "node",
+                tool_name: "node",
+                archive_binary_hint: Some("bin/node"),
+            },
+        )
+        .expect_err("ambiguous suffix hint should fail closed");
+
+        match err {
+            ExtractBinaryFromArchiveError::AmbiguousBinaryHint {
+                archive_format,
+                archive_binary_hint,
+                first_match,
+                second_match,
+            } => {
+                assert_eq!(archive_format, BinaryArchiveFormat::TarXz);
+                assert_eq!(archive_binary_hint, "bin/node");
+                assert_eq!(first_match, "node-v1.0.0-linux-x64/bin/node");
+                assert_eq!(second_match, "node-v1.0.0-linux-arm64/bin/node");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]
