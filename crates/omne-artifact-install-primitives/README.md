@@ -16,6 +16,7 @@ Reusable artifact download and install primitives shared by higher-level callers
 - direct binary artifact atomic installation
 - binary-from-archive installation with a default extracted-byte budget
 - archive-tree staging and replace installation with default extracted-byte and entry-count budgets
+- tar archive-tree link extraction that fails closed if a parent directory chain contains symlink ancestors
 
 ## Non-Goals
 

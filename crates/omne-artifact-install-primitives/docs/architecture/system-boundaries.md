@@ -12,6 +12,7 @@
 - 把直接二进制资产原子安装到目标路径。
 - 从受支持的 archive 中提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束。
 - 把受支持的 archive 目录树解到 staging 目录，并在默认 extracted-byte / entry-count 预算内成功后替换目标目录。
+- 对 tar archive tree 中的 symlink / hard link 条目，要求落点父目录链必须是 staging 目录下的真实目录；命中 symlink 祖先时 fail-closed。
 
 ## 不负责什么
 
