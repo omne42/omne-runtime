@@ -21,7 +21,7 @@ impl Default for GatewayPolicy {
         Self {
             allow_isolation_none: false,
             enforce_allowlisted_program_for_mutation: true,
-            mutating_program_allowlist: vec!["omne-fs".to_string(), "omne-fs-cli".to_string()],
+            mutating_program_allowlist: Vec::new(),
             default_isolation: ExecutionIsolation::BestEffort,
             audit_log_path: None,
         }
@@ -30,16 +30,12 @@ impl Default for GatewayPolicy {
 
 impl GatewayPolicy {
     pub fn is_mutating_program_allowlisted(&self, program: &str) -> bool {
-        self.mutating_program_allowlist.iter().any(|item| {
-            match (
-                is_explicit_program_path(item),
-                is_explicit_program_path(program),
-            ) {
-                (false, false) => program_name_matches(item, program),
-                (true, true) => program_path_matches(item, program),
-                _ => false,
-            }
-        })
+        if !is_explicit_program_path(program) {
+            return false;
+        }
+        self.mutating_program_allowlist
+            .iter()
+            .any(|item| is_explicit_program_path(item) && program_path_matches(item, program))
     }
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
@@ -104,11 +100,6 @@ fn program_name_matches(expected: &str, actual: &str) -> bool {
             .is_some_and(|expected_stem| expected_stem.eq_ignore_ascii_case(actual))
 }
 
-#[cfg(not(windows))]
-fn program_name_matches(expected: &str, actual: &str) -> bool {
-    expected == actual
-}
-
 #[cfg(windows)]
 fn executable_stem(name: &str) -> Option<&str> {
     name.get(..name.len().checked_sub(4)?)
@@ -127,12 +118,24 @@ mod tests {
         let policy = GatewayPolicy::default();
         assert!(!policy.allow_isolation_none);
         assert!(policy.enforce_allowlisted_program_for_mutation);
-        assert!(policy.is_mutating_program_allowlisted("omne-fs"));
+        assert!(policy.mutating_program_allowlist.is_empty());
+    }
+
+    #[test]
+    fn bare_program_allowlist_does_not_authorize_bare_program_requests() {
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["omne-fs".to_string()],
+            ..GatewayPolicy::default()
+        };
+        assert!(!policy.is_mutating_program_allowlisted("omne-fs"));
     }
 
     #[test]
     fn bare_program_allowlist_does_not_match_explicit_path_by_basename() {
-        let policy = GatewayPolicy::default();
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["omne-fs".to_string()],
+            ..GatewayPolicy::default()
+        };
         assert!(!policy.is_mutating_program_allowlisted("/usr/local/bin/omne-fs"));
     }
 
@@ -150,7 +153,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn bare_program_allowlist_does_not_match_windows_explicit_path_by_basename() {
-        let policy = GatewayPolicy::default();
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["omne-fs-cli".to_string()],
+            ..GatewayPolicy::default()
+        };
         assert!(!policy.is_mutating_program_allowlisted("C:\\tools\\omne-fs-cli"));
     }
 
@@ -175,7 +181,7 @@ mod tests {
             r#"{
                 "allow_isolation_none": false,
                 "enforce_allowlisted_program_for_mutation": true,
-                "mutating_program_allowlist": ["omne-fs"],
+                "mutating_program_allowlist": ["C:/tools/omne-fs"],
                 "default_isolation": "best_effort",
                 "unexpected_field": true
             }"#,

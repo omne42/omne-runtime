@@ -20,6 +20,7 @@ agent plan
 - Either supply an explicit isolation enum or use `ExecRequest::with_policy_default_isolation(...)`.
 - Always set `declared_mutation` intentionally for generic external commands.
 - Keep `workspace_root` explicit and stable.
+- Use explicit executable paths for any mutating tool or intentionally allowlisted opaque launcher.
 - Treat denial reasons as actionable control signals.
 - Persist `execution.event.requested_policy_meta` when you need a canonical cross-repo record of the requested isolation contract.
 - Avoid shell-style launchers such as `sh`, `cmd`, `powershell`, and `pwsh` unless policy explicitly allowlists them.
@@ -32,8 +33,8 @@ agent plan
 | `isolation_not_supported` | Lower isolation only with explicit approval. |
 | `policy_default_isolation_mismatch` | Rebuild the request against the current gateway policy default. |
 | `cwd_outside_workspace` | Correct path under workspace root. |
-| `mutation_requires_allowlisted_program` | Route via a policy-allowlisted mutating program such as `omne-fs`. |
-| `opaque_command_requires_allowlisted_program` | Replace shell-style launcher usage with a direct executable or explicitly allowlist that launcher. |
+| `mutation_requires_allowlisted_program` | Route via a policy-allowlisted explicit executable path instead of a bare program name. |
+| `opaque_command_requires_allowlisted_program` | Replace shell-style launcher usage with a direct executable or explicitly allowlist that launcher's full path. |
 | `isolation_none_forbidden` | Explicitly allow `none`, or defer execution until a supported native isolation backend exists. |
 
 ## Safe Defaults for Autonomous Runs

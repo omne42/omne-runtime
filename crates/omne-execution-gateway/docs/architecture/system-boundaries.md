@@ -17,7 +17,7 @@
 - Linux、macOS 和 Windows 当前都只报告 `None` 为受支持隔离级别。
 - Linux 原生 sandbox 暂时下线，直到能在不依赖 post-`fork` unsafe Rust 执行的前提下重新引入。
 - 当请求的隔离级别高于宿主报告能力时，gateway 必须 fail-closed 拒绝，而不是回退到未隔离执行。
-- mutating allowlist 的 bare name 和 explicit path 分开解释：bare name 只匹配 bare request，explicit path 只匹配同一路径，避免同 basename 的任意二进制越权。
+- mutating allowlist 只授权显式程序路径；bare program name 因为无法绑定稳定可执行文件而 fail-closed 拒绝。
 - 配置了 `audit_log_path` 时，gateway 会在 preflight 阶段创建缺失父目录并验证日志可追加；如果审计日志不可用，请求必须 fail-closed 拒绝，而不是在无审计记录下继续执行。
 
 ## 不负责什么

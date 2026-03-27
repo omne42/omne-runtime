@@ -14,7 +14,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 {
   "allow_isolation_none": true,
   "enforce_allowlisted_program_for_mutation": true,
-  "mutating_program_allowlist": ["omne-fs", "omne-fs-cli"],
+  "mutating_program_allowlist": ["/usr/local/bin/omne-fs"],
   "default_isolation": "best_effort",
   "audit_log_path": "/tmp/omne_exec_audit.jsonl"
 }
@@ -37,11 +37,11 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 `requested_isolation_source = policy_default` and `required_isolation = policy.default_isolation`.
 `declared_mutation` is required in `request.json`; the CLI no longer defaults it to `false`.
 When `program` matches `mutating_program_allowlist`, the gateway requires
-`declared_mutation = true`; declared mutations still must use an allowlisted program.
-Bare allowlist entries only match bare program names. If a request uses an explicit path, that
-same explicit path must be allowlisted.
+`declared_mutation = true`; declared mutations still must use an allowlisted explicit path.
+Bare program names are denied fail-closed for mutation authorization, even if a same-name string
+appears in `mutating_program_allowlist`.
 Shell-like opaque launchers such as `sh`, `cmd`, `powershell`, and `pwsh` are denied unless
-they are explicitly allowlisted. The gateway does not parse `omne-fs` subcommands to infer
+their full executable paths are explicitly allowlisted. The gateway does not parse `omne-fs` subcommands to infer
 mutation intent.
 
 ## Output Schema
