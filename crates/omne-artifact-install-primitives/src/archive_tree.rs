@@ -430,6 +430,8 @@ fn write_archive_regular_file<R>(
 where
     R: Read + ?Sized,
 {
+    #[cfg(not(unix))]
+    let _ = unix_mode;
     let parent = output_path.parent().ok_or_else(|| {
         ArtifactInstallError::install(format!(
             "cannot determine parent directory for archive entry {}",
@@ -847,8 +849,9 @@ mod tests {
     use std::fs;
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
-    use std::path::PathBuf;
     use std::thread;
+    #[cfg(unix)]
+    use std::path::PathBuf;
 
     use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
 
