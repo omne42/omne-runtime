@@ -404,9 +404,14 @@ pub(super) fn ensure_dir_under_root(
 mod tests {
     use std::path::Path;
 
+    #[cfg(windows)]
+    use std::fs;
+
     use crate::error::Error;
 
     use super::ensure_rechecked_parent_matches_expected;
+    #[cfg(windows)]
+    use super::{ParentVerificationContext, verify_parent_identity};
 
     #[test]
     fn rechecked_parent_matches_expected_relative_path() {
@@ -443,5 +448,50 @@ mod tests {
             Path::new("parent"),
         )
         .expect("Windows recheck should preserve case-insensitive parent matches");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unverifiable_parent_identity_uses_canonical_recheck() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = dir.path().join("parent");
+        fs::create_dir(&parent).expect("create parent");
+        let metadata = fs::symlink_metadata(&parent).expect("parent metadata");
+        let identity = crate::ops::io::DirectoryIdentity::unverifiable_for_tests(metadata);
+        let parent_ctx = ParentVerificationContext {
+            path: &parent,
+            relative: Path::new("parent"),
+            expected_meta: &identity,
+            canonical_root: dir.path(),
+            root_id: "root",
+        };
+
+        verify_parent_identity(&parent_ctx)
+            .expect("canonical recheck should accept the same parent path");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unverifiable_parent_identity_rejects_canonical_parent_substitution() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let expected_parent = dir.path().join("parent");
+        let substituted_parent = dir.path().join("other");
+        fs::create_dir(&expected_parent).expect("create expected parent");
+        fs::create_dir(&substituted_parent).expect("create substituted parent");
+        let metadata = fs::symlink_metadata(&expected_parent).expect("expected parent metadata");
+        let identity = crate::ops::io::DirectoryIdentity::unverifiable_for_tests(metadata);
+        let parent_ctx = ParentVerificationContext {
+            path: &substituted_parent,
+            relative: Path::new("parent"),
+            expected_meta: &identity,
+            canonical_root: dir.path(),
+            root_id: "root",
+        };
+
+        let err = verify_parent_identity(&parent_ctx)
+            .expect_err("canonical recheck must reject a substituted parent path");
+        assert!(
+            matches!(err, Error::InvalidPath(message) if message.contains("changed during operation"))
+        );
     }
 }
