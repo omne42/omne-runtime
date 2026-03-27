@@ -1,5 +1,9 @@
 use std::fs::{self, File};
 use std::io::{Cursor, Read, Seek, SeekFrom};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -187,26 +191,18 @@ where
         budget.record_entry(&enclosed)?;
         let output_path = destination.join(&enclosed);
         if entry.is_dir() {
-            fs::create_dir_all(&output_path)
-                .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+            ensure_archive_directory_chain(&enclosed, &output_path, destination, true)?;
+            continue;
+        }
+        if zip_entry_is_symlink(&entry) {
+            budget.reserve_bytes(&enclosed, entry.size())?;
+            let link_target = read_zip_symlink_target(&enclosed, &mut entry)?;
+            create_tar_symlink(&enclosed, &output_path, &link_target, destination)?;
             continue;
         }
         budget.reserve_bytes(&enclosed, entry.size())?;
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-        }
-        let mut file = File::create(&output_path)
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-        std::io::copy(&mut entry, &mut file)
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-        #[cfg(unix)]
-        if let Some(mode) = entry.unix_mode() {
-            use std::os::unix::fs::PermissionsExt;
-
-            fs::set_permissions(&output_path, fs::Permissions::from_mode(mode))
-                .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-        }
+        let unix_mode = zip_entry_unix_mode(&entry);
+        write_archive_regular_file(&enclosed, &output_path, destination, &mut entry, unix_mode)?;
     }
     Ok(())
 }
@@ -221,6 +217,7 @@ where
 {
     let mut budget = ExtractionBudget::new(limits);
     let mut archive = TarArchive::new(reader);
+    let mut pending_hard_links = Vec::new();
     let entries = archive
         .entries()
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
@@ -232,24 +229,22 @@ where
             .into_owned();
         let sanitized = sanitize_archive_path(&path)?;
         budget.record_entry(&sanitized)?;
-        let output_path = destination.join(sanitized);
+        let output_path = destination.join(&sanitized);
         let entry_type = entry.header().entry_type();
         if entry_type.is_dir() {
-            fs::create_dir_all(&output_path)
-                .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+            ensure_archive_directory_chain(&sanitized, &output_path, destination, true)?;
             continue;
         }
         if entry_type.is_file() {
             budget.reserve_bytes(&path, entry.size())?;
-            let extracted = entry
-                .unpack_in(destination)
-                .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-            if !extracted {
-                return Err(ArtifactInstallError::install(format!(
-                    "unsafe tar archive entry path `{}`",
-                    path.display()
-                )));
-            }
+            let unix_mode = tar_entry_unix_mode(&entry)?;
+            write_archive_regular_file(
+                &sanitized,
+                &output_path,
+                destination,
+                &mut entry,
+                unix_mode,
+            )?;
             continue;
         }
         if entry_type.is_symlink() {
@@ -275,7 +270,12 @@ where
                         path.display()
                     ))
                 })?;
-            create_tar_hard_link(&path, &output_path, &link_target, destination)?;
+            pending_hard_links.push(prepare_tar_hard_link(
+                &path,
+                &output_path,
+                &link_target,
+                destination,
+            )?);
             continue;
         }
         return Err(ArtifactInstallError::install(format!(
@@ -283,7 +283,16 @@ where
             path.display()
         )));
     }
+    resolve_pending_tar_hard_links(&mut pending_hard_links, destination)?;
     Ok(())
+}
+
+#[derive(Debug)]
+struct PendingTarHardLink {
+    entry_path: PathBuf,
+    output_path: PathBuf,
+    link_target: PathBuf,
+    resolved_target: PathBuf,
 }
 
 fn create_tar_symlink(
@@ -300,6 +309,7 @@ fn create_tar_symlink(
     })?;
     ensure_archive_directory_chain(entry_path, parent, destination, true)?;
     validate_archive_link_target(entry_path, parent, link_target, destination)?;
+    remove_existing_regular_file_leaf(entry_path, output_path)?;
 
     #[cfg(unix)]
     {
@@ -321,12 +331,12 @@ fn create_tar_symlink(
     }
 }
 
-fn create_tar_hard_link(
+fn prepare_tar_hard_link(
     entry_path: &Path,
     output_path: &Path,
     link_target: &Path,
     destination: &Path,
-) -> Result<(), ArtifactInstallError> {
+) -> Result<PendingTarHardLink, ArtifactInstallError> {
     let parent = output_path.parent().ok_or_else(|| {
         ArtifactInstallError::install(format!(
             "cannot determine hard link parent for tar entry {}",
@@ -334,29 +344,190 @@ fn create_tar_hard_link(
         ))
     })?;
     ensure_archive_directory_chain(entry_path, parent, destination, true)?;
-    let resolved_target =
-        validate_archive_link_target(entry_path, parent, link_target, destination)?;
-    if let Some(target_parent) = resolved_target.parent() {
-        ensure_archive_directory_chain(entry_path, target_parent, destination, false)?;
+    let resolved_target = validate_archive_hard_link_target(entry_path, link_target, destination)?;
+    Ok(PendingTarHardLink {
+        entry_path: entry_path.to_path_buf(),
+        output_path: output_path.to_path_buf(),
+        link_target: link_target.to_path_buf(),
+        resolved_target,
+    })
+}
+
+fn resolve_pending_tar_hard_links(
+    pending_hard_links: &mut Vec<PendingTarHardLink>,
+    destination: &Path,
+) -> Result<(), ArtifactInstallError> {
+    while !pending_hard_links.is_empty() {
+        let mut remaining = Vec::new();
+        let mut progressed = false;
+        for pending in pending_hard_links.drain(..) {
+            if try_create_tar_hard_link(&pending, destination)? {
+                progressed = true;
+            } else {
+                remaining.push(pending);
+            }
+        }
+        if !remaining.is_empty() && !progressed {
+            let pending = remaining.remove(0);
+            if let Some(target_parent) = pending.resolved_target.parent() {
+                ensure_archive_directory_chain(
+                    &pending.entry_path,
+                    target_parent,
+                    destination,
+                    false,
+                )?;
+            }
+            return Err(ArtifactInstallError::install(format!(
+                "hard link target `{}` does not exist for tar entry {}",
+                pending.link_target.display(),
+                pending.entry_path.display()
+            )));
+        }
+        *pending_hard_links = remaining;
     }
-    let target_metadata =
-        fs::symlink_metadata(&resolved_target).map_err(|err| match err.kind() {
-            std::io::ErrorKind::NotFound => ArtifactInstallError::install(format!(
-                "hard link target does not exist for tar entry {}",
-                entry_path.display()
-            )),
-            _ => ArtifactInstallError::install(err.to_string()),
-        })?;
+    Ok(())
+}
+
+fn try_create_tar_hard_link(
+    pending: &PendingTarHardLink,
+    destination: &Path,
+) -> Result<bool, ArtifactInstallError> {
+    let parent = pending.output_path.parent().ok_or_else(|| {
+        ArtifactInstallError::install(format!(
+            "cannot determine hard link parent for tar entry {}",
+            pending.entry_path.display()
+        ))
+    })?;
+    ensure_archive_directory_chain(&pending.entry_path, parent, destination, false)?;
+    if let Some(target_parent) = pending.resolved_target.parent() {
+        ensure_archive_directory_chain(&pending.entry_path, target_parent, destination, false)?;
+    }
+    let target_metadata = match fs::symlink_metadata(&pending.resolved_target) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(ArtifactInstallError::install(err.to_string())),
+    };
     if target_metadata.file_type().is_symlink() || target_metadata.is_dir() {
         return Err(ArtifactInstallError::install(format!(
             "unsafe hard link target `{}` for {}",
-            link_target.display(),
-            entry_path.display()
+            pending.link_target.display(),
+            pending.entry_path.display()
         )));
     }
-    fs::hard_link(&resolved_target, output_path)
+    remove_existing_regular_file_leaf(&pending.entry_path, &pending.output_path)?;
+    fs::hard_link(&pending.resolved_target, &pending.output_path)
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    Ok(true)
+}
+
+fn write_archive_regular_file<R>(
+    entry_path: &Path,
+    output_path: &Path,
+    destination: &Path,
+    reader: &mut R,
+    unix_mode: Option<u32>,
+) -> Result<(), ArtifactInstallError>
+where
+    R: Read + ?Sized,
+{
+    let parent = output_path.parent().ok_or_else(|| {
+        ArtifactInstallError::install(format!(
+            "cannot determine parent directory for archive entry {}",
+            entry_path.display()
+        ))
+    })?;
+    ensure_archive_directory_chain(entry_path, parent, destination, true)?;
+    remove_existing_regular_file_leaf(entry_path, output_path)?;
+    let mut file =
+        File::create(output_path).map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    std::io::copy(reader, &mut file)
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    #[cfg(unix)]
+    if let Some(mode) = unix_mode {
+        fs::set_permissions(output_path, fs::Permissions::from_mode(mode))
+            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    }
     Ok(())
+}
+
+fn remove_existing_regular_file_leaf(
+    entry_path: &Path,
+    output_path: &Path,
+) -> Result<(), ArtifactInstallError> {
+    match fs::symlink_metadata(output_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(ArtifactInstallError::install(format!(
+                "unsafe archive output `{}` is a symlink for {}",
+                output_path.display(),
+                entry_path.display()
+            )))
+        }
+        Ok(metadata) if metadata.is_dir() => Err(ArtifactInstallError::install(format!(
+            "unsafe archive output `{}` is a directory for {}",
+            output_path.display(),
+            entry_path.display()
+        ))),
+        Ok(_) => {
+            fs::remove_file(output_path)
+                .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(ArtifactInstallError::install(err.to_string())),
+    }
+}
+
+#[cfg(unix)]
+fn read_zip_symlink_target(
+    _entry_path: &Path,
+    entry: &mut zip::read::ZipFile<'_>,
+) -> Result<PathBuf, ArtifactInstallError> {
+    let mut target = Vec::new();
+    entry
+        .read_to_end(&mut target)
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(target)))
+}
+
+#[cfg(not(unix))]
+fn read_zip_symlink_target(
+    entry_path: &Path,
+    entry: &mut zip::read::ZipFile<'_>,
+) -> Result<PathBuf, ArtifactInstallError> {
+    let _ = entry;
+    Err(ArtifactInstallError::install(format!(
+        "unsupported zip symlink entry for {} on this platform",
+        entry_path.display()
+    )))
+}
+
+fn zip_entry_unix_mode(entry: &zip::read::ZipFile<'_>) -> Option<u32> {
+    entry.unix_mode().map(|mode| mode & 0o7777)
+}
+
+fn zip_entry_is_symlink(entry: &zip::read::ZipFile<'_>) -> bool {
+    entry
+        .unix_mode()
+        .is_some_and(|mode| (mode & 0o170000) == 0o120000)
+}
+
+fn tar_entry_unix_mode<R>(entry: &tar::Entry<'_, R>) -> Result<Option<u32>, ArtifactInstallError>
+where
+    R: Read,
+{
+    #[cfg(unix)]
+    {
+        entry
+            .header()
+            .mode()
+            .map(Some)
+            .map_err(|err| ArtifactInstallError::install(err.to_string()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = entry;
+        Ok(None)
+    }
 }
 
 fn ensure_archive_directory_chain(
@@ -455,6 +626,28 @@ fn validate_archive_link_target(
     }
 
     Ok(resolved)
+}
+
+fn validate_archive_hard_link_target(
+    entry_path: &Path,
+    link_target: &Path,
+    destination: &Path,
+) -> Result<PathBuf, ArtifactInstallError> {
+    if link_target.is_absolute() {
+        return Err(ArtifactInstallError::install(format!(
+            "absolute archive link target is not allowed for {}",
+            entry_path.display()
+        )));
+    }
+
+    let sanitized = sanitize_archive_path(link_target).map_err(|_| {
+        ArtifactInstallError::install(format!(
+            "unsafe archive link target `{}` for {}",
+            link_target.display(),
+            entry_path.display()
+        ))
+    })?;
+    Ok(destination.join(sanitized))
 }
 
 fn sanitize_archive_path(path: &Path) -> Result<PathBuf, ArtifactInstallError> {
@@ -654,6 +847,7 @@ mod tests {
     use std::fs;
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use std::thread;
 
     use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
@@ -673,8 +867,12 @@ mod tests {
                 let options = zip::write::FileOptions::default()
                     .compression_method(zip::CompressionMethod::Stored)
                     .unix_permissions(*mode);
-                archive.start_file(*path, options)?;
-                archive.write_all(body)?;
+                if (mode & 0o170000) == 0o120000 {
+                    archive.add_symlink(*path, String::from_utf8_lossy(body), options)?;
+                } else {
+                    archive.start_file(*path, options)?;
+                    archive.write_all(body)?;
+                }
             }
             archive.finish()?;
         }
@@ -907,6 +1105,33 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn tar_regular_files_fail_closed_on_symlink_ancestor() -> Result<(), Box<dyn Error>> {
+        let archive = make_tar_archive(&[
+            TarEntry::Directory("safe", 0o755),
+            TarEntry::Symlink("alias", "safe"),
+            TarEntry::File("alias/escaped.txt", b"escape".as_slice(), 0o644),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        fs::create_dir_all(&destination)?;
+
+        let err = extract_tar_tree(
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits::default(),
+        )
+        .expect_err("tar regular file under symlink ancestor must be rejected");
+
+        assert!(
+            err.to_string().contains("symlink ancestor"),
+            "unexpected error: {err}"
+        );
+        assert!(!destination.join("safe/escaped.txt").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn tar_hard_link_entries_fail_closed_on_symlink_ancestor() -> Result<(), Box<dyn Error>> {
         let archive = make_tar_archive(&[
             TarEntry::Directory("safe", 0o755),
@@ -929,6 +1154,86 @@ mod tests {
             err.to_string().contains("symlink ancestor"),
             "unexpected error: {err}"
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_forward_hard_links_resolve_after_target_is_extracted() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::MetadataExt;
+
+        let archive = make_tar_archive(&[
+            TarEntry::Directory("bin", 0o755),
+            TarEntry::HardLink("bin/demo-copy", "bin/demo"),
+            TarEntry::File("bin/demo", b"demo".as_slice(), 0o755),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        fs::create_dir_all(&destination)?;
+
+        extract_tar_tree(
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits::default(),
+        )?;
+
+        let target = destination.join("bin/demo");
+        let linked = destination.join("bin/demo-copy");
+        assert_eq!(fs::read(&target)?, b"demo");
+        assert_eq!(fs::read(&linked)?, b"demo");
+        assert_eq!(fs::metadata(&target)?.ino(), fs::metadata(&linked)?.ino());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_symlink_entries_extract_as_symlinks() -> Result<(), Box<dyn Error>> {
+        let archive = make_zip_archive(&[
+            ("safe/target.txt", b"demo".as_slice(), 0o644),
+            ("alias", b"safe/target.txt".as_slice(), 0o120777),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        fs::create_dir_all(&destination)?;
+
+        install_archive_tree_from_reader_with_limits(
+            "demo.zip",
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits::default(),
+        )?;
+
+        let alias = destination.join("alias");
+        assert!(fs::symlink_metadata(&alias)?.file_type().is_symlink());
+        assert_eq!(fs::read_link(&alias)?, PathBuf::from("safe/target.txt"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_regular_files_fail_closed_on_symlink_ancestor() -> Result<(), Box<dyn Error>> {
+        let archive = make_zip_archive(&[
+            ("safe/target.txt", b"demo".as_slice(), 0o644),
+            ("alias", b"safe".as_slice(), 0o120777),
+            ("alias/escaped.txt", b"escape".as_slice(), 0o644),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        fs::create_dir_all(&destination)?;
+
+        let err = install_archive_tree_from_reader_with_limits(
+            "demo.zip",
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits::default(),
+        )
+        .expect_err("zip regular file under symlink ancestor must be rejected");
+
+        assert!(
+            err.to_string().contains("symlink ancestor"),
+            "unexpected error: {err}"
+        );
+        assert!(!destination.join("safe/escaped.txt").exists());
         Ok(())
     }
 }

@@ -32,6 +32,12 @@ pub enum ArtifactInstallErrorKind {
     Install,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CandidateFailure {
+    pub(crate) kind: ArtifactInstallErrorKind,
+    pub(crate) message: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ArtifactInstallError {
     kind: ArtifactInstallErrorKind,
@@ -95,16 +101,85 @@ where
 pub(crate) fn candidate_failure_message(
     candidate: &ArtifactDownloadCandidate,
     err: &ArtifactInstallError,
-) -> String {
-    format!("{}:{} -> {err}", candidate.kind.label(), candidate.url)
+) -> CandidateFailure {
+    CandidateFailure {
+        kind: err.kind(),
+        message: format!("{}:{} -> {err}", candidate.kind.label(), candidate.url),
+    }
 }
 
 pub(crate) fn failed_candidates_error(
     canonical_url: &str,
-    errors: Vec<String>,
+    errors: Vec<CandidateFailure>,
 ) -> ArtifactInstallError {
-    ArtifactInstallError::download(format!(
-        "all download candidates failed for {canonical_url}: {}",
-        errors.join(" | ")
-    ))
+    let kind = aggregate_failure_kind(&errors);
+    let details = errors
+        .into_iter()
+        .map(|error| error.message)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    match kind {
+        ArtifactInstallErrorKind::Download => ArtifactInstallError::download(format!(
+            "all download candidates failed for {canonical_url}: {details}"
+        )),
+        ArtifactInstallErrorKind::Install => ArtifactInstallError::install(format!(
+            "all download candidates failed for {canonical_url}: {details}"
+        )),
+    }
+}
+
+fn aggregate_failure_kind(errors: &[CandidateFailure]) -> ArtifactInstallErrorKind {
+    if errors
+        .iter()
+        .any(|error| error.kind == ArtifactInstallErrorKind::Install)
+    {
+        ArtifactInstallErrorKind::Install
+    } else {
+        ArtifactInstallErrorKind::Download
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactInstallError,
+        ArtifactInstallErrorKind, candidate_failure_message, failed_candidates_error,
+    };
+
+    #[test]
+    fn failed_candidates_error_stays_download_when_all_candidates_failed_to_download() {
+        let candidate = ArtifactDownloadCandidate {
+            url: "https://example.invalid/demo.zip".to_string(),
+            kind: ArtifactDownloadCandidateKind::Canonical,
+        };
+
+        let err = failed_candidates_error(
+            "https://example.invalid/demo.zip",
+            vec![candidate_failure_message(
+                &candidate,
+                &ArtifactInstallError::download("HTTP 404"),
+            )],
+        );
+
+        assert_eq!(err.kind(), ArtifactInstallErrorKind::Download);
+    }
+
+    #[test]
+    fn failed_candidates_error_reports_install_when_any_candidate_reached_install_phase() {
+        let candidate = ArtifactDownloadCandidate {
+            url: "https://example.invalid/demo.zip".to_string(),
+            kind: ArtifactDownloadCandidateKind::Mirror,
+        };
+
+        let err = failed_candidates_error(
+            "https://example.invalid/demo.zip",
+            vec![candidate_failure_message(
+                &candidate,
+                &ArtifactInstallError::install("archive extraction failed"),
+            )],
+        );
+
+        assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
+        assert!(err.to_string().contains("archive extraction failed"));
+    }
 }
