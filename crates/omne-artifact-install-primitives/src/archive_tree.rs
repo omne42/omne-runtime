@@ -532,7 +532,6 @@ where
     }
 }
 
-#[cfg(unix)]
 fn sanitize_unix_mode(mode: u32) -> u32 {
     mode & 0o777
 }
