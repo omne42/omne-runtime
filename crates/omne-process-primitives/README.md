@@ -14,13 +14,14 @@ Low-level host-command and process-tree primitives shared across callers.
 - host command discovery
 - host command execution with captured output
 - host recipe execution with env/cwd support and non-zero-exit errors
-- sudo-style escalation that preserves explicit request env via `sudo --preserve-env=...`
+- sudo-style escalation that passes explicit request env to the target command via `sudo VAR=value ...`
 - fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved in the effective `PATH`
 - default sudo-mode selection for common system-package commands
 - optional `sudo -n` probing on Unix
 - process-tree cleanup setup and best-effort termination
+- fail-closed process-tree capture on Unix unless the child was spawned into its own dedicated process group via `configure_command_for_process_tree`
 - Windows `taskkill` cleanup that waits for command success before skipping descendant fallback
-- fail-closed orphan process-group cleanup on non-Linux Unix once the original leader exits
+- fail-closed orphan process-group cleanup on Unix once the original leader exits
 
 ## Non-Goals
 

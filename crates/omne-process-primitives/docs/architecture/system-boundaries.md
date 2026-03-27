@@ -8,16 +8,16 @@
 
 - 探测命令是否存在和是否可执行。
 - 运行宿主机命令并捕获输出。
-- 当命中 `sudo` 路径时，把调用方显式提供的环境变量通过 `sudo --preserve-env=...` 继续传给目标命令。
+- 当命中 `sudo` 路径时，把调用方显式提供的环境变量编码成 `VAR=value` 参数并继续传给目标命令。
 - `sudo` 可用性判定和 `sudo` 可执行路径选择遵循同一份有效 `PATH`（优先采用调用方在请求里显式覆盖的 `PATH`）。
 - 对需要走 `sudo` 的 bare command，如果目标命令在有效 `PATH` 中不存在，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
 - 运行 host recipe，并把非零退出统一建模成结构化错误。
 - 为常见系统包命令提供默认 `sudo` 模式选择。
 - Unix 下对 bare system command 做 `sudo -n` 试探。
-- 配置子进程以支持进程树清理。
+- 配置子进程以支持进程树清理；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
 - 捕获进程树清理标识并执行 best-effort 终止。
 - Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 descendant sweep。
-- 在非 Linux Unix 上，当原始 leader 已退出时对 orphan process-group 清理 fail-closed，避免仅凭复用 PGID 误杀无关进程。
+- 在 Unix 上，当原始 leader 已退出时对 orphan process-group 清理 fail-closed，避免仅凭复用 PGID 误杀无关进程。
 
 ## 不负责什么
 
