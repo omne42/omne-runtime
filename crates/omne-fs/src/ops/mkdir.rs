@@ -32,20 +32,45 @@ fn ensure_parent_dir_unchanged(
     relative_parent: &Path,
     expected_parent_meta: &super::io::DirectoryIdentity,
 ) -> Result<()> {
-    let current_parent_meta = fs::symlink_metadata(canonical_parent)
-        .map_err(|err| Error::io_path("symlink_metadata", relative_parent, err))?;
-    match expected_parent_meta.verify_metadata(&current_parent_meta, || {
-        Error::InvalidPath(format!(
-            "parent path {} changed during operation",
-            relative_parent.display()
-        ))
-    })? {
-        super::io::MetadataIdentityCheck::Verified => Ok(()),
-        super::io::MetadataIdentityCheck::Unverifiable => Err(Error::InvalidPath(format!(
-            "parent path {} identity could not be verified during operation",
-            relative_parent.display()
-        ))),
-    }
+    expected_parent_meta.ensure_verified(
+        canonical_parent,
+        relative_parent,
+        || {
+            Error::InvalidPath(format!(
+                "parent path {} changed during operation",
+                relative_parent.display()
+            ))
+        },
+        || {
+            Error::InvalidPath(format!(
+                "parent path {} identity could not be verified during operation",
+                relative_parent.display()
+            ))
+        },
+    )
+}
+
+fn ensure_created_target_dir_unchanged(
+    target: &Path,
+    relative: &Path,
+    created_target_meta: &super::io::DirectoryIdentity,
+) -> Result<()> {
+    created_target_meta.ensure_verified(
+        target,
+        relative,
+        || {
+            Error::InvalidPath(format!(
+                "path {} changed before cleanup",
+                relative.display()
+            ))
+        },
+        || {
+            Error::InvalidPath(format!(
+                "path {} identity unavailable before cleanup",
+                relative.display()
+            ))
+        },
+    )
 }
 
 fn cleanup_created_target_dir(
@@ -58,22 +83,7 @@ fn cleanup_created_target_dir(
     validation_err: &Error,
 ) -> Result<()> {
     ensure_parent_dir_unchanged(canonical_parent, relative_parent, expected_parent_meta)?;
-    let current_target_meta = fs::symlink_metadata(target)
-        .map_err(|err| Error::io_path("symlink_metadata", relative, err))?;
-    match created_target_meta.verify_metadata(&current_target_meta, || {
-        Error::InvalidPath(format!(
-            "path {} changed before cleanup",
-            relative.display()
-        ))
-    })? {
-        super::io::MetadataIdentityCheck::Verified => {}
-        super::io::MetadataIdentityCheck::Unverifiable => {
-            return Err(Error::InvalidPath(format!(
-                "path {} identity unavailable before cleanup",
-                relative.display()
-            )));
-        }
-    }
+    ensure_created_target_dir_unchanged(target, relative, created_target_meta)?;
     fs::remove_dir(target).map_err(|cleanup_err| {
         let cleanup_context = std::io::Error::new(
             cleanup_err.kind(),
@@ -308,5 +318,20 @@ mod tests {
         assert!(
             matches!(err, Error::InvalidPath(message) if message.contains("identity could not be verified"))
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parent_identity_verification_uses_directory_handle_when_available() {
+        let dir = tempdir().expect("tempdir");
+        let metadata = std::fs::symlink_metadata(dir.path()).expect("parent metadata");
+        let identity =
+            super::super::io::DirectoryIdentity::from_metadata(dir.path(), metadata, || {
+                Error::InvalidPath("not a directory".to_string())
+            })
+            .expect("identity");
+
+        ensure_parent_dir_unchanged(dir.path(), std::path::Path::new(""), &identity)
+            .expect("handle-backed identity verification should succeed");
     }
 }
