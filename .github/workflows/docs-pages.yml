@@ -10,6 +10,7 @@ on:
       - "crates/omne-fs-primitives/**"
       - "crates/omne-execution-gateway/**"
       - ".github/workflows/docs-pages.yml"
+  pull_request:
   workflow_dispatch:
 
 permissions:
