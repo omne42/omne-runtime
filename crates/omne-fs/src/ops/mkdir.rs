@@ -41,11 +41,10 @@ fn ensure_parent_dir_unchanged(
         ))
     })? {
         super::io::MetadataIdentityCheck::Verified => Ok(()),
-        super::io::MetadataIdentityCheck::Unverifiable => {
-            // Best-effort fallback for Windows filesystems that do not expose stable file IDs.
-            // Parent path re-resolution above still guarantees the canonical parent path.
-            Ok(())
-        }
+        super::io::MetadataIdentityCheck::Unverifiable => Err(Error::InvalidPath(format!(
+            "parent path {} identity could not be verified during operation",
+            relative_parent.display()
+        ))),
     }
 }
 
@@ -286,5 +285,26 @@ pub fn mkdir(ctx: &Context, request: MkdirRequest) -> Result<MkdirResponse> {
             })
         }
         Err(err) => Err(Error::io_path("symlink_metadata", &relative, err)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::ensure_parent_dir_unchanged;
+    use crate::error::Error;
+
+    #[test]
+    fn parent_identity_must_fail_closed_when_verification_is_unavailable() {
+        let dir = tempdir().expect("tempdir");
+        let parent = dir.path().join("parent");
+        std::fs::create_dir(&parent).expect("create parent");
+        let metadata = std::fs::symlink_metadata(&parent).expect("parent metadata");
+        let identity = super::super::io::DirectoryIdentity::unverifiable_for_tests(metadata);
+
+        let err = ensure_parent_dir_unchanged(&parent, std::path::Path::new("parent"), &identity)
+            .expect_err("unverifiable parent identity must fail closed");
+        assert!(matches!(err, Error::InvalidPath(message) if message.contains("identity could not be verified")));
     }
 }
