@@ -179,6 +179,9 @@ pub fn run_host_command(
     } else {
         HostCommandExecution::Direct
     };
+    if execution == HostCommandExecution::Sudo {
+        ensure_sudo_target_is_available(request)?;
+    }
     let output = run_command_output(request, execution)
         .map_err(|source| map_spawn_error(request.program, execution, source))?;
     Ok(HostCommandOutput { execution, output })
@@ -450,6 +453,24 @@ fn resolve_program_for_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
     program.to_path_buf()
 }
 
+fn ensure_sudo_target_is_available(
+    request: &HostCommandRequest<'_>,
+) -> Result<(), HostCommandError> {
+    if is_explicit_command_path(request.program) {
+        return Ok(());
+    }
+
+    if resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    Err(HostCommandError::CommandNotFound {
+        program: request.program.to_os_string(),
+    })
+}
+
 fn is_explicit_command_path(command: &OsStr) -> bool {
     has_path_separator(command) || Path::new(command).is_absolute()
 }
@@ -484,8 +505,9 @@ mod tests {
     use super::{
         HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
         HostRecipeError, HostRecipeRequest, build_command, command_available, command_exists,
-        command_path_exists, default_recipe_sudo_mode_for_program, run_host_command,
-        run_host_recipe, should_try_sudo_with_status,
+        command_path_exists, default_recipe_sudo_mode_for_program,
+        ensure_sudo_target_is_available, run_host_command, run_host_recipe,
+        should_try_sudo_with_status,
     };
 
     #[test]
@@ -622,6 +644,25 @@ mod tests {
                 ("OMNE_TEST_VALUE".to_string(), "world".to_string()),
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sudo_missing_target_is_classified_as_command_not_found() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _sudo_path = write_test_command(temp.path(), "sudo");
+        let env = vec![("PATH".to_string(), temp.path().display().to_string())];
+        let request = HostCommandRequest {
+            program: OsStr::new("apt-get"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let err =
+            ensure_sudo_target_is_available(&request).expect_err("missing target should fail");
+        assert!(matches!(err, HostCommandError::CommandNotFound { .. }));
     }
 
     #[test]
