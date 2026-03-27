@@ -143,10 +143,8 @@ impl ExecGateway {
             }
         };
         let result = if let Some(audit) = &self.audit {
-            promote_success_result_with_audit_write(
-                result,
-                audit.write_execution_record(&event, &result),
-            )
+            let audit_result = audit.write_execution_record(&event, &result);
+            promote_success_result_with_audit_write(result, audit_result)
         } else {
             result
         };
@@ -183,10 +181,8 @@ impl ExecGateway {
             }
         };
         let result = if let Some(audit) = &self.audit {
-            promote_success_result_with_audit_write(
-                result,
-                audit.write_prepare_record(&event, &result),
-            )
+            let audit_result = audit.write_prepare_record(&event, &result);
+            promote_success_result_with_audit_write(result, audit_result)
         } else {
             result
         };
