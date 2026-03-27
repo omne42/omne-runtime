@@ -10,9 +10,11 @@
 //! - best-effort process-tree termination on Unix and Windows
 //!
 //! Unix uses per-child process groups. Linux additionally verifies the original leader identity
-//! before killing an orphaned group so PID/PGID reuse is less likely to hit unrelated processes.
-//! Other Unix targets only kill the process group while the original leader is still present; if
-//! the leader has already exited, cleanup fails closed instead of trusting a reused PGID.
+//! before killing an orphaned group and only falls back to the captured process group when that
+//! group still exists, so PID reuse is less likely to hit unrelated processes while orphaned
+//! descendants still get cleaned up. Other Unix targets only kill the process group while the
+//! original leader is still present; if the leader has already exited, cleanup fails closed
+//! instead of trusting a reused PGID.
 //!
 //! Windows prefers Job Objects. When the current process cannot attach the child to a kill-on-close
 //! job, cleanup falls back to best-effort tree cleanup rooted at the captured child PID:
@@ -156,14 +158,74 @@ fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
 
 #[cfg(target_os = "linux")]
 fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
-    match read_linux_process_identity(identity.leader_pid) {
-        Ok(current) => {
-            current.start_ticks == identity.leader_start_ticks
-                && current.process_group_id == identity.process_group_id.as_raw_pid()
+    should_kill_linux_process_group_with(
+        identity,
+        read_linux_process_identity(identity.leader_pid),
+        linux_process_group_exists,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn should_kill_linux_process_group_with<F>(
+    identity: UnixProcessGroupIdentity,
+    current: io::Result<LinuxProcessIdentity>,
+    process_group_exists: F,
+) -> bool
+where
+    F: FnOnce(rustix::process::Pid) -> bool,
+{
+    match current {
+        Ok(current)
+            if current.start_ticks == identity.leader_start_ticks
+                && current.process_group_id == identity.process_group_id.as_raw_pid() =>
+        {
+            true
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Ok(_) => process_group_exists(identity.process_group_id),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            process_group_exists(identity.process_group_id)
+        }
         Err(_) => false,
     }
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn linux_process_group_exists(process_group_id: rustix::process::Pid) -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let file_name = entry.file_name();
+        let Some(raw_pid) = file_name.to_str() else {
+            continue;
+        };
+        let Ok(pid) = raw_pid.parse::<i32>() else {
+            continue;
+        };
+        let Some(pid) = rustix::process::Pid::from_raw(pid) else {
+            continue;
+        };
+
+        match read_linux_process_identity(pid) {
+            Ok(identity) if identity.process_group_id == process_group_id.as_raw_pid() => {
+                return true;
+            }
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::PermissionDenied
+                        | io::ErrorKind::InvalidData
+                ) => {}
+            Err(_) => return false,
+        }
+    }
+
+    false
 }
 
 #[cfg(all(unix, target_os = "linux"))]
@@ -477,11 +539,51 @@ const WINDOWS_ERROR_NOT_SUPPORTED: i32 = 50;
 
 #[cfg(all(test, unix, target_os = "linux"))]
 mod tests {
-    use super::{CleanupDisposition, ProcessTreeCleanup, configure_command_for_process_tree};
+    use super::{
+        CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
+        configure_command_for_process_tree, should_kill_linux_process_group_with,
+    };
+    use rustix::process::Pid;
     use std::io;
     use std::path::Path;
     use std::process::Stdio;
     use std::time::Duration;
+
+    #[test]
+    fn reused_leader_pid_still_allows_killing_surviving_linux_process_group() {
+        let identity = UnixProcessGroupIdentity {
+            leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
+            process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
+            leader_start_ticks: 11,
+        };
+
+        assert!(should_kill_linux_process_group_with(
+            identity,
+            Ok(LinuxProcessIdentity {
+                process_group_id: 9999,
+                start_ticks: 22,
+            }),
+            |process_group_id| process_group_id == identity.process_group_id,
+        ));
+    }
+
+    #[test]
+    fn reused_leader_pid_fails_closed_when_linux_process_group_is_gone() {
+        let identity = UnixProcessGroupIdentity {
+            leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
+            process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
+            leader_start_ticks: 11,
+        };
+
+        assert!(!should_kill_linux_process_group_with(
+            identity,
+            Ok(LinuxProcessIdentity {
+                process_group_id: 9999,
+                start_ticks: 22,
+            }),
+            |_| false,
+        ));
+    }
 
     fn process_terminated_or_zombie(pid: u32) -> bool {
         let status_path = format!("/proc/{pid}/status");
