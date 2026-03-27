@@ -13,7 +13,7 @@ Low-level archive/compression primitives shared across callers.
 
 - archive format detection for binary delivery assets
 - archive entry traversal for `.tar.gz`, `.tar.xz`, and `.zip`
-- target binary matching by binary name, tool name, and optional `archive_binary` hint, which may be an exact archive path or a unique archive-relative suffix
+- target binary matching by binary name, tool name, and optional `archive_binary` hint, which must resolve to an exact archive-relative path
 - extraction of the matched binary bytes from the archive, limited by a default extracted-byte budget sized for large official single-binary releases
 - matched target validation that only accepts regular-file archive entries before reading content
 
