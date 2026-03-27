@@ -15,8 +15,9 @@ pub struct SystemPackageInstallRecipe {
 
 impl SystemPackageInstallRecipe {
     fn new(program: &'static str, leading_args: &[&str], package: &str) -> Self {
-        let mut args = Vec::with_capacity(leading_args.len() + 1);
+        let mut args = Vec::with_capacity(leading_args.len() + 2);
         args.extend(leading_args.iter().map(|arg| (*arg).to_string()));
+        args.push("--".to_string());
         args.push(package.to_string());
         Self { program, args }
     }
@@ -126,7 +127,12 @@ mod tests {
             SystemPackageManager::AptGet.install_recipe("git"),
             SystemPackageInstallRecipe {
                 program: "apt-get",
-                args: vec!["install".to_string(), "-y".to_string(), "git".to_string()],
+                args: vec![
+                    "install".to_string(),
+                    "-y".to_string(),
+                    "--".to_string(),
+                    "git".to_string(),
+                ],
             }
         );
     }
@@ -141,6 +147,7 @@ mod tests {
                     "-S".to_string(),
                     "--needed".to_string(),
                     "--noconfirm".to_string(),
+                    "--".to_string(),
                     "git".to_string(),
                 ],
             }
