@@ -230,6 +230,15 @@ impl ExecGateway {
                     ),
                 ));
             }
+            if uses_opaque_command_launcher(&request.program) && !program_is_allowlisted {
+                return Err(self.deny_preflight(
+                    event,
+                    "opaque_command_requires_allowlisted_program",
+                    ExecError::PolicyDenied(
+                        "opaque command launchers must use an allowlisted program".to_string(),
+                    ),
+                ));
+            }
             if program_is_allowlisted && !request.declared_mutation {
                 return Err(self.deny_preflight(
                     event,
@@ -315,6 +324,26 @@ impl ExecGateway {
     }
 }
 
+fn uses_opaque_command_launcher(program: &OsStr) -> bool {
+    fn matches_opaque_command_name(candidate: &str) -> bool {
+        let normalized = candidate
+            .strip_suffix(".exe")
+            .unwrap_or(candidate)
+            .to_ascii_lowercase();
+        matches!(
+            normalized.as_str(),
+            "sh" | "bash" | "dash" | "zsh" | "fish" | "ksh" | "cmd" | "powershell" | "pwsh"
+        )
+    }
+
+    let path = Path::new(program);
+    path.to_str().is_some_and(matches_opaque_command_name)
+        || path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(matches_opaque_command_name)
+}
+
 fn canonicalize_workspace_root(path: &Path) -> ExecResult<PathBuf> {
     path.canonicalize()
         .map_err(|_| ExecError::WorkspaceRootInvalid {
@@ -392,7 +421,13 @@ mod tests {
 
     #[test]
     fn fail_closed_when_required_isolation_exceeds_supported() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = tempdir().expect("create temp workspace");
 
         let request = ExecRequest::new(
@@ -421,7 +456,13 @@ mod tests {
 
     #[test]
     fn rejects_cwd_outside_workspace() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = tempdir().expect("create temp workspace");
         let outside = tempdir().expect("create outside cwd");
 
@@ -447,6 +488,7 @@ mod tests {
     fn supports_none_even_when_host_is_none() {
         let policy = GatewayPolicy {
             allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
             ..GatewayPolicy::default()
         };
         let gateway =
@@ -467,7 +509,13 @@ mod tests {
 
     #[test]
     fn evaluate_denies_with_reason_for_unsupported_isolation() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             dummy_program(),
@@ -499,7 +547,13 @@ mod tests {
 
     #[test]
     fn execute_with_event_preserves_deny_reason() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             dummy_program(),
@@ -516,7 +570,13 @@ mod tests {
 
     #[test]
     fn prepare_command_denial_matches_evaluate_for_outside_workspace() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = tempdir().expect("create temp workspace");
         let outside = tempdir().expect("create outside cwd");
 
@@ -575,6 +635,50 @@ mod tests {
             event.requested_policy_meta,
             crate::audit::requested_policy_meta(ExecutionIsolation::BestEffort)
         );
+    }
+
+    #[test]
+    fn denies_opaque_command_launcher_without_allowlist() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            dummy_program(),
+            vec![dummy_shell_flag(), "echo hello"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        );
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("opaque_command_requires_allowlisted_program")
+        );
+    }
+
+    #[test]
+    fn allows_opaque_command_launcher_when_explicitly_allowlisted() {
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec![dummy_program().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            dummy_program(),
+            vec![dummy_shell_flag(), "echo hello"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
     }
 
     #[test]
@@ -746,6 +850,7 @@ mod tests {
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             audit_log_path: Some(audit_path.clone()),
+            mutating_program_allowlist: vec![shell_exit_nonzero_command().0.to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -759,7 +864,8 @@ mod tests {
             workspace.path(),
             host_supported_test_isolation(),
             workspace.path(),
-        );
+        )
+        .with_declared_mutation(true);
 
         let status = gateway
             .execute_status(&request)
@@ -778,6 +884,7 @@ mod tests {
         let workspace = tempdir().expect("create temp workspace");
         let policy = GatewayPolicy {
             allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -818,6 +925,7 @@ mod tests {
         let workspace = tempdir().expect("create temp workspace");
         let policy = GatewayPolicy {
             allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -886,6 +994,16 @@ mod tests {
     #[cfg(not(windows))]
     fn shell_exit_nonzero_command() -> (&'static str, Vec<&'static str>) {
         ("sh", vec!["-c", "exit 1"])
+    }
+
+    #[cfg(windows)]
+    fn dummy_shell_flag() -> &'static str {
+        "/C"
+    }
+
+    #[cfg(not(windows))]
+    fn dummy_shell_flag() -> &'static str {
+        "-c"
     }
 
     #[cfg(target_os = "linux")]

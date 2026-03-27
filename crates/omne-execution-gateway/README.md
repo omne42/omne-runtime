@@ -16,6 +16,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed if a request marked as `policy_default` no longer matches the gateway's current policy default
 - workspace boundary enforcement (`cwd` must be inside `workspace_root`, and execution uses the canonicalized working directory)
 - two-way mutation declaration enforcement for allowlisted mutating programs
+- fail-closed denial for opaque command launchers such as `sh`, `cmd`, and `pwsh` unless they are explicitly allowlisted
 - structured decision events for audit/logging
 
 ## Important Scope Notes
@@ -26,7 +27,8 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - Linux `Strict` currently enforces a workspace write boundary, but still allows read/execute access outside the workspace.
 - macOS and Windows currently do not implement a native `BestEffort` sandbox; they report only `None` support and fail closed if `BestEffort` or `Strict` is requested.
 - allowlisted mutating programs must explicitly set `declared_mutation = true`, and declared mutations must still use an allowlisted program/path.
-- mutation checks remain name/path based; they do not prove binary provenance or infer arbitrary shell intent.
+- shell-like opaque launchers are denied by default because the gateway cannot trust `declared_mutation = false` for an interpreter that can execute arbitrary subcommands.
+- mutation checks remain name/path based; they do not prove binary provenance or infer arbitrary binary semantics.
 - `prepare_command` rejects a `Command` when its program/args diverge from the validated `ExecRequest`.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.
 
@@ -48,8 +50,8 @@ use policy_meta::ExecutionIsolation;
 
 let gateway = ExecGateway::new();
 let req = ExecRequest::new(
-    "sh",
-    vec!["-lc", "echo hello"],
+    "echo",
+    vec!["hello"],
     ".",
     ExecutionIsolation::BestEffort,
     ".",

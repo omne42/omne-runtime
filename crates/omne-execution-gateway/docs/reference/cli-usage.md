@@ -24,8 +24,8 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 
 ```json
 {
-  "program": "sh",
-  "args": ["-lc", "echo hello-from-omne-execution"],
+  "program": "echo",
+  "args": ["hello-from-omne-execution"],
   "cwd": ".",
   "workspace_root": ".",
   "declared_mutation": false
@@ -34,9 +34,12 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 
 `required_isolation` is optional; when omitted, the CLI builds an `ExecRequest` with
 `requested_isolation_source = policy_default` and `required_isolation = policy.default_isolation`.
-`declared_mutation` is an explicit caller signal. When `program` matches `mutating_program_allowlist`,
-the gateway now requires `declared_mutation = true`; declared mutations still must use an allowlisted
-program. The gateway does not parse `omne-fs` subcommands to infer mutation intent.
+`declared_mutation` is required in `request.json`; the CLI no longer defaults it to `false`.
+When `program` matches `mutating_program_allowlist`, the gateway requires
+`declared_mutation = true`; declared mutations still must use an allowlisted program.
+Shell-like opaque launchers such as `sh`, `cmd`, `powershell`, and `pwsh` are denied unless
+they are explicitly allowlisted. The gateway does not parse `omne-fs` subcommands to infer
+mutation intent.
 
 ## Output Schema
 
@@ -53,8 +56,8 @@ Example output fragment:
 ```json
 {
   "request_resolution": {
-    "program": "sh",
-    "args": ["-lc", "echo hello-from-omne-execution"],
+    "program": "echo",
+    "args": ["hello-from-omne-execution"],
     "cwd": ".",
     "workspace_root": ".",
     "declared_mutation": false,
@@ -74,7 +77,7 @@ Example output fragment:
       "execution_isolation": "best_effort"
     },
     "supported_isolation": "best_effort",
-    "program": "sh",
+    "program": "echo",
     "cwd": "/abs/workspace",
     "workspace_root": "/abs/workspace",
     "declared_mutation": false,

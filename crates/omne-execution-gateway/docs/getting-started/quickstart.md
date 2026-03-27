@@ -16,8 +16,8 @@ use policy_meta::ExecutionIsolation;
 
 let gateway = ExecGateway::new();
 let req = ExecRequest::new(
-    "sh",
-    ["-lc", "echo hello"],
+    "echo",
+    ["hello"],
     ".",
     ExecutionIsolation::BestEffort,
     ".",
@@ -70,8 +70,8 @@ Example fragment:
 ```json
 {
   "request_resolution": {
-    "program": "sh",
-    "args": ["-lc", "echo hello-from-omne-execution"],
+    "program": "echo",
+    "args": ["hello-from-omne-execution"],
     "cwd": ".",
     "workspace_root": ".",
     "declared_mutation": false,
@@ -91,7 +91,7 @@ Example fragment:
       "execution_isolation": "best_effort"
     },
     "supported_isolation": "best_effort",
-    "program": "sh",
+    "program": "echo",
     "cwd": "/abs/workspace",
     "workspace_root": "/abs/workspace",
     "declared_mutation": false,
@@ -108,4 +108,5 @@ Example fragment:
 - `cwd` outside `workspace_root` -> denied.
 - requested `strict` above host support -> denied.
 - mutating request with non-allowlisted program -> denied (when policy enforcement is on).
+- shell-style launchers such as `sh`, `cmd`, and `pwsh` -> denied unless explicitly allowlisted.
 - `prepare_command` with a mismatched `Command` program/args -> denied.
