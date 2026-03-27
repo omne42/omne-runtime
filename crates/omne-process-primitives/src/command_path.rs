@@ -6,10 +6,10 @@ pub fn resolve_command_path(command: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn resolve_command_path_os(command: &OsStr) -> Option<PathBuf> {
-    resolve_command_path_with_path_var(command, std::env::var_os("PATH"))
+    resolve_command_path_os_with_path_var(command, std::env::var_os("PATH"))
 }
 
-fn resolve_command_path_with_path_var(
+pub(crate) fn resolve_command_path_os_with_path_var(
     command: &OsStr,
     path_var: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {

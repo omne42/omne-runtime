@@ -6,7 +6,7 @@ use std::process::{Command, Output, Stdio};
 
 use crate::command_path::{
     is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
-    resolve_command_path_os,
+    resolve_command_path_os, resolve_command_path_os_with_path_var,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,7 +171,7 @@ impl std::error::Error for HostRecipeError {
 pub fn run_host_command(
     request: &HostCommandRequest<'_>,
 ) -> Result<HostCommandOutput, HostCommandError> {
-    let execution = if should_try_sudo(request.program, request.sudo_mode) {
+    let execution = if should_try_sudo(request) {
         HostCommandExecution::Sudo
     } else {
         HostCommandExecution::Direct
@@ -245,7 +245,7 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
     let mut cmd = match execution {
         HostCommandExecution::Direct => Command::new(&program),
         HostCommandExecution::Sudo => {
-            let mut cmd = Command::new("sudo");
+            let mut cmd = Command::new(resolve_sudo_program(request.env));
             cmd.arg("-n");
             if !request.env.is_empty() {
                 cmd.arg(format!(
@@ -310,12 +310,19 @@ fn run_command_output(
     }
 }
 
-fn should_try_sudo(program: &OsStr, sudo_mode: HostCommandSudoMode) -> bool {
+fn should_try_sudo(request: &HostCommandRequest<'_>) -> bool {
+    should_try_sudo_for_request_with_status(request, unix_process_is_non_root())
+}
+
+fn should_try_sudo_for_request_with_status(
+    request: &HostCommandRequest<'_>,
+    process_is_non_root: bool,
+) -> bool {
     should_try_sudo_with_status(
-        program,
-        sudo_mode,
-        unix_process_is_non_root(),
-        command_exists("sudo"),
+        request.program,
+        request.sudo_mode,
+        process_is_non_root,
+        sudo_available(request.env),
     )
 }
 
@@ -349,6 +356,25 @@ fn has_path_separator(command: &OsStr) -> bool {
         .to_string_lossy()
         .chars()
         .any(|ch| ch == '/' || ch == '\\')
+}
+
+fn resolve_sudo_program(env: &[(String, String)]) -> PathBuf {
+    resolve_sudo_path(env).unwrap_or_else(|| PathBuf::from("sudo"))
+}
+
+fn sudo_available(env: &[(String, String)]) -> bool {
+    resolve_sudo_path(env).is_some()
+}
+
+fn resolve_sudo_path(env: &[(String, String)]) -> Option<PathBuf> {
+    resolve_command_path_os_with_path_var(OsStr::new("sudo"), effective_path_var(env))
+}
+
+fn effective_path_var(env: &[(String, String)]) -> Option<OsString> {
+    env.iter()
+        .rev()
+        .find_map(|(name, value)| (name == "PATH").then(|| OsString::from(value)))
+        .or_else(|| std::env::var_os("PATH"))
 }
 
 fn resolve_program_for_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
@@ -398,7 +424,7 @@ mod tests {
         HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
         HostRecipeError, HostRecipeRequest, build_command, command_available, command_exists,
         command_path_exists, default_recipe_sudo_mode_for_program, run_host_command,
-        run_host_recipe, should_try_sudo_with_status,
+        run_host_recipe, should_try_sudo_for_request_with_status, should_try_sudo_with_status,
     };
 
     #[test]
@@ -462,6 +488,26 @@ mod tests {
             false,
             true,
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sudo_detection_uses_request_path_override() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sudo_path = write_test_command(temp.path(), "sudo");
+        let env = vec![("PATH".to_string(), temp.path().display().to_string())];
+        let request = HostCommandRequest {
+            program: OsStr::new("apt-get"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        assert!(should_try_sudo_for_request_with_status(&request, true));
+
+        let command = build_command(&request, HostCommandExecution::Sudo);
+        assert_eq!(Path::new(command.get_program()), sudo_path.as_path());
     }
 
     #[test]
