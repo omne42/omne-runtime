@@ -550,7 +550,10 @@ mod tests {
             leader_start_ticks: 11,
         };
 
-        assert!(!should_kill_linux_process_group_with(identity, Err(io::ErrorKind::NotFound.into())));
+        assert!(!should_kill_linux_process_group_with(
+            identity,
+            Err(io::ErrorKind::NotFound.into())
+        ));
     }
 
     #[test]
