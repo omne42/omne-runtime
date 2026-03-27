@@ -1177,7 +1177,7 @@ mod tests {
         vec![
             OsString::from("/C"),
             OsString::from(format!(
-                "del \"{0}\" && mkdir \"{0}\"",
+                "del /F /Q \"{0}\" && mkdir \"{0}\" && exit /B 0",
                 audit_path.display()
             )),
         ]
