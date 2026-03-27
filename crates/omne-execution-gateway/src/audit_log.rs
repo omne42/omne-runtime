@@ -1,4 +1,4 @@
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -34,6 +34,15 @@ impl AuditLogger {
         self.write_record(AuditRecord::from_execution(event, result));
     }
 
+    pub(crate) fn ensure_ready(&self) -> ExecResult<()> {
+        self.try_open_appendable_file()
+            .map(|_| ())
+            .map_err(|err| ExecError::AuditLogUnavailable {
+                path: self.path.clone(),
+                detail: err.to_string(),
+            })
+    }
+
     fn write_record(&self, record: AuditRecord) {
         if let Err(err) = self.try_write_record(record) {
             eprintln!(
@@ -45,12 +54,7 @@ impl AuditLogger {
 
     fn try_write_record(&self, record: AuditRecord) -> Result<(), Box<dyn std::error::Error>> {
         let line = serde_json::to_string(&record)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&self.path)?;
+        let mut file = self.try_open_appendable_file()?;
         file.lock_exclusive()?;
         let write_result = file
             .seek(SeekFrom::End(0))
@@ -60,6 +64,20 @@ impl AuditLogger {
         write_result?;
         unlock_result?;
         Ok(())
+    }
+
+    fn try_open_appendable_file(&self) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+        if let Some(parent) = self.path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
+        }
+        Ok(OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&self.path)?)
     }
 }
 
@@ -262,6 +280,41 @@ mod tests {
         for line in lines {
             let record: serde_json::Value = serde_json::from_str(line).expect("valid json line");
             assert_eq!(record["result"]["status"], "prepared");
+        }
+    }
+
+    #[test]
+    fn ensure_ready_creates_missing_parent_directories() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("audit").join("audit.jsonl");
+        let logger = AuditLogger::new(&path);
+
+        logger
+            .ensure_ready()
+            .expect("audit path should become writable");
+
+        assert!(path.exists(), "audit log file should be created");
+        assert!(
+            path.parent().expect("audit parent").is_dir(),
+            "audit parent directories should be created"
+        );
+    }
+
+    #[test]
+    fn ensure_ready_rejects_non_directory_parent() {
+        let dir = tempdir().expect("tempdir");
+        let parent_file = dir.path().join("not-a-dir");
+        fs::write(&parent_file, "blocker").expect("write parent file");
+        let audit_path = parent_file.join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .ensure_ready()
+            .expect_err("audit path with file parent must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
         }
     }
 

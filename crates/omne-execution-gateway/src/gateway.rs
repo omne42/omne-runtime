@@ -261,6 +261,12 @@ impl ExecGateway {
             ));
         }
 
+        if let Some(audit) = &self.audit
+            && let Err(err) = audit.ensure_ready()
+        {
+            return Err(self.deny_preflight(event, "audit_log_unavailable", err));
+        }
+
         match resolve_request_paths(&request.cwd, &request.workspace_root) {
             Ok(resolved_paths) => {
                 event.cwd = resolved_paths.cwd.clone();
@@ -531,6 +537,71 @@ mod tests {
         assert_eq!(
             event.requested_policy_meta,
             crate::audit::requested_policy_meta(ExecutionIsolation::Strict)
+        );
+    }
+
+    #[test]
+    fn preflight_denies_when_audit_log_parent_is_not_directory() {
+        let workspace = tempdir().expect("create temp workspace");
+        let parent_file = workspace.path().join("not-a-dir");
+        fs::write(&parent_file, "blocker").expect("write parent file");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                audit_log_path: Some(parent_file.join("audit.jsonl")),
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        );
+
+        let err = gateway
+            .preflight(&request)
+            .expect_err("unwritable audit log should deny request");
+        let (event, err) = err.into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("audit_log_unavailable"));
+        match err {
+            ExecError::AuditLogUnavailable { .. } => {}
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn preflight_creates_missing_audit_log_parent_directories() {
+        let workspace = tempdir().expect("create temp workspace");
+        let audit_path = workspace
+            .path()
+            .join("logs")
+            .join("audit")
+            .join("gateway.jsonl");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                audit_log_path: Some(audit_path.clone()),
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        );
+
+        let event = gateway.preflight(&request).expect("preflight should pass");
+        assert_eq!(event.decision, ExecDecision::Run);
+        assert!(
+            audit_path.exists(),
+            "audit file should be created during preflight"
         );
     }
 
