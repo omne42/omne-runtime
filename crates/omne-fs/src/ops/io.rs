@@ -576,10 +576,7 @@ mod tests {
         let target = dir.path().join("created");
         fs::create_dir(&target).expect("create target dir");
         let metadata = fs::symlink_metadata(&target).expect("target metadata");
-        let identity = super::DirectoryIdentity {
-            metadata: super::PathIdentity::from_metadata(metadata),
-            handle: None,
-        };
+        let identity = super::DirectoryIdentity::unverifiable_for_tests(metadata);
 
         let err = identity
             .ensure_verified(
