@@ -161,50 +161,9 @@ fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
             current.start_ticks == identity.leader_start_ticks
                 && current.process_group_id == identity.process_group_id.as_raw_pid()
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            linux_process_group_exists(identity.process_group_id)
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
         Err(_) => false,
     }
-}
-
-#[cfg(all(unix, target_os = "linux"))]
-fn linux_process_group_exists(process_group_id: rustix::process::Pid) -> bool {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return false;
-    };
-    for entry in entries {
-        let Ok(entry) = entry else {
-            return false;
-        };
-        let file_name = entry.file_name();
-        let Some(raw_pid) = file_name.to_str() else {
-            continue;
-        };
-        let Ok(pid) = raw_pid.parse::<i32>() else {
-            continue;
-        };
-        let Some(pid) = rustix::process::Pid::from_raw(pid) else {
-            continue;
-        };
-
-        match read_linux_process_identity(pid) {
-            Ok(identity) if identity.process_group_id == process_group_id.as_raw_pid() => {
-                return true;
-            }
-            Ok(_) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound
-                        | io::ErrorKind::PermissionDenied
-                        | io::ErrorKind::InvalidData
-                ) => {}
-            Err(_) => return false,
-        }
-    }
-
-    false
 }
 
 #[cfg(all(unix, target_os = "linux"))]

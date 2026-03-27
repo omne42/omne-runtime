@@ -1,13 +1,16 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::thread;
 
 use crate::command_path::{
     is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
     resolve_command_path_os, resolve_command_path_os_with_path_var,
 };
+
+const MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostCommandSudoMode {
@@ -287,7 +290,7 @@ fn run_command_output(
         const EXECUTABLE_BUSY_BACKOFF_MS: u64 = 10;
 
         for attempt in 0..=EXECUTABLE_BUSY_RETRIES {
-            match build_command(request, execution).output() {
+            match spawn_and_capture_output(request, execution) {
                 Ok(output) => return Ok(output),
                 Err(err)
                     if err.kind() == io::ErrorKind::ExecutableFileBusy
@@ -306,8 +309,66 @@ fn run_command_output(
 
     #[cfg(not(unix))]
     {
-        build_command(request, execution).output()
+        spawn_and_capture_output(request, execution)
     }
+}
+
+fn spawn_and_capture_output(
+    request: &HostCommandRequest<'_>,
+    execution: HostCommandExecution,
+) -> io::Result<Output> {
+    let mut child = build_command(request, execution).spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("stdout pipe missing"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("stderr pipe missing"))?;
+    let stdout_handle = thread::spawn(move || read_stream_limited(stdout, "stdout"));
+    let stderr_handle = thread::spawn(move || read_stream_limited(stderr, "stderr"));
+    let status = child.wait()?;
+    Ok(Output {
+        status,
+        stdout: join_capture_thread(stdout_handle)?,
+        stderr: join_capture_thread(stderr_handle)?,
+    })
+}
+
+fn join_capture_thread(
+    handle: thread::JoinHandle<io::Result<Vec<u8>>>,
+) -> io::Result<Vec<u8>> {
+    handle
+        .join()
+        .map_err(|_| io::Error::other("output capture thread panicked"))?
+}
+
+fn read_stream_limited<R>(mut reader: R, stream_name: &'static str) -> io::Result<Vec<u8>>
+where
+    R: Read,
+{
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut exceeded = false;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM.saturating_sub(bytes.len());
+        let to_copy = remaining.min(read);
+        bytes.extend_from_slice(&buffer[..to_copy]);
+        if to_copy < read || bytes.len() == MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM {
+            exceeded = true;
+        }
+    }
+    if exceeded {
+        return Err(io::Error::other(format!(
+            "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
+        )));
+    }
+    Ok(bytes)
 }
 
 fn should_try_sudo(request: &HostCommandRequest<'_>) -> bool {
@@ -647,6 +708,33 @@ mod tests {
     }
 
     #[test]
+    fn run_host_command_rejects_unbounded_stdout_capture() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_large_stdout_command(temp.path(), "loud");
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let err = run_host_command(&request).expect_err("oversized stdout should fail");
+        match err {
+            HostCommandError::SpawnFailed { source, .. } => {
+                assert!(
+                    source
+                        .to_string()
+                        .contains("stdout exceeded capture limit"),
+                    "unexpected error: {source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
     fn run_host_command_resolves_relative_program_against_working_directory() {
         let temp = tempfile::tempdir().expect("tempdir");
         let working_directory = temp.path().join("cwd");
@@ -778,6 +866,15 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn write_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (8 * 1024 * 1024 + 1))\nPY\n",
+        )
+    }
+
+    #[cfg(unix)]
     fn write_unix_executable(dir: &Path, name: &str, content: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
 
@@ -832,6 +929,17 @@ mod tests {
             "@echo off\r\n<nul set /p =stdout-message\r\n1>&2 <nul set /p =stderr-message\r\nexit /b 7\r\n",
         )
         .expect("write windows failing command");
+        path
+    }
+
+    #[cfg(windows)]
+    fn write_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.cmd"));
+        std::fs::write(
+            &path,
+            "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * (8MB + 1); [Console]::Out.Write($s)\"\r\n",
+        )
+        .expect("write windows loud command");
         path
     }
 
