@@ -102,7 +102,7 @@ where
     F: Fn(&str) -> Option<OsString>,
 {
     for key in HOME_ENV_KEYS {
-        if let Some(path) = non_empty_env_path(env_lookup, key) {
+        if let Some(path) = absolute_env_path(env_lookup, key) {
             return Some(path);
         }
     }
@@ -130,13 +130,12 @@ fn host_platform_from_parts(os: &str, arch: &str) -> Option<HostPlatform> {
     Some(HostPlatform { os, arch })
 }
 
-fn non_empty_env_path<F>(env_lookup: &F, key: &str) -> Option<PathBuf>
+fn absolute_env_path<F>(env_lookup: &F, key: &str) -> Option<PathBuf>
 where
     F: Fn(&str) -> Option<OsString>,
 {
-    env_lookup(key)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    let path = PathBuf::from(env_lookup(key).filter(|value| !value.is_empty())?);
+    path.is_absolute().then_some(path)
 }
 
 #[cfg(windows)]
@@ -212,11 +211,30 @@ mod tests {
     #[test]
     fn resolve_home_dir_with_prefers_home() {
         let home = resolve_home_dir_with(&|key| match key {
+            #[cfg(windows)]
+            "HOME" => Some(OsString::from(r"C:\Users\test-home")),
+            #[cfg(not(windows))]
             "HOME" => Some(OsString::from("/home/test")),
+            #[cfg(windows)]
+            "USERPROFILE" => Some(OsString::from(r"C:\Users\ignored")),
+            #[cfg(not(windows))]
             "USERPROFILE" => Some(OsString::from("/Users/ignored")),
             _ => None,
         });
+        #[cfg(windows)]
+        assert_eq!(home, Some(PathBuf::from(r"C:\Users\test-home")));
+        #[cfg(not(windows))]
         assert_eq!(home, Some(PathBuf::from("/home/test")));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn resolve_home_dir_with_rejects_relative_home() {
+        let home = resolve_home_dir_with(&|key| match key {
+            "HOME" => Some(OsString::from("relative/home")),
+            _ => None,
+        });
+        assert_eq!(home, None);
     }
 
     #[cfg(not(windows))]
@@ -233,6 +251,17 @@ mod tests {
     #[test]
     fn resolve_home_dir_with_uses_userprofile_on_windows() {
         let home = resolve_home_dir_with(&|key| match key {
+            "USERPROFILE" => Some(OsString::from(r"C:\Users\test")),
+            _ => None,
+        });
+        assert_eq!(home, Some(PathBuf::from(r"C:\Users\test")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_home_dir_with_skips_relative_home_before_userprofile() {
+        let home = resolve_home_dir_with(&|key| match key {
+            "HOME" => Some(OsString::from(r"Users\relative")),
             "USERPROFILE" => Some(OsString::from(r"C:\Users\test")),
             _ => None,
         });
