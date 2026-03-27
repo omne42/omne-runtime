@@ -6,7 +6,6 @@ use crate::error::{ExecError, ExecResult};
 use policy_meta::ExecutionIsolation;
 
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -16,42 +15,14 @@ mod windows;
 #[derive(Debug)]
 pub(crate) struct SandboxMonitor {
     observation: Option<SandboxRuntimeObservation>,
-    #[cfg(target_os = "linux")]
-    linux_best_effort: Option<linux::LinuxSandboxMonitor>,
 }
 
 impl SandboxMonitor {
     fn none() -> Self {
-        Self {
-            observation: None,
-            #[cfg(target_os = "linux")]
-            linux_best_effort: None,
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn ready(observation: SandboxRuntimeObservation) -> Self {
-        Self {
-            observation: Some(observation),
-            #[cfg(target_os = "linux")]
-            linux_best_effort: None,
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn from_linux_best_effort(monitor: linux::LinuxSandboxMonitor) -> Self {
-        Self {
-            observation: None,
-            linux_best_effort: Some(monitor),
-        }
+        Self { observation: None }
     }
 
     pub(crate) fn observe_after_spawn(self) -> Option<SandboxRuntimeObservation> {
-        #[cfg(target_os = "linux")]
-        if let Some(monitor) = self.linux_best_effort {
-            return Some(monitor.observe_after_spawn());
-        }
-
         self.observation
     }
 }

@@ -12,7 +12,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 
 ```json
 {
-  "allow_isolation_none": false,
+  "allow_isolation_none": true,
   "enforce_allowlisted_program_for_mutation": true,
   "mutating_program_allowlist": ["omne-fs", "omne-fs-cli"],
   "default_isolation": "best_effort",
@@ -28,6 +28,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
   "args": ["hello-from-omne-execution"],
   "cwd": ".",
   "workspace_root": ".",
+  "required_isolation": "none",
   "declared_mutation": false
 }
 ```
@@ -63,22 +64,22 @@ Example output fragment:
     "cwd": ".",
     "workspace_root": ".",
     "declared_mutation": false,
-    "requested_isolation": "best_effort",
-    "requested_isolation_source": "policy_default",
+    "requested_isolation": "none",
+    "requested_isolation_source": "request",
     "requested_policy_meta": {
       "version": 1,
-      "execution_isolation": "best_effort"
+      "execution_isolation": "none"
     },
     "policy_default_isolation": "best_effort"
   },
   "event": {
     "decision": "run",
-    "requested_isolation": "best_effort",
+    "requested_isolation": "none",
     "requested_policy_meta": {
       "version": 1,
-      "execution_isolation": "best_effort"
+      "execution_isolation": "none"
     },
-    "supported_isolation": "best_effort",
+    "supported_isolation": "none",
     "program": "echo",
     "cwd": "/abs/workspace",
     "workspace_root": "/abs/workspace",
@@ -99,6 +100,8 @@ defaulted isolation decisions explicit through `input_required_isolation`,
 canonicalized `workspace_root`, and declared mutation intent.
 `requested_isolation_source` explains whether the effective isolation came from the request payload
 or from `policy.default_isolation`.
+Current hosts report `supported_isolation = none`; `best_effort` and `strict` requests fail closed
+until a native sandbox backend is reintroduced safely.
 
 ## Exit Behavior
 

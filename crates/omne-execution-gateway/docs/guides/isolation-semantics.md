@@ -12,7 +12,7 @@ The gateway uses three isolation levels from `policy-meta`.
 
 | Platform | Detected Support | Notes |
 | --- | --- | --- |
-| Linux | `strict` when Landlock is available, else `best_effort` | Strict path requires Landlock full enforcement. `best_effort` opportunistically installs a Landlock ruleset and silently degrades when the host cannot enforce it. |
+| Linux | `none` | Native Linux sandbox support is temporarily disabled until a safe replacement for the previous Landlock `pre_exec` path is available. Requests above `none` fail closed. |
 | macOS | `none` | Native `best_effort` / `strict` are not implemented, so requests above `none` fail closed. |
 | Windows | `none` | Native `best_effort` / `strict` are not implemented, so requests above `none` fail closed. |
 
@@ -22,23 +22,17 @@ When `required_isolation > supported_isolation`, execution is denied.
 
 No silent downgrade is performed.
 
-## Linux Strict Path
+## Linux Native Sandbox Status
 
-In strict mode on Linux:
+The previous Linux-native Landlock path is intentionally disabled.
 
-- ruleset is installed in child `pre_exec`,
-- root read/execute + workspace full access are configured,
-- run is rejected if ruleset is not fully enforced.
+Reason:
 
-This means `strict` currently protects writes outside the workspace more strongly than reads.
+- the old implementation depended on Rust work inside `pre_exec`,
+- that post-`fork` boundary is not safe to treat as a supported native sandbox contract,
+- fail-closing to `none` support is preferable to advertising `best_effort` / `strict` semantics that do not hold.
 
-It should not be modeled as host-wide secret isolation.
+Until a replacement exists, Linux behaves like the other current platforms:
 
-## Linux Best-Effort Path
-
-In best-effort mode on Linux:
-
-- the gateway attempts to install the same Landlock shape as strict mode,
-- unsupported or partially enforced features do not fail the spawn,
-- realized execution events report whether Landlock ended up `fully_enforced`, `partially_enforced`, `not_enforced`, or errored,
-- callers should treat the result as opportunistic hardening rather than a contractual sandbox.
+- `none` is supported,
+- `best_effort` and `strict` are denied as `isolation_not_supported`.

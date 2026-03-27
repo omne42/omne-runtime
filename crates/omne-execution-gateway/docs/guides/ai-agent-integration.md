@@ -22,8 +22,8 @@ agent plan
 - Keep `workspace_root` explicit and stable.
 - Treat denial reasons as actionable control signals.
 - Persist `execution.event.requested_policy_meta` when you need a canonical cross-repo record of the requested isolation contract.
-- On Linux `best_effort`, inspect `execution.event.sandbox_runtime` before treating the run as sandboxed.
 - Avoid shell-style launchers such as `sh`, `cmd`, `powershell`, and `pwsh` unless policy explicitly allowlists them.
+- Current hosts only report `none` support. Treat `best_effort` / `strict` requests as deliberate fail-closed guards until a native sandbox backend is restored.
 
 ## Repair Mapping
 
@@ -34,11 +34,12 @@ agent plan
 | `cwd_outside_workspace` | Correct path under workspace root. |
 | `mutation_requires_allowlisted_program` | Route via a policy-allowlisted mutating program such as `omne-fs`. |
 | `opaque_command_requires_allowlisted_program` | Replace shell-style launcher usage with a direct executable or explicitly allowlist that launcher. |
-| `isolation_none_forbidden` | Use `best_effort` or `strict`. |
+| `isolation_none_forbidden` | Explicitly allow `none`, or defer execution until a supported native isolation backend exists. |
 
 ## Safe Defaults for Autonomous Runs
 
 - `allow_isolation_none=false`
 - `enforce_allowlisted_program_for_mutation=true`
-- request `best_effort` by default
+- request `best_effort` by default only when you want unsupported hosts to fail closed
+- if unsandboxed execution is intentionally allowed, set `allow_isolation_none=true` and request `none` explicitly
 - keep audit logging enabled

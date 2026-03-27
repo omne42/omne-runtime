@@ -10,8 +10,6 @@
 - mutation declaration consistency for allowlisted mutating requests,
 - fail-closed denial for non-allowlisted opaque launchers.
 
-On Linux, `best_effort` also attempts to apply a Landlock ruleset opportunistically.
-
 ## What It Does Not Enforce Alone
 
 - command intent semantics,
@@ -25,6 +23,5 @@ On Linux, `best_effort` also attempts to apply a Landlock ruleset opportunistica
 - run under least-privilege OS accounts,
 - keep workspace roots narrow,
 - enable audit logging in production,
-- monitor runtime audit records for degraded Linux `best_effort` Landlock outcomes,
 - pair with dedicated filesystem safety tooling,
 - treat `none` isolation as exceptional.

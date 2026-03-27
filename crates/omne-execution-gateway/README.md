@@ -22,10 +22,8 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 ## Important Scope Notes
 
 - `BestEffort` is a compatibility tier, not a strong sandbox guarantee.
-- On Linux, `BestEffort` now attempts a Landlock sandbox opportunistically, but it does not fail closed if the host cannot enforce it.
-- Linux execution events now report the observed best-effort Landlock runtime outcome when the command is actually spawned.
-- Linux `Strict` currently enforces a workspace write boundary, but still allows read/execute access outside the workspace.
-- macOS and Windows currently do not implement a native `BestEffort` sandbox; they report only `None` support and fail closed if `BestEffort` or `Strict` is requested.
+- Linux, macOS, and Windows currently do not expose a native `BestEffort` or `Strict` sandbox. Requests above `None` fail closed.
+- Linux's previous native Landlock path is intentionally disabled until it can be reintroduced without relying on unsafe post-`fork` Rust execution.
 - allowlisted mutating programs must explicitly set `declared_mutation = true`, and declared mutations must still use an allowlisted bare program name or exact allowlisted path.
 - shell-like opaque launchers are denied by default because the gateway cannot trust `declared_mutation = false` for an interpreter that can execute arbitrary subcommands.
 - bare allowlist entries only match bare program names; explicit path entries only match that explicit path. This avoids granting mutation rights to arbitrary same-basename binaries in other directories.
@@ -36,7 +34,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 
 ## Platform Capability (v0.1.0)
 
-- Linux: detects Landlock support at runtime; `Strict` when available, otherwise `BestEffort`
+- Linux: `None`
 - macOS: `None`
 - Windows: `None`
 
