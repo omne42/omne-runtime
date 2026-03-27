@@ -21,6 +21,8 @@ pub(super) enum MetadataIdentityCheck {
 pub(super) struct DirectoryIdentity {
     metadata: PathIdentity,
     handle: Option<same_file::Handle>,
+    #[cfg(test)]
+    force_unverifiable: bool,
 }
 
 impl PathIdentity {
@@ -82,6 +84,8 @@ impl DirectoryIdentity {
         Ok(Self {
             metadata: PathIdentity::from_metadata(meta),
             handle: same_file::Handle::from_path(path).ok(),
+            #[cfg(test)]
+            force_unverifiable: false,
         })
     }
 
@@ -97,6 +101,10 @@ impl DirectoryIdentity {
     where
         F: Fn() -> Error,
     {
+        #[cfg(test)]
+        if self.force_unverifiable {
+            return Ok(MetadataIdentityCheck::Unverifiable);
+        }
         if current_meta.file_type().is_symlink() || !current_meta.is_dir() {
             return Err(changed_error());
         }
@@ -112,6 +120,10 @@ impl DirectoryIdentity {
     where
         F: Fn() -> Error,
     {
+        #[cfg(test)]
+        if self.force_unverifiable {
+            return Ok(MetadataIdentityCheck::Unverifiable);
+        }
         let current_meta = fs::symlink_metadata(path)
             .map_err(|err| Error::io_path("symlink_metadata", relative, err))?;
         if current_meta.file_type().is_symlink() || !current_meta.is_dir() {
@@ -157,6 +169,15 @@ impl DirectoryIdentity {
         match self.verify(path, relative, changed_error)? {
             MetadataIdentityCheck::Verified => Ok(()),
             MetadataIdentityCheck::Unverifiable => Err(unverifiable_error()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn unverifiable_for_tests(meta: fs::Metadata) -> Self {
+        Self {
+            metadata: PathIdentity::from_metadata(meta),
+            handle: None,
+            force_unverifiable: true,
         }
     }
 }
