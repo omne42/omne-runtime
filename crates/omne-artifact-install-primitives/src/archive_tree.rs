@@ -852,12 +852,12 @@ mod tests {
 
     use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
 
-    #[cfg(unix)]
-    use super::extract_tar_tree;
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, download_and_install_archive_tree,
         install_archive_tree_from_reader_with_limits,
     };
+    #[cfg(unix)]
+    use super::{extract_tar_tree, extract_zip_tree};
 
     fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut writer = Cursor::new(Vec::new());
@@ -1192,12 +1192,16 @@ mod tests {
             ("safe/target.txt", b"demo".as_slice(), 0o644),
             ("alias", b"safe/target.txt".as_slice(), 0o120777),
         ])?;
+        {
+            let mut zip = zip::ZipArchive::new(Cursor::new(&archive))?;
+            let alias_entry = zip.by_name("alias")?;
+            assert_eq!(alias_entry.unix_mode(), Some(0o120777));
+        }
         let temp = tempfile::tempdir()?;
         let destination = temp.path().join("tree");
         fs::create_dir_all(&destination)?;
 
-        install_archive_tree_from_reader_with_limits(
-            "demo.zip",
+        extract_zip_tree(
             Cursor::new(archive),
             &destination,
             ArchiveExtractionLimits::default(),
@@ -1221,8 +1225,7 @@ mod tests {
         let destination = temp.path().join("tree");
         fs::create_dir_all(&destination)?;
 
-        let err = install_archive_tree_from_reader_with_limits(
-            "demo.zip",
+        let err = extract_zip_tree(
             Cursor::new(archive),
             &destination,
             ArchiveExtractionLimits::default(),
