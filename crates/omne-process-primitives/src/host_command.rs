@@ -420,14 +420,14 @@ mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
 
+    #[cfg(unix)]
+    use super::should_try_sudo_for_request_with_status;
     use super::{
         HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
         HostRecipeError, HostRecipeRequest, build_command, command_available, command_exists,
         command_path_exists, default_recipe_sudo_mode_for_program, run_host_command,
         run_host_recipe, should_try_sudo_with_status,
     };
-    #[cfg(unix)]
-    use super::should_try_sudo_for_request_with_status;
 
     #[test]
     fn command_probe_reports_missing_command_as_absent() {
