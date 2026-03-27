@@ -1164,7 +1164,7 @@ mod tests {
 
     #[cfg(windows)]
     fn audit_breaking_shell_program() -> &'static str {
-        r"C:\Windows\System32\cmd.exe"
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
     }
 
     #[cfg(not(windows))]
@@ -1174,11 +1174,13 @@ mod tests {
 
     #[cfg(windows)]
     fn audit_breaking_shell_args(audit_path: &Path) -> Vec<OsString> {
+        let quoted_audit_path = audit_path.to_string_lossy().replace('\'', "''");
         vec![
-            OsString::from("/C"),
+            OsString::from("-NoProfile"),
+            OsString::from("-Command"),
             OsString::from(format!(
-                "del /F /Q \"{0}\" && mkdir \"{0}\" && exit /B 0",
-                audit_path.display()
+                "if (Test-Path -LiteralPath '{0}') {{ Remove-Item -LiteralPath '{0}' -Force }}; New-Item -ItemType Directory -Path '{0}' | Out-Null; exit 0",
+                quoted_audit_path
             )),
         ]
     }
