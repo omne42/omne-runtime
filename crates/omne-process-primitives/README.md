@@ -18,6 +18,7 @@ Low-level host-command and process-tree primitives shared across callers.
 - default sudo-mode selection for common system-package commands
 - optional `sudo -n` probing on Unix
 - process-tree cleanup setup and best-effort termination
+- Windows `taskkill` cleanup that waits for command success before skipping descendant fallback
 - fail-closed orphan process-group cleanup on non-Linux Unix once the original leader exits
 
 ## Non-Goals

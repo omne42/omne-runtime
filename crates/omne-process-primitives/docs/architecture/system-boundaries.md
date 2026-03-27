@@ -14,6 +14,7 @@
 - Unix 下对 bare system command 做 `sudo -n` 试探。
 - 配置子进程以支持进程树清理。
 - 捕获进程树清理标识并执行 best-effort 终止。
+- Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 descendant sweep。
 - 在非 Linux Unix 上，当原始 leader 已退出时对 orphan process-group 清理 fail-closed，避免仅凭复用 PGID 误杀无关进程。
 
 ## 不负责什么
