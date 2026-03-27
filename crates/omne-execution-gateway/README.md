@@ -26,8 +26,13 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - Linux's previous native Landlock path is intentionally disabled until it can be reintroduced without relying on unsafe post-`fork` Rust execution.
 - allowlisted mutating programs must explicitly set `declared_mutation = true`, and declared mutations must use an exact allowlisted program path.
 - shell-like opaque launchers are denied by default because the gateway cannot trust `declared_mutation = false` for an interpreter that can execute arbitrary subcommands.
+<<<<<<< HEAD
 - mutation authorization now requires explicit program paths in both the request and policy allowlist. Bare program names are denied fail-closed because they do not bind to a stable executable.
 - allowlist matching remains path based; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
+=======
+- bare allowlist entries only match bare program names; explicit path entries only match that explicit path. This avoids granting mutation rights to arbitrary same-basename binaries in other directories.
+- mutation checks remain name/path based; they do not prove binary provenance or infer arbitrary binary semantics.
+>>>>>>> 7baa36c (fix(execution-gateway): fail closed when audit log is unavailable)
 - if `audit_log_path` is configured, preflight creates missing parent directories and rejects requests fail-closed when the audit log cannot be opened for append
 - `prepare_command` rejects a `Command` when its program/args diverge from the validated `ExecRequest`.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.
