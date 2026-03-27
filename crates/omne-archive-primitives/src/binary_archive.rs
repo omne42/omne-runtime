@@ -975,7 +975,7 @@ mod tests {
             &BinaryArchiveRequest {
                 binary_name: "node.exe",
                 tool_name: "node",
-                archive_binary_hint: Some("node.exe"),
+                archive_binary_hint: Some("node-v22.14.0-win-x64/node.exe"),
             },
             &mut out,
         )

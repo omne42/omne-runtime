@@ -336,9 +336,7 @@ fn spawn_and_capture_output(
     })
 }
 
-fn join_capture_thread(
-    handle: thread::JoinHandle<io::Result<Vec<u8>>>,
-) -> io::Result<Vec<u8>> {
+fn join_capture_thread(handle: thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
     handle
         .join()
         .map_err(|_| io::Error::other("output capture thread panicked"))?
@@ -724,9 +722,7 @@ mod tests {
         match err {
             HostCommandError::SpawnFailed { source, .. } => {
                 assert!(
-                    source
-                        .to_string()
-                        .contains("stdout exceeded capture limit"),
+                    source.to_string().contains("stdout exceeded capture limit"),
                     "unexpected error: {source}"
                 );
             }
