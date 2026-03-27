@@ -849,9 +849,9 @@ mod tests {
     use std::fs;
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
-    use std::thread;
     #[cfg(unix)]
     use std::path::PathBuf;
+    use std::thread;
 
     use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
 
