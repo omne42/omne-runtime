@@ -305,6 +305,8 @@ mod tests {
 
         let err = ensure_parent_dir_unchanged(&parent, std::path::Path::new("parent"), &identity)
             .expect_err("unverifiable parent identity must fail closed");
-        assert!(matches!(err, Error::InvalidPath(message) if message.contains("identity could not be verified")));
+        assert!(
+            matches!(err, Error::InvalidPath(message) if message.contains("identity could not be verified"))
+        );
     }
 }

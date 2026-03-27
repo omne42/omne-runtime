@@ -758,7 +758,10 @@ fn unique_sibling_path(destination: &Path, kind: &str) -> Result<PathBuf, Artifa
     )))
 }
 
-fn create_unique_sibling_dir(destination: &Path, kind: &str) -> Result<PathBuf, ArtifactInstallError> {
+fn create_unique_sibling_dir(
+    destination: &Path,
+    kind: &str,
+) -> Result<PathBuf, ArtifactInstallError> {
     for _ in 0..1024_u32 {
         let candidate = unique_sibling_path(destination, kind)?;
         match fs::create_dir(&candidate) {
@@ -1248,7 +1251,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn archive_tree_strips_special_unix_mode_bits_from_regular_files() -> Result<(), Box<dyn Error>> {
+    fn archive_tree_strips_special_unix_mode_bits_from_regular_files() -> Result<(), Box<dyn Error>>
+    {
         use std::os::unix::fs::PermissionsExt;
 
         let archive = make_tar_archive(&[TarEntry::File("bin/demo", b"demo".as_slice(), 0o6755)])?;
@@ -1262,7 +1266,10 @@ mod tests {
             ArchiveExtractionLimits::default(),
         )?;
 
-        let mode = fs::metadata(destination.join("bin/demo"))?.permissions().mode() & 0o7777;
+        let mode = fs::metadata(destination.join("bin/demo"))?
+            .permissions()
+            .mode()
+            & 0o7777;
         assert_eq!(mode, 0o755);
         Ok(())
     }
