@@ -8,7 +8,7 @@
 
 - `ExecRequest`、`ExecEvent`、`ExecGateway`、`GatewayPolicy` 和能力报告模型。
 - `cwd`、`workspace_root`、隔离级别和 `policy_default` 来源一致性校验。
-- 声明式变更命令门控。
+- 声明式变更命令门控，以及 allowlisted mutator 与 `declared_mutation` 的一致性校验。
 - 平台 sandbox 编排与 runtime 观测。
 - 结构化审计事件和日志输出。
 

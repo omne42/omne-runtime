@@ -7,7 +7,7 @@
 - request/policy-default isolation provenance consistency,
 - isolation capability checks,
 - workspace boundary checks,
-- mutation allowlist for caller-declared mutating requests.
+- mutation declaration consistency for allowlisted mutating requests.
 
 On Linux, `best_effort` also attempts to apply a Landlock ruleset opportunistically.
 
@@ -17,7 +17,7 @@ On Linux, `best_effort` also attempts to apply a Landlock ruleset opportunistica
 - network isolation,
 - secret isolation across subprocesses,
 - binary provenance verification,
-- generic mutation detection when callers do not declare mutation.
+- generic mutation detection for non-allowlisted programs or arbitrary shell payloads.
 
 ## Operational Recommendations
 

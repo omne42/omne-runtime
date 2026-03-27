@@ -15,7 +15,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed if requested isolation exceeds host support
 - fail-closed if a request marked as `policy_default` no longer matches the gateway's current policy default
 - workspace boundary enforcement (`cwd` must be inside `workspace_root`, and execution uses the canonicalized working directory)
-- declared-mutation enforcement via allowlisted mutating programs
+- two-way mutation declaration enforcement for allowlisted mutating programs
 - structured decision events for audit/logging
 
 ## Important Scope Notes
@@ -25,7 +25,8 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - Linux execution events now report the observed best-effort Landlock runtime outcome when the command is actually spawned.
 - Linux `Strict` currently enforces a workspace write boundary, but still allows read/execute access outside the workspace.
 - macOS and Windows currently do not implement a native `BestEffort` sandbox; they report only `None` support and fail closed if `BestEffort` or `Strict` is requested.
-- mutation allowlist checks rely on caller-declared mutation plus requested program/path form; they do not prove binary provenance.
+- allowlisted mutating programs must explicitly set `declared_mutation = true`, and declared mutations must still use an allowlisted program/path.
+- mutation checks remain name/path based; they do not prove binary provenance or infer arbitrary shell intent.
 - `prepare_command` rejects a `Command` when its program/args diverge from the validated `ExecRequest`.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.
 

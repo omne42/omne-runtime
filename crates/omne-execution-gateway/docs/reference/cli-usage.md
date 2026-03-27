@@ -34,8 +34,9 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 
 `required_isolation` is optional; when omitted, the CLI builds an `ExecRequest` with
 `requested_isolation_source = policy_default` and `required_isolation = policy.default_isolation`.
-`declared_mutation` is an explicit caller signal. The gateway does not parse `omne-fs`
-subcommands to infer mutation intent.
+`declared_mutation` is an explicit caller signal. When `program` matches `mutating_program_allowlist`,
+the gateway now requires `declared_mutation = true`; declared mutations still must use an allowlisted
+program. The gateway does not parse `omne-fs` subcommands to infer mutation intent.
 
 ## Output Schema
 
