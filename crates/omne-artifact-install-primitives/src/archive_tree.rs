@@ -298,7 +298,7 @@ fn create_tar_symlink(
             entry_path.display()
         ))
     })?;
-    fs::create_dir_all(parent).map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    ensure_archive_directory_chain(entry_path, parent, destination, true)?;
     validate_archive_link_target(entry_path, parent, link_target, destination)?;
 
     #[cfg(unix)]
@@ -333,17 +333,79 @@ fn create_tar_hard_link(
             entry_path.display()
         ))
     })?;
-    fs::create_dir_all(parent).map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    ensure_archive_directory_chain(entry_path, parent, destination, true)?;
     let resolved_target =
         validate_archive_link_target(entry_path, parent, link_target, destination)?;
-    if !resolved_target.exists() {
+    if let Some(target_parent) = resolved_target.parent() {
+        ensure_archive_directory_chain(entry_path, target_parent, destination, false)?;
+    }
+    let target_metadata =
+        fs::symlink_metadata(&resolved_target).map_err(|err| match err.kind() {
+            std::io::ErrorKind::NotFound => ArtifactInstallError::install(format!(
+                "hard link target does not exist for tar entry {}",
+                entry_path.display()
+            )),
+            _ => ArtifactInstallError::install(err.to_string()),
+        })?;
+    if target_metadata.file_type().is_symlink() || target_metadata.is_dir() {
         return Err(ArtifactInstallError::install(format!(
-            "hard link target does not exist for tar entry {}",
+            "unsafe hard link target `{}` for {}",
+            link_target.display(),
             entry_path.display()
         )));
     }
     fs::hard_link(&resolved_target, output_path)
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    Ok(())
+}
+
+fn ensure_archive_directory_chain(
+    entry_path: &Path,
+    directory: &Path,
+    destination: &Path,
+    create_missing: bool,
+) -> Result<(), ArtifactInstallError> {
+    let relative = directory.strip_prefix(destination).map_err(|_| {
+        ArtifactInstallError::install(format!(
+            "unsafe archive parent `{}` for {}",
+            directory.display(),
+            entry_path.display()
+        ))
+    })?;
+    let mut current = destination.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            return Err(ArtifactInstallError::install(format!(
+                "unsafe archive parent `{}` for {}",
+                directory.display(),
+                entry_path.display()
+            )));
+        };
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(ArtifactInstallError::install(format!(
+                    "unsafe archive parent uses symlink ancestor `{}` for {}",
+                    current.display(),
+                    entry_path.display()
+                )));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(ArtifactInstallError::install(format!(
+                    "unsafe archive parent component `{}` is not a directory for {}",
+                    current.display(),
+                    entry_path.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && create_missing => {
+                fs::create_dir(&current)
+                    .map_err(|create_err| ArtifactInstallError::install(create_err.to_string()))?;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
+            Err(err) => return Err(ArtifactInstallError::install(err.to_string())),
+        }
+    }
     Ok(())
 }
 
@@ -598,7 +660,7 @@ mod tests {
 
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, download_and_install_archive_tree,
-        install_archive_tree_from_reader_with_limits,
+        extract_tar_tree, install_archive_tree_from_reader_with_limits,
     };
 
     fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -615,6 +677,54 @@ mod tests {
             archive.finish()?;
         }
         Ok(writer.into_inner())
+    }
+
+    #[cfg(unix)]
+    enum TarEntry<'a> {
+        Directory(&'a str, u32),
+        File(&'a str, &'a [u8], u32),
+        Symlink(&'a str, &'a str),
+        HardLink(&'a str, &'a str),
+    }
+
+    #[cfg(unix)]
+    fn make_tar_archive(entries: &[TarEntry<'_>]) -> Result<Vec<u8>, Box<dyn Error>> {
+        use tar::{Builder, EntryType, Header};
+
+        let mut archive = Builder::new(Vec::new());
+        for entry in entries {
+            match entry {
+                TarEntry::Directory(path, mode) => {
+                    let mut header = Header::new_gnu();
+                    header.set_entry_type(EntryType::Directory);
+                    header.set_mode(*mode);
+                    header.set_size(0);
+                    archive.append_data(&mut header, path, std::io::empty())?;
+                }
+                TarEntry::File(path, body, mode) => {
+                    let mut header = Header::new_gnu();
+                    header.set_entry_type(EntryType::Regular);
+                    header.set_mode(*mode);
+                    header.set_size(body.len() as u64);
+                    archive.append_data(&mut header, path, *body)?;
+                }
+                TarEntry::Symlink(path, target) => {
+                    let mut header = Header::new_gnu();
+                    header.set_entry_type(EntryType::Symlink);
+                    header.set_mode(0o777);
+                    header.set_size(0);
+                    archive.append_link(&mut header, path, target)?;
+                }
+                TarEntry::HardLink(path, target) => {
+                    let mut header = Header::new_gnu();
+                    header.set_entry_type(EntryType::Link);
+                    header.set_mode(0o644);
+                    header.set_size(0);
+                    archive.append_link(&mut header, path, target)?;
+                }
+            }
+        }
+        Ok(archive.into_inner()?)
     }
 
     fn spawn_mock_http_server(
@@ -762,6 +872,59 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("archive entry count exceeds limit"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_symlink_entries_fail_closed_on_symlink_ancestor() -> Result<(), Box<dyn Error>> {
+        let archive = make_tar_archive(&[
+            TarEntry::Directory("safe", 0o755),
+            TarEntry::Symlink("alias", "safe"),
+            TarEntry::Symlink("alias/nested", "safe/target"),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        fs::create_dir_all(&destination)?;
+
+        let err = extract_tar_tree(
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits::default(),
+        )
+        .expect_err("tar symlink parent with symlink ancestor must be rejected");
+
+        assert!(
+            err.to_string().contains("symlink ancestor"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_hard_link_entries_fail_closed_on_symlink_ancestor() -> Result<(), Box<dyn Error>> {
+        let archive = make_tar_archive(&[
+            TarEntry::Directory("safe", 0o755),
+            TarEntry::File("safe/file.txt", b"demo".as_slice(), 0o644),
+            TarEntry::Symlink("alias", "safe"),
+            TarEntry::HardLink("alias/file-copy.txt", "safe/file.txt"),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        fs::create_dir_all(&destination)?;
+
+        let err = extract_tar_tree(
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits::default(),
+        )
+        .expect_err("tar hard-link parent with symlink ancestor must be rejected");
+
+        assert!(
+            err.to_string().contains("symlink ancestor"),
             "unexpected error: {err}"
         );
         Ok(())
