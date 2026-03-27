@@ -461,7 +461,7 @@ mod tests {
         let identity = crate::ops::io::DirectoryIdentity::unverifiable_for_tests(metadata);
         let parent_ctx = ParentVerificationContext {
             path: &parent,
-            relative: Path::new(""),
+            relative: Path::new("parent"),
             expected_meta: &identity,
             canonical_root: &canonical_root,
             root_id: "root",
@@ -484,7 +484,7 @@ mod tests {
         let identity = crate::ops::io::DirectoryIdentity::unverifiable_for_tests(metadata);
         let parent_ctx = ParentVerificationContext {
             path: &substituted_parent,
-            relative: Path::new(""),
+            relative: Path::new("parent"),
             expected_meta: &identity,
             canonical_root: &canonical_root,
             root_id: "root",
