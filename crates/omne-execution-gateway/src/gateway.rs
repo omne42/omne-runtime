@@ -218,14 +218,24 @@ impl ExecGateway {
             ));
         }
 
-        if request.declared_mutation && self.policy.enforce_allowlisted_program_for_mutation {
+        if self.policy.enforce_allowlisted_program_for_mutation {
             let program = request.program.to_string_lossy();
-            if !self.policy.is_mutating_program_allowlisted(&program) {
+            let program_is_allowlisted = self.policy.is_mutating_program_allowlisted(&program);
+            if request.declared_mutation && !program_is_allowlisted {
                 return Err(self.deny_preflight(
                     event,
                     "mutation_requires_allowlisted_program",
                     ExecError::PolicyDenied(
                         "declared mutating command must use an allowlisted program".to_string(),
+                    ),
+                ));
+            }
+            if program_is_allowlisted && !request.declared_mutation {
+                return Err(self.deny_preflight(
+                    event,
+                    "allowlisted_program_requires_declared_mutation",
+                    ExecError::PolicyDenied(
+                        "allowlisted mutating program must declare mutation".to_string(),
                     ),
                 ));
             }
@@ -564,6 +574,26 @@ mod tests {
         assert_eq!(
             event.requested_policy_meta,
             crate::audit::requested_policy_meta(ExecutionIsolation::BestEffort)
+        );
+    }
+
+    #[test]
+    fn denies_allowlisted_program_without_declared_mutation() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "omne-fs",
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        );
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("allowlisted_program_requires_declared_mutation")
         );
     }
 
