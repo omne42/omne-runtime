@@ -504,7 +504,7 @@ fn read_zip_symlink_target(
 }
 
 fn zip_entry_unix_mode(entry: &zip::read::ZipFile<'_>) -> Option<u32> {
-    entry.unix_mode().map(|mode| mode & 0o7777)
+    entry.unix_mode().map(sanitize_unix_mode)
 }
 
 fn zip_entry_is_symlink(entry: &zip::read::ZipFile<'_>) -> bool {
@@ -522,7 +522,7 @@ where
         entry
             .header()
             .mode()
-            .map(Some)
+            .map(|mode| Some(sanitize_unix_mode(mode)))
             .map_err(|err| ArtifactInstallError::install(err.to_string()))
     }
     #[cfg(not(unix))]
@@ -530,6 +530,11 @@ where
         let _ = entry;
         Ok(None)
     }
+}
+
+#[cfg(unix)]
+fn sanitize_unix_mode(mode: u32) -> u32 {
+    mode & 0o777
 }
 
 fn ensure_archive_directory_chain(
@@ -677,10 +682,7 @@ fn sanitize_archive_path(path: &Path) -> Result<PathBuf, ArtifactInstallError> {
 fn create_archive_tree_staging_dir(destination: &Path) -> Result<PathBuf, ArtifactInstallError> {
     let parent = destination_parent(destination);
     fs::create_dir_all(parent).map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    let staging_dir = unique_sibling_path(destination, "staging")?;
-    fs::create_dir_all(&staging_dir)
-        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    Ok(staging_dir)
+    create_unique_sibling_dir(destination, "staging")
 }
 
 fn replace_destination_with_staged_tree(
@@ -688,14 +690,7 @@ fn replace_destination_with_staged_tree(
     staging_dir: &Path,
 ) -> Result<(), ArtifactInstallError> {
     let backup_path = if destination.exists() {
-        let backup_path = unique_sibling_path(destination, "backup")?;
-        fs::rename(destination, &backup_path).map_err(|err| {
-            ArtifactInstallError::install(format!(
-                "move existing archive tree destination `{}` aside failed: {err}",
-                destination.display()
-            ))
-        })?;
-        Some(backup_path)
+        Some(move_existing_destination_aside(destination)?)
     } else {
         None
     };
@@ -759,6 +754,41 @@ fn unique_sibling_path(destination: &Path, kind: &str) -> Result<PathBuf, Artifa
     }
     Err(ArtifactInstallError::install(format!(
         "cannot allocate {kind} path next to archive tree destination `{}`",
+        destination.display()
+    )))
+}
+
+fn create_unique_sibling_dir(destination: &Path, kind: &str) -> Result<PathBuf, ArtifactInstallError> {
+    for _ in 0..1024_u32 {
+        let candidate = unique_sibling_path(destination, kind)?;
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(ArtifactInstallError::install(err.to_string())),
+        }
+    }
+    Err(ArtifactInstallError::install(format!(
+        "cannot allocate {kind} path next to archive tree destination `{}`",
+        destination.display()
+    )))
+}
+
+fn move_existing_destination_aside(destination: &Path) -> Result<PathBuf, ArtifactInstallError> {
+    for _ in 0..1024_u32 {
+        let backup_path = unique_sibling_path(destination, "backup")?;
+        match fs::rename(destination, &backup_path) {
+            Ok(()) => return Ok(backup_path),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(ArtifactInstallError::install(format!(
+                    "move existing archive tree destination `{}` aside failed: {err}",
+                    destination.display()
+                )));
+            }
+        }
+    }
+    Err(ArtifactInstallError::install(format!(
+        "cannot allocate backup path next to archive tree destination `{}`",
         destination.display()
     )))
 }
@@ -1213,6 +1243,27 @@ mod tests {
         let alias = destination.join("alias");
         assert!(fs::symlink_metadata(&alias)?.file_type().is_symlink());
         assert_eq!(fs::read_link(&alias)?, PathBuf::from("safe/target.txt"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_tree_strips_special_unix_mode_bits_from_regular_files() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let archive = make_tar_archive(&[TarEntry::File("bin/demo", b"demo".as_slice(), 0o6755)])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        fs::create_dir_all(&destination)?;
+
+        extract_tar_tree(
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits::default(),
+        )?;
+
+        let mode = fs::metadata(destination.join("bin/demo"))?.permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o755);
         Ok(())
     }
 
