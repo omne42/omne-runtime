@@ -13,8 +13,8 @@ The gateway uses three isolation levels from `policy-meta`.
 | Platform | Detected Support | Notes |
 | --- | --- | --- |
 | Linux | `strict` when Landlock is available, else `best_effort` | Strict path requires Landlock full enforcement. `best_effort` opportunistically installs a Landlock ruleset and silently degrades when the host cannot enforce it. |
-| macOS | `best_effort` | Native strict not available. Current `best_effort` does not provide OS-enforced filesystem isolation. |
-| Windows | `best_effort` | Native strict not available. Current `best_effort` does not provide OS-enforced filesystem isolation. |
+| macOS | `none` | Native `best_effort` / `strict` are not implemented, so requests above `none` fail closed. |
+| Windows | `none` | Native `best_effort` / `strict` are not implemented, so requests above `none` fail closed. |
 
 ## Fail-Closed Behavior
 

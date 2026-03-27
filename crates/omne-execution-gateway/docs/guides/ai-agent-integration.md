@@ -23,6 +23,7 @@ agent plan
 - Treat denial reasons as actionable control signals.
 - Persist `execution.event.requested_policy_meta` when you need a canonical cross-repo record of the requested isolation contract.
 - On Linux `best_effort`, inspect `execution.event.sandbox_runtime` before treating the run as sandboxed.
+- Avoid shell-style launchers such as `sh`, `cmd`, `powershell`, and `pwsh` unless policy explicitly allowlists them.
 
 ## Repair Mapping
 
@@ -32,6 +33,7 @@ agent plan
 | `policy_default_isolation_mismatch` | Rebuild the request against the current gateway policy default. |
 | `cwd_outside_workspace` | Correct path under workspace root. |
 | `mutation_requires_allowlisted_program` | Route via a policy-allowlisted mutating program such as `omne-fs`. |
+| `opaque_command_requires_allowlisted_program` | Replace shell-style launcher usage with a direct executable or explicitly allowlist that launcher. |
 | `isolation_none_forbidden` | Use `best_effort` or `strict`. |
 
 ## Safe Defaults for Autonomous Runs

@@ -19,8 +19,7 @@ struct ExecRequestWire {
     workspace_root: PathBuf,
     #[serde(default)]
     required_isolation: Option<ExecutionIsolation>,
-    #[serde(default)]
-    declared_mutation: bool,
+    declared_mutation: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,6 +75,31 @@ fn run() -> Result<ExitCode, String> {
         .map_err(|e| format!("failed to load policy {}: {e}", policy_path.display()))?;
 
     let request_wire = load_request(&request_path)?;
+    let request = build_exec_request(&policy, request_wire)?;
+    let gateway = ExecGateway::with_policy(policy);
+    let request_resolution = gateway.resolve_request(&request);
+    let execution = gateway.execute(&request);
+    let output = exec_output_from_result(request_resolution, execution.event, execution.result);
+
+    println!(
+        "{}",
+        serde_json::to_string(&output).map_err(|e| format!("serialize output failed: {e}"))?
+    );
+
+    Ok(match output.exit_code {
+        Some(0) if output.signal.is_none() => ExitCode::SUCCESS,
+        Some(_) | None => ExitCode::FAILURE,
+    })
+}
+
+fn build_exec_request(
+    policy: &GatewayPolicy,
+    request_wire: ExecRequestWire,
+) -> Result<ExecRequest, String> {
+    let declared_mutation = request_wire.declared_mutation.ok_or_else(|| {
+        "request json must include declared_mutation so mutation-sensitive commands cannot silently default to false".to_string()
+    })?;
+
     let request = match request_wire.required_isolation {
         Some(required_isolation) => ExecRequest::new(
             request_wire.program,
@@ -91,22 +115,9 @@ fn run() -> Result<ExitCode, String> {
             policy.default_isolation,
             request_wire.workspace_root,
         ),
-    }
-    .with_declared_mutation(request_wire.declared_mutation);
-    let gateway = ExecGateway::with_policy(policy);
-    let request_resolution = gateway.resolve_request(&request);
-    let execution = gateway.execute(&request);
-    let output = exec_output_from_result(request_resolution, execution.event, execution.result);
+    };
 
-    println!(
-        "{}",
-        serde_json::to_string(&output).map_err(|e| format!("serialize output failed: {e}"))?
-    );
-
-    Ok(match output.exit_code {
-        Some(0) if output.signal.is_none() => ExitCode::SUCCESS,
-        Some(_) | None => ExitCode::FAILURE,
-    })
+    Ok(request.with_declared_mutation(declared_mutation))
 }
 
 fn load_request(path: &PathBuf) -> Result<ExecRequestWire, String> {
@@ -320,6 +331,48 @@ mod tests {
             omne_execution_gateway::requested_policy_meta(ExecutionIsolation::BestEffort)
         );
         assert!(resolution.declared_mutation);
+    }
+
+    #[test]
+    fn build_exec_request_requires_declared_mutation_field() {
+        let policy = GatewayPolicy::default();
+        let err = build_exec_request(
+            &policy,
+            ExecRequestWire {
+                program: "echo".to_string(),
+                args: vec!["hello".to_string()],
+                cwd: ".".into(),
+                workspace_root: ".".into(),
+                required_isolation: Some(ExecutionIsolation::BestEffort),
+                declared_mutation: None,
+            },
+        )
+        .expect_err("missing declared_mutation should fail closed");
+
+        assert!(err.contains("declared_mutation"));
+    }
+
+    #[test]
+    fn build_exec_request_keeps_explicit_declared_mutation_value() {
+        let policy = GatewayPolicy::default();
+        let request = build_exec_request(
+            &policy,
+            ExecRequestWire {
+                program: "echo".to_string(),
+                args: vec!["hello".to_string()],
+                cwd: ".".into(),
+                workspace_root: ".".into(),
+                required_isolation: None,
+                declared_mutation: Some(true),
+            },
+        )
+        .expect("build request");
+
+        assert!(request.declared_mutation);
+        assert_eq!(
+            request.requested_isolation_source,
+            RequestedIsolationSource::PolicyDefault
+        );
     }
 
     #[cfg(windows)]
