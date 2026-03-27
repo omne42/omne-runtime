@@ -9,12 +9,10 @@
 //! - capturing process-tree cleanup handles/identities from a spawned child
 //! - best-effort process-tree termination on Unix and Windows
 //!
-//! Unix uses per-child process groups. Linux additionally verifies the original leader identity
-//! before killing an orphaned group and only falls back to the captured process group when that
-//! group still exists, so PID reuse is less likely to hit unrelated processes while orphaned
-//! descendants still get cleaned up. Other Unix targets only kill the process group while the
-//! original leader is still present; if the leader has already exited, cleanup fails closed
-//! instead of trusting a reused PGID.
+//! Unix uses per-child process groups. Cleanup capture fails closed unless the spawned child is
+//! the leader of its own dedicated process group, so callers cannot accidentally arm cleanup
+//! against the parent's process group by skipping setup. Once the original leader exits, Unix
+//! cleanup also fails closed instead of trusting a potentially reused PGID.
 //!
 //! Windows prefers Job Objects. When the current process cannot attach the child to a kill-on-close
 //! job, cleanup falls back to best-effort tree cleanup rooted at the captured child PID:
@@ -69,7 +67,7 @@ impl ProcessTreeCleanup {
     pub fn new(child: &tokio::process::Child) -> io::Result<Self> {
         Ok(Self {
             #[cfg(unix)]
-            unix_process_group: capture_unix_process_group_identity(child),
+            unix_process_group: capture_unix_process_group_identity(child)?,
         })
     }
 
@@ -113,21 +111,47 @@ struct LinuxProcessIdentity {
 #[cfg(unix)]
 fn capture_unix_process_group_identity(
     child: &tokio::process::Child,
-) -> Option<UnixProcessGroupIdentity> {
-    let leader_pid = child_process_pid(child)?;
-    let process_group_id = rustix::process::getpgid(Some(leader_pid)).ok()?;
-    Some(UnixProcessGroupIdentity {
+) -> io::Result<Option<UnixProcessGroupIdentity>> {
+    let leader_pid = child_process_pid(child).ok_or_else(|| {
+        io::Error::other("cannot capture process-tree identity for a child without a pid")
+    })?;
+    let process_group_id = match rustix::process::getpgid(Some(leader_pid)) {
+        Ok(process_group_id) => process_group_id,
+        Err(rustix::io::Errno::SRCH) => return Ok(None),
+        Err(error) => return Err(io::Error::from(error)),
+    };
+    ensure_unix_process_group_is_dedicated(leader_pid, process_group_id)?;
+    Ok(Some(UnixProcessGroupIdentity {
         leader_pid,
         process_group_id,
         #[cfg(target_os = "linux")]
-        leader_start_ticks: read_linux_process_identity(leader_pid).ok()?.start_ticks,
-    })
+        leader_start_ticks: match read_linux_process_identity(leader_pid) {
+            Ok(identity) => identity.start_ticks,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        },
+    }))
 }
 
 #[cfg(unix)]
 fn child_process_pid(child: &tokio::process::Child) -> Option<rustix::process::Pid> {
     let raw_pid = i32::try_from(child.id()?).ok()?;
     rustix::process::Pid::from_raw(raw_pid)
+}
+
+#[cfg(unix)]
+fn ensure_unix_process_group_is_dedicated(
+    leader_pid: rustix::process::Pid,
+    process_group_id: rustix::process::Pid,
+) -> io::Result<()> {
+    if process_group_id == leader_pid {
+        return Ok(());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "process-tree cleanup requires the child to lead a dedicated process group; call configure_command_for_process_tree before spawning",
+    ))
 }
 
 #[cfg(unix)]
@@ -158,22 +182,14 @@ fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
 
 #[cfg(target_os = "linux")]
 fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
-    should_kill_linux_process_group_with(
-        identity,
-        read_linux_process_identity(identity.leader_pid),
-        linux_process_group_exists,
-    )
+    should_kill_linux_process_group_with(identity, read_linux_process_identity(identity.leader_pid))
 }
 
 #[cfg(target_os = "linux")]
-fn should_kill_linux_process_group_with<F>(
+fn should_kill_linux_process_group_with(
     identity: UnixProcessGroupIdentity,
     current: io::Result<LinuxProcessIdentity>,
-    process_group_exists: F,
-) -> bool
-where
-    F: FnOnce(rustix::process::Pid) -> bool,
-{
+) -> bool {
     match current {
         Ok(current)
             if current.start_ticks == identity.leader_start_ticks
@@ -181,68 +197,10 @@ where
         {
             true
         }
-        Ok(_) => process_group_exists(identity.process_group_id),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            process_group_exists(identity.process_group_id)
-        }
+        Ok(_) => false,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
         Err(_) => false,
     }
-}
-
-#[cfg(all(unix, target_os = "linux"))]
-fn linux_process_group_exists(process_group_id: rustix::process::Pid) -> bool {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return false;
-    };
-    linux_process_group_exists_with(
-        process_group_id,
-        entries.map(parse_linux_proc_entry_pid),
-        read_linux_process_identity,
-    )
-}
-
-#[cfg(all(unix, target_os = "linux"))]
-fn linux_process_group_exists_with<I, F>(
-    process_group_id: rustix::process::Pid,
-    entries: I,
-    mut read_identity: F,
-) -> bool
-where
-    I: IntoIterator<Item = io::Result<Option<rustix::process::Pid>>>,
-    F: FnMut(rustix::process::Pid) -> io::Result<LinuxProcessIdentity>,
-{
-    for entry in entries {
-        let Some(pid) = (match entry {
-            Ok(pid) => pid,
-            Err(_) => continue,
-        }) else {
-            continue;
-        };
-
-        match read_identity(pid) {
-            Ok(identity) if identity.process_group_id == process_group_id.as_raw_pid() => {
-                return true;
-            }
-            Ok(_) | Err(_) => {}
-        }
-    }
-
-    false
-}
-
-#[cfg(all(unix, target_os = "linux"))]
-fn parse_linux_proc_entry_pid(
-    entry: io::Result<std::fs::DirEntry>,
-) -> io::Result<Option<rustix::process::Pid>> {
-    let entry = entry?;
-    let file_name = entry.file_name();
-    let Some(raw_pid) = file_name.to_str() else {
-        return Ok(None);
-    };
-    let Ok(pid) = raw_pid.parse::<i32>() else {
-        return Ok(None);
-    };
-    Ok(rustix::process::Pid::from_raw(pid))
 }
 
 #[cfg(all(unix, target_os = "linux"))]
@@ -558,7 +516,7 @@ const WINDOWS_ERROR_NOT_SUPPORTED: i32 = 50;
 mod tests {
     use super::{
         CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
-        configure_command_for_process_tree, linux_process_group_exists_with,
+        configure_command_for_process_tree, ensure_unix_process_group_is_dedicated,
         should_kill_linux_process_group_with,
     };
     use rustix::process::Pid;
@@ -575,13 +533,12 @@ mod tests {
             leader_start_ticks: 11,
         };
 
-        assert!(should_kill_linux_process_group_with(
+        assert!(!should_kill_linux_process_group_with(
             identity,
             Ok(LinuxProcessIdentity {
                 process_group_id: 9999,
                 start_ticks: 22,
             }),
-            |process_group_id| process_group_id == identity.process_group_id,
         ));
     }
 
@@ -593,56 +550,22 @@ mod tests {
             leader_start_ticks: 11,
         };
 
-        assert!(!should_kill_linux_process_group_with(
-            identity,
-            Ok(LinuxProcessIdentity {
-                process_group_id: 9999,
-                start_ticks: 22,
-            }),
-            |_| false,
-        ));
+        assert!(!should_kill_linux_process_group_with(identity, Err(io::ErrorKind::NotFound.into())));
     }
 
     #[test]
-    fn linux_process_group_scan_ignores_entry_iteration_errors() {
-        let process_group_id = Pid::from_raw(31337).expect("process group id must be non-zero");
-        let matching_pid = Pid::from_raw(4242).expect("pid must be non-zero");
+    fn dedicated_process_group_validation_rejects_shared_group() {
+        let leader_pid = Pid::from_raw(4242).expect("leader pid must be non-zero");
+        let shared_group = Pid::from_raw(77).expect("shared group id must be non-zero");
 
-        assert!(linux_process_group_exists_with(
-            process_group_id,
-            [
-                Err(io::Error::other("transient /proc iteration failure")),
-                Ok(Some(matching_pid)),
-            ],
-            |pid| {
-                assert_eq!(pid, matching_pid);
-                Ok(LinuxProcessIdentity {
-                    process_group_id: process_group_id.as_raw_pid(),
-                    start_ticks: 22,
-                })
-            },
-        ));
-    }
-
-    #[test]
-    fn linux_process_group_scan_ignores_identity_read_errors_for_other_entries() {
-        let process_group_id = Pid::from_raw(31337).expect("process group id must be non-zero");
-        let noisy_pid = Pid::from_raw(4242).expect("pid must be non-zero");
-        let matching_pid = Pid::from_raw(5252).expect("pid must be non-zero");
-
-        assert!(linux_process_group_exists_with(
-            process_group_id,
-            [Ok(Some(noisy_pid)), Ok(Some(matching_pid))],
-            |pid| {
-                if pid == noisy_pid {
-                    return Err(io::Error::other("transient /proc stat read failure"));
-                }
-                Ok(LinuxProcessIdentity {
-                    process_group_id: process_group_id.as_raw_pid(),
-                    start_ticks: 22,
-                })
-            },
-        ));
+        let err = ensure_unix_process_group_is_dedicated(leader_pid, shared_group)
+            .expect_err("shared process group must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string()
+                .contains("configure_command_for_process_tree"),
+            "unexpected error: {err}"
+        );
     }
 
     fn process_terminated_or_zombie(pid: u32) -> bool {
@@ -712,7 +635,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cleanup_kills_orphaned_process_group() -> io::Result<()> {
+    async fn cleanup_fails_closed_after_linux_leader_exit() -> io::Result<()> {
         let dir = tempfile::tempdir()?;
         let shell_pid_file = dir.path().join("shell.pid");
         let bg_pid_file = dir.path().join("background.pid");
@@ -758,16 +681,43 @@ mod tests {
         let _ = child.kill().await;
         let _ = child.wait().await;
 
-        let mut gone = false;
+        let mut still_present = false;
         for _ in 0..300 {
-            if process_terminated_or_zombie(bg_pid) {
-                gone = true;
+            if !process_terminated_or_zombie(bg_pid) {
+                still_present = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        assert!(gone, "orphaned background process should be terminated");
+        assert!(
+            still_present,
+            "cleanup must fail closed instead of killing an orphaned process group after the leader exits"
+        );
+        let background_pid =
+            Pid::from_raw(i32::try_from(bg_pid).expect("background pid should fit in i32"))
+                .expect("background pid must be non-zero");
+        let _ = rustix::process::kill_process(background_pid, rustix::process::Signal::KILL);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cleanup_rejects_child_without_dedicated_process_group() -> io::Result<()> {
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let mut child = command.spawn()?;
+        let err = ProcessTreeCleanup::new(&child)
+            .err()
+            .expect("non-isolated child must not arm process-tree cleanup");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        let _ = child.kill().await;
+        let _ = child.wait().await;
         Ok(())
     }
 }
