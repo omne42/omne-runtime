@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | `allow_isolation_none` | `bool` | `false` | Allows `policy_meta::ExecutionIsolation::None` when true. |
 | `enforce_allowlisted_program_for_mutation` | `bool` | `true` | Requires declared mutations to use allowlisted programs, requires allowlisted mutating programs to set `declared_mutation = true`, and fail-closes shell-like opaque launchers unless they are explicitly allowlisted. |
-| `mutating_program_allowlist` | `Vec<String>` | `omne-fs`, `omne-fs-cli` | Mutating bare program names or explicit paths that must declare mutation before the gateway will run them. Bare names only match bare requests, and explicit paths only match that exact path. |
+| `mutating_program_allowlist` | `Vec<String>` | empty | Explicit program paths that must declare mutation before the gateway will run them. Bare program names are not trusted for mutation authorization. |
 | `default_isolation` | `policy_meta::ExecutionIsolation` | `BestEffort` | Fallback isolation for CLI requests when not provided. |
 | `audit_log_path` | `Option<PathBuf>` | `None` | Optional JSONL audit file path. |
 
@@ -18,7 +18,7 @@
 {
   "allow_isolation_none": false,
   "enforce_allowlisted_program_for_mutation": true,
-  "mutating_program_allowlist": ["omne-fs", "omne-fs-cli"],
+  "mutating_program_allowlist": ["/usr/local/bin/omne-fs"],
   "default_isolation": "best_effort",
   "audit_log_path": "/tmp/omne_exec_audit.jsonl"
 }
@@ -36,11 +36,11 @@
 
 ## Notes
 
-- mutation enforcement is two-way for allowlisted programs: declared mutations must use an allowlisted program, and allowlisted mutating programs must explicitly declare mutation.
-- bare allowlist entries do not grant mutation rights to explicit paths with the same basename. If a caller wants to execute `/path/to/omne-fs`, that exact path must appear in the allowlist.
+- mutation enforcement is two-way for allowlisted programs: declared mutations must use an allowlisted explicit program path, and allowlisted mutating programs must explicitly declare mutation.
+- bare program names do not grant mutation rights, even if a same-name entry appears in the allowlist. If a caller wants to mutate via `omne-fs`, the request must use an explicit path such as `/path/to/omne-fs`, and that same path must appear in the allowlist.
 - shell-like opaque launchers such as `sh`, `cmd`, `powershell`, and `pwsh` are denied unless they are explicitly allowlisted, because the gateway cannot trust `declared_mutation = false` for an interpreter boundary.
 - the gateway still does not parse arbitrary tool-specific CLI syntax or infer arbitrary binary semantics for non-allowlisted direct executables.
-- allowlist matching is name/path based; it is not binary provenance verification.
+- allowlist matching is explicit-path based; it is not binary provenance verification.
 - Linux、macOS 和 Windows 当前都只报告 `None` 为受支持能力；如果 policy/default/request 仍要求 `best_effort` 或 `strict`，gateway 会按 `isolation_not_supported` fail-closed。
 
 ## Denial Reasons

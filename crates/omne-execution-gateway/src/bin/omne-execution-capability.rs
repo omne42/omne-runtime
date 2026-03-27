@@ -158,7 +158,7 @@ mod tests {
             r#"{
   "allow_isolation_none": false,
   "enforce_allowlisted_program_for_mutation": true,
-  "mutating_program_allowlist": ["omne-fs"],
+  "mutating_program_allowlist": ["/usr/local/bin/omne-fs"],
   "default_isolation": "strict",
   "audit_log_path": null
 }"#,

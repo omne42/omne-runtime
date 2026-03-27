@@ -689,11 +689,22 @@ mod tests {
     }
 
     #[test]
-    fn allows_mutation_for_allowlisted_program() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+    fn allows_mutation_for_explicitly_allowlisted_program_path() {
+        #[cfg(windows)]
+        let program = r"C:\tools\omne-fs.exe";
+        #[cfg(not(windows))]
+        let program = "/usr/local/bin/omne-fs";
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec![program.to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
-            "omne-fs",
+            program,
             Vec::<OsString>::new(),
             workspace.path(),
             ExecutionIsolation::BestEffort,
@@ -709,8 +720,43 @@ mod tests {
     }
 
     #[test]
+    fn denies_mutation_for_bare_program_even_when_same_name_is_allowlisted() {
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["omne-fs".to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "omne-fs",
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("mutation_requires_allowlisted_program")
+        );
+    }
+
+    #[test]
     fn denies_mutation_for_explicit_path_that_only_matches_allowlisted_basename() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["omne-fs".to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = tempdir().expect("create temp workspace");
         #[cfg(windows)]
         let program = "C:\\tmp\\omne-fs.exe";
@@ -755,8 +801,12 @@ mod tests {
 
     #[test]
     fn allows_opaque_command_launcher_when_explicitly_allowlisted() {
+        #[cfg(windows)]
+        let program = r"C:\Windows\System32\cmd.exe";
+        #[cfg(not(windows))]
+        let program = "/bin/sh";
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec![dummy_program().to_string()],
+            mutating_program_allowlist: vec![program.to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -765,7 +815,7 @@ mod tests {
         );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
-            dummy_program(),
+            program,
             vec![dummy_shell_flag(), "echo hello"],
             workspace.path(),
             ExecutionIsolation::BestEffort,
@@ -778,11 +828,22 @@ mod tests {
     }
 
     #[test]
-    fn denies_allowlisted_program_without_declared_mutation() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+    fn denies_explicitly_allowlisted_program_without_declared_mutation() {
+        #[cfg(windows)]
+        let program = r"C:\tools\omne-fs.exe";
+        #[cfg(not(windows))]
+        let program = "/usr/local/bin/omne-fs";
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec![program.to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
-            "omne-fs",
+            program,
             Vec::<OsString>::new(),
             workspace.path(),
             ExecutionIsolation::BestEffort,
@@ -1045,12 +1106,12 @@ mod tests {
 
     #[cfg(windows)]
     fn shell_exit_nonzero_command() -> (&'static str, Vec<&'static str>) {
-        ("cmd", vec!["/C", "exit 1"])
+        (r"C:\Windows\System32\cmd.exe", vec!["/C", "exit 1"])
     }
 
     #[cfg(not(windows))]
     fn shell_exit_nonzero_command() -> (&'static str, Vec<&'static str>) {
-        ("sh", vec!["-c", "exit 1"])
+        ("/bin/sh", vec!["-c", "exit 1"])
     }
 
     #[cfg(windows)]
