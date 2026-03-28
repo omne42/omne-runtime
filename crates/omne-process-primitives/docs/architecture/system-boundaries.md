@@ -17,7 +17,7 @@
 - 配置子进程以支持进程树清理；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
 - 捕获进程树清理标识并执行 best-effort 终止。
 - Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 descendant sweep。
-- Unix 上一旦无法重新验证原始 leader 身份，就停止继续对该 process-group 做 `killpg`；Linux 也不再因为“PGID 仍存在”而继续清理，从而避免仅凭复用 PGID 误杀无关进程。
+- 在 Linux 上，当原始 leader 已退出但原始 process-group 仍存在时，继续对 orphan process-group 做 best-effort 清理；其他 Unix 平台在这个场景下仍然 fail-closed，避免仅凭复用 PGID 误杀无关进程。
 
 ## 不负责什么
 
