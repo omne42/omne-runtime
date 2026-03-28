@@ -14,6 +14,8 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - capability model: `None | BestEffort | Strict`
 - fail-closed if requested isolation exceeds host support
 - fail-closed if a request marked as `policy_default` no longer matches the gateway's current policy default
+- fail-closed if `program` is neither a bare command name nor an absolute path
+- explicit absolute `program` paths are bound as file identities and revalidated immediately before spawn
 - workspace boundary enforcement (`cwd` must stay inside `workspace_root`, and execution binds canonicalized directory identities before spawn)
 - two-way mutation declaration enforcement for allowlisted mutating programs
 - fail-closed denial for opaque command launchers such as `sh`, `cmd`, and `pwsh` unless they are explicitly allowlisted
@@ -28,7 +30,10 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - allowlisted mutating programs must explicitly set `declared_mutation = true`, and declared mutations must use an exact allowlisted program path.
 - shell-like opaque launchers are denied by default because the gateway cannot trust `declared_mutation = false` for an interpreter that can execute arbitrary subcommands.
 - mutation authorization now requires explicit program paths in both the request and policy allowlist. Bare program names are denied fail-closed because they do not bind to a stable executable.
+- relative executable paths such as `./tool` or `bin/tool` are denied fail-closed because their spawn semantics can drift with the gateway process context; callers must use a bare command name or absolute path.
+- explicit program paths are revalidated as file identities before spawn, so even stable aliases such as symlinks cannot silently drift to a different executable after preflight succeeds.
 - allowlist matching remains path based; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
+- `GatewayPolicy::load_json()` only accepts no-follow regular files, so symlinks and other special files cannot silently stand in for trusted policy input.
 - if `audit_log_path` is configured, preflight creates missing parent directories and rejects requests fail-closed when the audit log cannot be opened for append.
 - if audit append succeeds during preflight but the final record write later fails, the execution result is surfaced as an explicit audit-log write failure instead of silently degrading to stderr-only reporting.
 - `prepare_command` returns a spawn-only `PreparedCommand` wrapper instead of handing a mutable validated `Command` back to callers.
