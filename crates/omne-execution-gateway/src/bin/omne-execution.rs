@@ -11,6 +11,7 @@ use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ExecRequestWire {
     program: String,
     #[serde(default)]
@@ -19,7 +20,7 @@ struct ExecRequestWire {
     workspace_root: PathBuf,
     #[serde(default)]
     required_isolation: Option<ExecutionIsolation>,
-    declared_mutation: Option<bool>,
+    declared_mutation: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -96,10 +97,6 @@ fn build_exec_request(
     policy: &GatewayPolicy,
     request_wire: ExecRequestWire,
 ) -> Result<ExecRequest, String> {
-    let declared_mutation = request_wire.declared_mutation.ok_or_else(|| {
-        "request json must include declared_mutation so mutation-sensitive commands cannot silently default to false".to_string()
-    })?;
-
     let request = match request_wire.required_isolation {
         Some(required_isolation) => ExecRequest::new(
             request_wire.program,
@@ -117,7 +114,7 @@ fn build_exec_request(
         ),
     };
 
-    Ok(request.with_declared_mutation(declared_mutation))
+    Ok(request.with_declared_mutation(request_wire.declared_mutation))
 }
 
 fn load_request(path: &PathBuf) -> Result<ExecRequestWire, String> {
@@ -197,7 +194,8 @@ mod tests {
             &workspace,
             ExecutionIsolation::BestEffort,
             &workspace,
-        );
+        )
+        .with_declared_mutation(false);
         ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort)
             .resolve_request(&request)
     }
@@ -211,7 +209,8 @@ mod tests {
             &workspace,
             ExecutionIsolation::BestEffort,
             &workspace,
-        );
+        )
+        .with_declared_mutation(false);
         ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort)
             .resolve_request(&request)
     }
@@ -345,21 +344,18 @@ mod tests {
 
     #[test]
     fn build_exec_request_requires_declared_mutation_field() {
-        let policy = GatewayPolicy::default();
-        let err = build_exec_request(
-            &policy,
-            ExecRequestWire {
-                program: "echo".to_string(),
-                args: vec!["hello".to_string()],
-                cwd: ".".into(),
-                workspace_root: ".".into(),
-                required_isolation: Some(ExecutionIsolation::BestEffort),
-                declared_mutation: None,
-            },
+        let err = serde_json::from_str::<ExecRequestWire>(
+            r#"{
+                "program": "echo",
+                "args": ["hello"],
+                "cwd": ".",
+                "workspace_root": ".",
+                "required_isolation": "best_effort"
+            }"#,
         )
         .expect_err("missing declared_mutation should fail closed");
 
-        assert!(err.contains("declared_mutation"));
+        assert!(err.to_string().contains("declared_mutation"));
     }
 
     #[test]
@@ -373,7 +369,7 @@ mod tests {
                 cwd: ".".into(),
                 workspace_root: ".".into(),
                 required_isolation: None,
-                declared_mutation: Some(true),
+                declared_mutation: true,
             },
         )
         .expect("build request");
@@ -383,6 +379,42 @@ mod tests {
             request.requested_isolation_source,
             RequestedIsolationSource::PolicyDefault
         );
+    }
+
+    #[test]
+    fn exec_request_wire_rejects_unknown_fields() {
+        let err = serde_json::from_str::<ExecRequestWire>(
+            r#"{
+                "program": "echo",
+                "args": ["hello"],
+                "cwd": ".",
+                "workspace_root": ".",
+                "required_isolation": "best_effort",
+                "declared_mutation": false,
+                "required_isolation_typo": "none"
+            }"#,
+        )
+        .expect_err("unknown fields should be rejected");
+
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn load_request_rejects_unknown_fields() {
+        let wire = serde_json::from_str::<ExecRequestWire>(
+            r#"{
+                "program": "echo",
+                "args": ["hello"],
+                "cwd": ".",
+                "workspace_root": ".",
+                "required_isolation": "best_effort",
+                "declared_mutation": false,
+                "unexpected": true
+            }"#,
+        )
+        .expect_err("unknown request fields should fail closed");
+
+        assert!(wire.to_string().contains("unknown field"));
     }
 
     #[cfg(windows)]

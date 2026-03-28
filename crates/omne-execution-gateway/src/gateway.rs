@@ -280,6 +280,13 @@ impl ExecGateway {
         }
 
         if self.policy.enforce_allowlisted_program_for_mutation {
+            if !request.declared_mutation_is_explicit() {
+                return Err(self.deny_preflight(
+                    event,
+                    "mutation_declaration_required",
+                    ExecError::MutationDeclarationRequired,
+                ));
+            }
             let program = request.program.to_string_lossy();
             let program_is_allowlisted = self.policy.is_mutating_program_allowlisted(&program);
             if request.declared_mutation && !program_is_allowlisted {
@@ -307,6 +314,13 @@ impl ExecGateway {
                     ExecError::PolicyDenied(
                         "allowlisted mutating program must declare mutation".to_string(),
                     ),
+                ));
+            }
+            if !request.declared_mutation_is_explicit() {
+                return Err(self.deny_preflight(
+                    event,
+                    "mutation_declaration_required",
+                    ExecError::MutationDeclarationRequired,
                 ));
             }
         }
@@ -359,6 +373,9 @@ impl ExecGateway {
             },
             Err(err @ ExecError::WorkspaceRootInvalid { .. }) => {
                 Err(self.deny_preflight(event, "workspace_root_invalid", err))
+            }
+            Err(err @ ExecError::CwdInvalid { .. }) => {
+                Err(self.deny_preflight(event, "cwd_invalid", err))
             }
             Err(
                 err @ ExecError::CwdOutsideWorkspace { .. }
@@ -448,16 +465,21 @@ fn resolve_request_paths(cwd: &Path, workspace_root: &Path) -> ExecResult<Resolv
 }
 
 fn canonicalize_cwd_within_workspace(cwd: &Path, workspace_root: &Path) -> ExecResult<PathBuf> {
-    let cwd = cwd
-        .canonicalize()
-        .map_err(|_| ExecError::CwdOutsideWorkspace {
-            cwd: cwd.to_path_buf(),
-            workspace_root: workspace_root.to_path_buf(),
-        })?;
-    let cwd_is_dir = std::fs::metadata(&cwd)
-        .map(|metadata| metadata.is_dir())
-        .unwrap_or(false);
-    if !cwd_is_dir || !path_starts_with(&cwd, workspace_root) {
+    let cwd = cwd.canonicalize().map_err(|err| ExecError::CwdInvalid {
+        cwd: cwd.to_path_buf(),
+        detail: err.to_string(),
+    })?;
+    let metadata = std::fs::metadata(&cwd).map_err(|err| ExecError::CwdInvalid {
+        cwd: cwd.clone(),
+        detail: err.to_string(),
+    })?;
+    if !metadata.is_dir() {
+        return Err(ExecError::CwdInvalid {
+            cwd,
+            detail: "path is not a directory".to_string(),
+        });
+    }
+    if !path_starts_with(&cwd, workspace_root) {
         return Err(ExecError::CwdOutsideWorkspace {
             cwd,
             workspace_root: workspace_root.to_path_buf(),
@@ -1113,6 +1135,30 @@ mod tests {
     }
 
     #[test]
+    fn requires_explicit_mutation_declaration_for_non_allowlisted_programs() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        );
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("mutation_declaration_required")
+        );
+        assert!(matches!(
+            result,
+            Err(ExecError::MutationDeclarationRequired)
+        ));
+    }
+
+    #[test]
     fn allows_mutation_for_explicitly_allowlisted_program_path() {
         let program = allowlisted_program_path();
         let policy = GatewayPolicy {
@@ -1208,7 +1254,8 @@ mod tests {
             workspace.path(),
             ExecutionIsolation::BestEffort,
             workspace.path(),
-        );
+        )
+        .with_declared_mutation(false);
 
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Deny);
@@ -1264,7 +1311,8 @@ mod tests {
             workspace.path(),
             ExecutionIsolation::BestEffort,
             workspace.path(),
-        );
+        )
+        .with_declared_mutation(false);
 
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Deny);
@@ -1339,7 +1387,8 @@ mod tests {
             workspace.path(),
             host_supported_test_isolation(),
             workspace.path(),
-        );
+        )
+        .with_declared_mutation(false);
         let mut command = Command::new("echo");
         command.arg("hello");
         let (_event, result) = gateway.prepare_command(&request, command);
@@ -1380,7 +1429,8 @@ mod tests {
             workspace.path(),
             host_supported_test_isolation(),
             workspace.path(),
-        );
+        )
+        .with_declared_mutation(false);
         let command = Command::new(&program);
 
         let (_event, result) = gateway.prepare_command(&request, command);
@@ -1415,7 +1465,8 @@ mod tests {
             workspace.path(),
             host_supported_test_isolation(),
             workspace.path(),
-        );
+        )
+        .with_declared_mutation(false);
         let mut command = Command::new("printf");
         command.arg("hello");
 
@@ -1453,7 +1504,8 @@ mod tests {
             &link_dir,
             host_supported_test_isolation(),
             workspace.path(),
-        );
+        )
+        .with_declared_mutation(false);
         let mut command = Command::new("echo");
         command.arg("hello");
         let (event, result) = gateway.prepare_command(&request, command);
@@ -1666,7 +1718,8 @@ mod tests {
             workspace.path(),
             host_supported_test_isolation(),
             workspace.path(),
-        );
+        )
+        .with_declared_mutation(false);
 
         let err = gateway
             .execute_status(&request)

@@ -18,7 +18,7 @@ agent plan
 ## Integration Rules
 
 - Either supply an explicit isolation enum or use `ExecRequest::with_policy_default_isolation(...)`.
-- Always set `declared_mutation` intentionally for generic external commands.
+- Always call `with_declared_mutation(...)` intentionally, even for read-only generic external commands.
 - Keep `workspace_root` explicit and stable.
 - Use explicit executable paths for any mutating tool or intentionally allowlisted opaque launcher.
 - Treat denial reasons as actionable control signals.
@@ -32,6 +32,8 @@ agent plan
 | --- | --- |
 | `isolation_not_supported` | Lower isolation only with explicit approval. |
 | `policy_default_isolation_mismatch` | Rebuild the request against the current gateway policy default. |
+| `mutation_declaration_required` | Rebuild the request and set `with_declared_mutation(true/false)` explicitly before evaluation. |
+| `cwd_invalid` | Fix missing, inaccessible, or non-directory working directory input before retrying. |
 | `cwd_outside_workspace` | Correct path under workspace root. |
 | `mutation_requires_allowlisted_program` | Route via a policy-allowlisted explicit executable path instead of a bare program name. |
 | `opaque_command_requires_allowlisted_program` | Replace shell-style launcher usage with a direct executable or explicitly allowlist that launcher's full path. |
