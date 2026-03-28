@@ -11,6 +11,8 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostOperatingSystem {
@@ -36,9 +38,16 @@ pub enum HostArchitecture {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostLinuxLibc {
+    Gnu,
+    Musl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostPlatform {
     os: HostOperatingSystem,
     arch: HostArchitecture,
+    linux_libc: Option<HostLinuxLibc>,
 }
 
 impl HostPlatform {
@@ -50,14 +59,36 @@ impl HostPlatform {
         self.arch
     }
 
+    pub const fn linux_libc(self) -> Option<HostLinuxLibc> {
+        self.linux_libc
+    }
+
     pub const fn target_triple(self) -> &'static str {
-        match (self.os, self.arch) {
-            (HostOperatingSystem::Macos, HostArchitecture::Aarch64) => "aarch64-apple-darwin",
-            (HostOperatingSystem::Macos, HostArchitecture::X86_64) => "x86_64-apple-darwin",
-            (HostOperatingSystem::Linux, HostArchitecture::Aarch64) => "aarch64-unknown-linux-gnu",
-            (HostOperatingSystem::Linux, HostArchitecture::X86_64) => "x86_64-unknown-linux-gnu",
-            (HostOperatingSystem::Windows, HostArchitecture::Aarch64) => "aarch64-pc-windows-msvc",
-            (HostOperatingSystem::Windows, HostArchitecture::X86_64) => "x86_64-pc-windows-msvc",
+        match (self.os, self.arch, self.linux_libc) {
+            (HostOperatingSystem::Macos, HostArchitecture::Aarch64, None) => "aarch64-apple-darwin",
+            (HostOperatingSystem::Macos, HostArchitecture::X86_64, None) => "x86_64-apple-darwin",
+            (HostOperatingSystem::Linux, HostArchitecture::Aarch64, Some(HostLinuxLibc::Gnu))
+            | (HostOperatingSystem::Linux, HostArchitecture::Aarch64, None) => {
+                "aarch64-unknown-linux-gnu"
+            }
+            (HostOperatingSystem::Linux, HostArchitecture::Aarch64, Some(HostLinuxLibc::Musl)) => {
+                "aarch64-unknown-linux-musl"
+            }
+            (HostOperatingSystem::Linux, HostArchitecture::X86_64, Some(HostLinuxLibc::Gnu))
+            | (HostOperatingSystem::Linux, HostArchitecture::X86_64, None) => {
+                "x86_64-unknown-linux-gnu"
+            }
+            (HostOperatingSystem::Linux, HostArchitecture::X86_64, Some(HostLinuxLibc::Musl)) => {
+                "x86_64-unknown-linux-musl"
+            }
+            (HostOperatingSystem::Windows, HostArchitecture::Aarch64, None) => {
+                "aarch64-pc-windows-msvc"
+            }
+            (HostOperatingSystem::Windows, HostArchitecture::X86_64, None) => {
+                "x86_64-pc-windows-msvc"
+            }
+            (HostOperatingSystem::Macos, _, Some(_))
+            | (HostOperatingSystem::Windows, _, Some(_)) => unreachable!(),
         }
     }
 }
@@ -68,7 +99,8 @@ const HOME_ENV_KEYS: &[&str] = &["HOME", "USERPROFILE"];
 const HOME_ENV_KEYS: &[&str] = &["HOME"];
 
 pub fn detect_host_platform() -> Option<HostPlatform> {
-    host_platform_from_parts(std::env::consts::OS, std::env::consts::ARCH)
+    let linux_libc = detect_host_linux_libc();
+    host_platform_from_parts(std::env::consts::OS, std::env::consts::ARCH, linux_libc)
 }
 
 pub fn detect_host_target_triple() -> Option<&'static str> {
@@ -115,7 +147,11 @@ where
     None
 }
 
-fn host_platform_from_parts(os: &str, arch: &str) -> Option<HostPlatform> {
+fn host_platform_from_parts(
+    os: &str,
+    arch: &str,
+    linux_libc: Option<HostLinuxLibc>,
+) -> Option<HostPlatform> {
     let os = match os {
         "linux" => HostOperatingSystem::Linux,
         "macos" => HostOperatingSystem::Macos,
@@ -127,7 +163,81 @@ fn host_platform_from_parts(os: &str, arch: &str) -> Option<HostPlatform> {
         "aarch64" => HostArchitecture::Aarch64,
         _ => return None,
     };
-    Some(HostPlatform { os, arch })
+    Some(HostPlatform {
+        os,
+        arch,
+        linux_libc: match os {
+            HostOperatingSystem::Linux => Some(linux_libc.unwrap_or(HostLinuxLibc::Gnu)),
+            HostOperatingSystem::Macos | HostOperatingSystem::Windows => None,
+        },
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn detect_host_linux_libc() -> Option<HostLinuxLibc> {
+    detect_host_linux_libc_with(&|path| path.is_file(), &|program, args| {
+        Command::new(program)
+            .args(args)
+            .output()
+            .ok()
+            .map(|output| LinuxCommandOutput {
+                status_success: output.status.success(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            })
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn detect_host_linux_libc() -> Option<HostLinuxLibc> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone)]
+struct LinuxCommandOutput {
+    status_success: bool,
+    stdout: String,
+    stderr: String,
+}
+
+#[cfg(target_os = "linux")]
+fn detect_host_linux_libc_with<F, G>(path_exists: &F, run_command: &G) -> Option<HostLinuxLibc>
+where
+    F: Fn(&std::path::Path) -> bool,
+    G: Fn(&str, &[&str]) -> Option<LinuxCommandOutput>,
+{
+    let musl_loader_paths = [
+        "/lib/ld-musl-x86_64.so.1",
+        "/lib/ld-musl-aarch64.so.1",
+        "/lib64/ld-musl-x86_64.so.1",
+        "/lib64/ld-musl-aarch64.so.1",
+        "/etc/alpine-release",
+    ];
+    if musl_loader_paths
+        .iter()
+        .any(|path| path_exists(std::path::Path::new(path)))
+    {
+        return Some(HostLinuxLibc::Musl);
+    }
+
+    if let Some(output) = run_command("getconf", &["GNU_LIBC_VERSION"])
+        && output.status_success
+        && output.stdout.contains("glibc")
+    {
+        return Some(HostLinuxLibc::Gnu);
+    }
+
+    let ldd_output = run_command("ldd", &["--version"])?;
+    let combined = format!("{}\n{}", ldd_output.stdout, ldd_output.stderr).to_ascii_lowercase();
+    if combined.contains("musl") {
+        return Some(HostLinuxLibc::Musl);
+    }
+    if ldd_output.status_success && (combined.contains("glibc") || combined.contains("gnu libc")) {
+        return Some(HostLinuxLibc::Gnu);
+    }
+
+    None
 }
 
 fn absolute_env_path<F>(env_lookup: &F, key: &str) -> Option<PathBuf>
@@ -156,28 +266,34 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        HostArchitecture, HostOperatingSystem, detect_host_target_triple,
+        HostArchitecture, HostLinuxLibc, HostOperatingSystem, detect_host_target_triple,
         executable_suffix_for_target, host_platform_from_parts, resolve_home_dir_with,
         resolve_target_triple,
     };
 
     #[test]
     fn host_platform_from_parts_maps_supported_pairs() {
-        let linux = host_platform_from_parts("linux", "x86_64").expect("linux platform");
+        let linux = host_platform_from_parts("linux", "x86_64", None).expect("linux platform");
         assert_eq!(linux.operating_system(), HostOperatingSystem::Linux);
         assert_eq!(linux.architecture(), HostArchitecture::X86_64);
+        assert_eq!(linux.linux_libc(), Some(HostLinuxLibc::Gnu));
         assert_eq!(linux.target_triple(), "x86_64-unknown-linux-gnu");
 
-        let macos = host_platform_from_parts("macos", "aarch64").expect("macos platform");
+        let macos = host_platform_from_parts("macos", "aarch64", None).expect("macos platform");
         assert_eq!(macos.operating_system(), HostOperatingSystem::Macos);
         assert_eq!(macos.architecture(), HostArchitecture::Aarch64);
         assert_eq!(macos.target_triple(), "aarch64-apple-darwin");
+
+        let musl = host_platform_from_parts("linux", "aarch64", Some(HostLinuxLibc::Musl))
+            .expect("musl platform");
+        assert_eq!(musl.linux_libc(), Some(HostLinuxLibc::Musl));
+        assert_eq!(musl.target_triple(), "aarch64-unknown-linux-musl");
     }
 
     #[test]
     fn host_platform_from_parts_rejects_unknown_pairs() {
-        assert!(host_platform_from_parts("freebsd", "x86_64").is_none());
-        assert!(host_platform_from_parts("linux", "riscv64").is_none());
+        assert!(host_platform_from_parts("freebsd", "x86_64", None).is_none());
+        assert!(host_platform_from_parts("linux", "riscv64", None).is_none());
     }
 
     #[test]
@@ -194,6 +310,10 @@ mod tests {
             ".exe"
         );
         assert_eq!(executable_suffix_for_target("x86_64-unknown-linux-gnu"), "");
+        assert_eq!(
+            executable_suffix_for_target("x86_64-unknown-linux-musl"),
+            ""
+        );
     }
 
     #[test]
@@ -245,6 +365,51 @@ mod tests {
             _ => None,
         });
         assert_eq!(home, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_host_linux_libc_prefers_musl_filesystem_markers() {
+        let libc = super::detect_host_linux_libc_with(
+            &|path| path == std::path::Path::new("/etc/alpine-release"),
+            &|_, _| None,
+        );
+        assert_eq!(libc, Some(HostLinuxLibc::Musl));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_host_linux_libc_uses_getconf_for_glibc() {
+        let libc = super::detect_host_linux_libc_with(&|_| false, &|program, _| {
+            if program == "getconf" {
+                return Some(super::LinuxCommandOutput {
+                    status_success: true,
+                    stdout: "glibc 2.39\n".to_string(),
+                    stderr: String::new(),
+                });
+            }
+            None
+        });
+        assert_eq!(libc, Some(HostLinuxLibc::Gnu));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_host_linux_libc_falls_back_to_ldd_version_output() {
+        let libc = super::detect_host_linux_libc_with(&|_| false, &|program, _| {
+            if program == "getconf" {
+                return None;
+            }
+            if program == "ldd" {
+                return Some(super::LinuxCommandOutput {
+                    status_success: true,
+                    stdout: "musl libc (x86_64)\n".to_string(),
+                    stderr: String::new(),
+                });
+            }
+            None
+        });
+        assert_eq!(libc, Some(HostLinuxLibc::Musl));
     }
 
     #[cfg(windows)]

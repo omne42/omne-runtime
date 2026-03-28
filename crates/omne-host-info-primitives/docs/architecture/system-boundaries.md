@@ -7,7 +7,7 @@
 ## 负责什么
 
 - 识别支持的宿主 OS/arch 组合。
-- 把宿主组合映射到 canonical target triple。
+- 把宿主组合映射到 canonical target triple，并在 Linux 上区分默认 `gnu` / `musl` 宿主 ABI。
 - 解析可选 target override，并在空值时回退到宿主 triple。
 - 解析当前用户 home 目录，只接受来自标准环境变量的绝对路径。
 - 根据 target triple 推断可执行后缀。
