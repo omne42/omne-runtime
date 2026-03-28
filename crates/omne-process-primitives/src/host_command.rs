@@ -7,8 +7,8 @@ use std::thread;
 
 use crate::command_path::{
     is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
-    resolve_available_command_path_os, resolve_command_path_os,
-    resolve_command_path_os_with_path_var,
+    resolve_available_command_path_os, resolve_command_path_or_standard_location_os,
+    resolve_command_path_os, resolve_command_path_os_with_path_var,
 };
 
 const MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024 * 1024;
@@ -261,17 +261,14 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
         HostCommandExecution::Sudo => {
             let mut cmd = Command::new(resolve_sudo_program(request.env));
             cmd.arg("-n");
-            for (name, value) in request.env {
-                cmd.arg(env_assignment(name, value));
-            }
-            cmd.arg(&program);
+            append_sudo_target_command(&mut cmd, &program, request);
             cmd
         }
     };
-    for arg in request.args {
-        cmd.arg(arg);
-    }
     if execution == HostCommandExecution::Direct {
+        for arg in request.args {
+            cmd.arg(arg);
+        }
         for (name, value) in request.env {
             cmd.env(name, value);
         }
@@ -283,6 +280,26 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd
+}
+
+fn append_sudo_target_command(
+    command: &mut Command,
+    program: &Path,
+    request: &HostCommandRequest<'_>,
+) {
+    if request.env.is_empty() {
+        command.arg(program);
+    } else {
+        command.arg(resolve_env_program());
+        command.arg("--");
+        for (name, value) in request.env {
+            command.arg(env_assignment(name, value));
+        }
+        command.arg(program);
+    }
+    for arg in request.args {
+        command.arg(arg);
+    }
 }
 
 fn run_command_output(
@@ -467,14 +484,6 @@ fn explicit_system_command_path(path: &Path) -> bool {
     }
 }
 
-fn env_assignment(name: &OsStr, value: &OsStr) -> OsString {
-    let mut assignment = OsString::new();
-    assignment.push(name);
-    assignment.push(OsStr::new("="));
-    assignment.push(value);
-    assignment
-}
-
 #[cfg(windows)]
 fn is_path_env_name(name: &OsStr) -> bool {
     name.to_string_lossy().eq_ignore_ascii_case("PATH")
@@ -487,6 +496,11 @@ fn is_path_env_name(name: &OsStr) -> bool {
 
 fn resolve_sudo_program(env: &[(OsString, OsString)]) -> PathBuf {
     resolve_sudo_path(env).unwrap_or_else(|| PathBuf::from("sudo"))
+}
+
+fn resolve_env_program() -> PathBuf {
+    resolve_command_path_or_standard_location_os(OsStr::new("env"))
+        .unwrap_or_else(|| PathBuf::from("env"))
 }
 
 fn sudo_available(env: &[(OsString, OsString)]) -> bool {
@@ -540,6 +554,14 @@ fn is_explicit_command_path(command: &OsStr) -> bool {
     has_path_separator(command) || Path::new(command).is_absolute()
 }
 
+fn env_assignment(name: &OsStr, value: &OsStr) -> OsString {
+    let mut assignment = OsString::new();
+    assignment.push(name);
+    assignment.push(OsStr::new("="));
+    assignment.push(value);
+    assignment
+}
+
 fn map_spawn_error(
     program: &OsStr,
     execution: HostCommandExecution,
@@ -564,13 +586,15 @@ mod tests {
     #[cfg(unix)]
     use std::io;
     #[cfg(unix)]
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::os::unix::ffi::OsStringExt;
     use std::path::{Path, PathBuf};
 
     #[cfg(unix)]
     use super::command_available_os;
     #[cfg(unix)]
     use super::ensure_sudo_target_is_available;
+    #[cfg(unix)]
+    use super::resolve_env_program;
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
     use super::{
@@ -674,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn sudo_command_preserves_explicit_environment_for_target_command() {
+    fn sudo_command_wraps_target_with_env_assignments() {
         let args = vec![OsString::from("install"), OsString::from("curl")];
         let env = vec![
             (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
@@ -697,6 +721,8 @@ mod tests {
             collected_args,
             vec![
                 "-n".to_string(),
+                resolve_env_program().to_string_lossy().into_owned(),
+                "--".to_string(),
                 "OMNE_TEST_VALUE=world".to_string(),
                 "OMNE_SECOND=value".to_string(),
                 "apt-get".to_string(),
@@ -997,14 +1023,38 @@ mod tests {
             collected_env,
             vec![(OsString::from("OMNE_TEST_VALUE"), non_utf8_value.clone())]
         );
+    }
 
-        let sudo_command = build_command(&request, HostCommandExecution::Sudo);
-        let sudo_env_arg = sudo_command
+    #[cfg(unix)]
+    #[test]
+    fn sudo_keeps_non_utf8_environment_values_in_target_assignments() {
+        let non_utf8_value = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
+        let env = vec![(OsString::from("OMNE_TEST_VALUE"), non_utf8_value)];
+        let request = HostCommandRequest {
+            program: OsStr::new("apt-get"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let command = build_command(&request, HostCommandExecution::Sudo);
+        let collected_args = command
             .get_args()
-            .nth(1)
-            .expect("sudo should receive env assignment");
-        let expected_bytes = b"OMNE_TEST_VALUE=fo\x80";
-        assert_eq!(sudo_env_arg.as_bytes(), expected_bytes);
+            .map(OsStr::to_os_string)
+            .collect::<Vec<_>>();
+
+        assert_eq!(collected_args[0], OsString::from("-n"));
+        assert_eq!(collected_args[1], resolve_env_program().into_os_string());
+        assert_eq!(collected_args[2], OsString::from("--"));
+        assert_eq!(
+            collected_args[3],
+            OsString::from_vec(vec![
+                0x4f, 0x4d, 0x4e, 0x45, 0x5f, 0x54, 0x45, 0x53, 0x54, 0x5f, 0x56, 0x41, 0x4c, 0x55,
+                0x45, 0x3d, 0x66, 0x6f, 0x80,
+            ])
+        );
+        assert_eq!(collected_args[4], OsString::from("apt-get"));
     }
 
     #[cfg(unix)]
