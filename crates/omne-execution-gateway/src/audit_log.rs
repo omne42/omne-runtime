@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -22,11 +23,14 @@ impl AuditLogger {
         }
     }
 
-    pub(crate) fn write_prepare_record(
+    pub(crate) fn write_prepare_record<T, E>(
         &self,
         event: &ExecEvent,
-        result: &ExecResult<()>,
-    ) -> ExecResult<()> {
+        result: &Result<T, E>,
+    ) -> ExecResult<()>
+    where
+        E: Display,
+    {
         self.write_record(AuditRecord::from_prepare(event, result))
     }
 
@@ -92,7 +96,10 @@ struct AuditRecord {
 }
 
 impl AuditRecord {
-    fn from_prepare(event: &ExecEvent, result: &ExecResult<()>) -> Self {
+    fn from_prepare<T, E>(event: &ExecEvent, result: &Result<T, E>) -> Self
+    where
+        E: Display,
+    {
         Self {
             ts_unix_ms: now_unix_ms(),
             event: event.clone(),
@@ -126,9 +133,12 @@ struct AuditResult {
 }
 
 impl AuditResult {
-    fn from_prepare(result: &ExecResult<()>) -> Self {
+    fn from_prepare<T, E>(result: &Result<T, E>) -> Self
+    where
+        E: Display,
+    {
         match result {
-            Ok(()) => Self {
+            Ok(_) => Self {
                 status: "prepared",
                 error: None,
                 exit_code: None,
@@ -209,7 +219,7 @@ mod tests {
         let event = sample_event("echo");
 
         logger
-            .write_prepare_record(&event, &Ok(()))
+            .write_prepare_record(&event, &Ok::<(), ExecError>(()))
             .expect("write prepare record");
 
         let content = fs::read_to_string(path).expect("read audit");
@@ -272,7 +282,7 @@ mod tests {
                     barrier.wait();
                     for _ in 0..writes_per_thread {
                         logger
-                            .write_prepare_record(&event, &Ok(()))
+                            .write_prepare_record(&event, &Ok::<(), ExecError>(()))
                             .expect("concurrent audit write should succeed");
                     }
                 })
@@ -341,7 +351,7 @@ mod tests {
         fs::create_dir(&path).expect("replace audit file with directory");
 
         let err = logger
-            .write_prepare_record(&event, &Ok(()))
+            .write_prepare_record(&event, &Ok::<(), ExecError>(()))
             .expect_err("write failure should be returned");
         match err {
             ExecError::AuditLogWriteFailed { path: err_path, .. } => assert_eq!(err_path, path),

@@ -23,6 +23,16 @@ pub enum ExecError {
         workspace_root: PathBuf,
     },
 
+    #[error("cannot bind validated {kind} identity for {path}")]
+    PathIdentityUnavailable { kind: &'static str, path: PathBuf },
+
+    #[error("validated {kind} changed before spawn: {path} ({detail})")]
+    RequestPathChanged {
+        kind: &'static str,
+        path: PathBuf,
+        detail: String,
+    },
+
     #[error(
         "request claims policy-default isolation {requested:?}, but gateway policy default is {policy_default:?}"
     )]

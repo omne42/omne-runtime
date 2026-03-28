@@ -9,6 +9,7 @@
 - `ExecError`
 - `ExecResult`
 - `ExecutionOutcome`
+- `PreparedCommand`
 - `CapabilityReport`
 - `RequestResolution`
 - `RequestedIsolationSource`
@@ -78,10 +79,12 @@ policy-default provenance.
 - `evaluate(&ExecRequest)`
 - `execute(&ExecRequest)`
 - `execute_status(&ExecRequest)`
-- `prepare_command(&ExecRequest, &mut Command)`
+- `prepare_command(&ExecRequest, Command)`
 
 `execute()` is the primary API because it preserves `ExecEvent` and sandbox metadata.
 `execute_status()` is a convenience helper that discards the event.
+`prepare_command()` now returns a `PreparedCommand` wrapper with `spawn()`, so validated callers
+cannot mutate program/args/cwd after preflight and silently bypass the gateway decision.
 
 ## CapabilityReport
 
@@ -107,6 +110,12 @@ Notable fields:
   - `result`
 - helper methods:
   - `into_parts()`
+
+## PreparedCommand
+
+- helper methods:
+  - `current_dir()`
+  - `spawn()`
 
 ## GatewayPolicy
 
