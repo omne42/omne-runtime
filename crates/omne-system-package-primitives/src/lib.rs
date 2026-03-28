@@ -7,6 +7,9 @@
 //! - building install command recipes from a package-manager + package pair
 //! - declaring default package-manager fallback order per OS
 
+use std::fmt;
+use std::str::FromStr;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemPackageInstallRecipe {
     pub program: &'static str,
@@ -14,14 +17,75 @@ pub struct SystemPackageInstallRecipe {
 }
 
 impl SystemPackageInstallRecipe {
-    fn new(program: &'static str, leading_args: &[&str], package: &str) -> Self {
+    fn new(program: &'static str, leading_args: &[&str], package: &SystemPackageName) -> Self {
         let mut args = Vec::with_capacity(leading_args.len() + 2);
         args.extend(leading_args.iter().map(|arg| (*arg).to_string()));
         args.push("--".to_string());
-        args.push(package.to_string());
+        args.push(package.as_str().to_string());
         Self { program, args }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemPackageName(String);
+
+impl SystemPackageName {
+    pub fn parse(raw: &str) -> Result<Self, InvalidSystemPackageName> {
+        if raw.is_empty() {
+            return Err(InvalidSystemPackageName::Empty);
+        }
+        if raw.starts_with('-') {
+            return Err(InvalidSystemPackageName::LeadingDash);
+        }
+        if let Some(invalid) = raw.chars().find(|&ch| !is_allowed_package_char(ch)) {
+            return Err(InvalidSystemPackageName::InvalidCharacter { character: invalid });
+        }
+        Ok(Self(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for SystemPackageName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl FromStr for SystemPackageName {
+    type Err = InvalidSystemPackageName;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidSystemPackageName {
+    Empty,
+    LeadingDash,
+    InvalidCharacter { character: char },
+}
+
+impl fmt::Display for InvalidSystemPackageName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "system package name must not be empty"),
+            Self::LeadingDash => {
+                write!(f, "system package name must not start with '-'")
+            }
+            Self::InvalidCharacter { character } => write!(
+                f,
+                "system package name contains unsupported character {:?}",
+                character
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InvalidSystemPackageName {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemPackageManager {
@@ -48,7 +112,7 @@ impl SystemPackageManager {
         }
     }
 
-    pub fn install_recipe(self, package: &str) -> SystemPackageInstallRecipe {
+    pub fn install_recipe(self, package: &SystemPackageName) -> SystemPackageInstallRecipe {
         match self {
             Self::AptGet => SystemPackageInstallRecipe::new("apt-get", &["install", "-y"], package),
             Self::Dnf => SystemPackageInstallRecipe::new("dnf", &["install", "-y"], package),
@@ -91,7 +155,7 @@ fn default_system_package_managers_for_os(os: &str) -> &'static [SystemPackageMa
 
 pub fn default_system_package_install_recipes_for_os(
     os: &str,
-    package: &str,
+    package: &SystemPackageName,
 ) -> Vec<SystemPackageInstallRecipe> {
     default_system_package_managers_for_os(os)
         .iter()
@@ -100,11 +164,16 @@ pub fn default_system_package_install_recipes_for_os(
         .collect()
 }
 
+fn is_allowed_package_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '.' | '+' | '_' | '-' | ':' | '@' | '/' | '=')
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        SystemPackageInstallRecipe, SystemPackageManager,
-        default_system_package_install_recipes_for_os, default_system_package_managers_for_os,
+        InvalidSystemPackageName, SystemPackageInstallRecipe, SystemPackageManager,
+        SystemPackageName, default_system_package_install_recipes_for_os,
+        default_system_package_managers_for_os,
     };
 
     #[test]
@@ -123,8 +192,9 @@ mod tests {
 
     #[test]
     fn install_recipe_builds_expected_apt_command() {
+        let package = SystemPackageName::parse("git").expect("valid package");
         assert_eq!(
-            SystemPackageManager::AptGet.install_recipe("git"),
+            SystemPackageManager::AptGet.install_recipe(&package),
             SystemPackageInstallRecipe {
                 program: "apt-get",
                 args: vec![
@@ -139,8 +209,9 @@ mod tests {
 
     #[test]
     fn pacman_recipe_avoids_sync_only_install() {
+        let package = SystemPackageName::parse("git").expect("valid package");
         assert_eq!(
-            SystemPackageManager::Pacman.install_recipe("git"),
+            SystemPackageManager::Pacman.install_recipe(&package),
             SystemPackageInstallRecipe {
                 program: "pacman",
                 args: vec![
@@ -162,14 +233,45 @@ mod tests {
 
     #[test]
     fn recipes_cover_linux_and_macos() {
+        let package = SystemPackageName::parse("git").expect("valid package");
         assert!(
-            default_system_package_install_recipes_for_os("linux", "git")
+            default_system_package_install_recipes_for_os("linux", &package)
                 .iter()
                 .any(|recipe| recipe.program == "apt-get")
         );
         assert_eq!(
-            default_system_package_install_recipes_for_os("macos", "git")[0].program,
+            default_system_package_install_recipes_for_os("macos", &package)[0].program,
             "brew"
+        );
+    }
+
+    #[test]
+    fn package_name_accepts_common_versioned_package_specs() {
+        let package = SystemPackageName::parse("python3:any=3.12").expect("valid package");
+        assert_eq!(package.as_str(), "python3:any=3.12");
+    }
+
+    #[test]
+    fn package_name_rejects_empty_names() {
+        assert_eq!(
+            SystemPackageName::parse(""),
+            Err(InvalidSystemPackageName::Empty)
+        );
+    }
+
+    #[test]
+    fn package_name_rejects_leading_dash() {
+        assert_eq!(
+            SystemPackageName::parse("--root=/tmp"),
+            Err(InvalidSystemPackageName::LeadingDash)
+        );
+    }
+
+    #[test]
+    fn package_name_rejects_whitespace() {
+        assert_eq!(
+            SystemPackageName::parse("git curl"),
+            Err(InvalidSystemPackageName::InvalidCharacter { character: ' ' })
         );
     }
 }

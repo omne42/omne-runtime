@@ -13,7 +13,7 @@ Low-level system package primitives shared across callers.
 
 - canonical package-manager recognition
 - package-manager enum modeling
-- install recipe construction
+- validated system-package-name modeling and install recipe construction
 - default package-manager order per OS
 
 ## Non-Goals
@@ -23,6 +23,10 @@ Low-level system package primitives shared across callers.
 - host detection
 - plan methods or product tool/package mapping
 - CLI behavior
+
+`SystemPackageName` is intentionally narrower than an arbitrary string: callers must validate a
+package identifier before turning it into argv so this crate does not silently normalize option-like
+or whitespace-bearing input into install recipes.
 
 ## Verification
 
