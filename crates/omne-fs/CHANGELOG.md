@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `copy_file` / `move_path` / `create_parents` now fail closed when destination-parent identity
+  cannot be revalidated, instead of treating Windows/exotic-filesystem `Unverifiable` results as
+  success or falling back to canonical-path-only rechecks.
 - `move_path` now re-verifies the source object with a stable handle when available and fails
   closed if the source identity cannot be revalidated before rename, closing the remaining
   Windows `Unverifiable` fallback that could otherwise move a replaced path.

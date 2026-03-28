@@ -11,6 +11,7 @@
 - `read`、`write`、`edit`、`patch`、`delete`、`list_dir`、`glob`、`grep`、`stat`、`mkdir`、`copy`、`move`。
 - policy I/O、CLI 和相关集成测试。
 - 输出 redaction 与 secret deny 逻辑。
+- 对会创建或替换路径的写操作，重校验父目录/源对象身份；无法可靠验证时 fail-closed，而不是降级成 best-effort 成功。
 
 ## 不负责什么
 
@@ -31,4 +32,6 @@
 ## 调用方边界
 
 - 调用方依赖 `omne-fs` 的稳定策略语义和操作面。
+- 调用方也依赖 mutating 路径在 post-resolution 身份无法再次验证时 fail closed，而不是把
+  “已校验” 降级成 best-effort。
 - 调用方不应复制 secret/redaction/root 边界逻辑到自己仓库。

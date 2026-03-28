@@ -267,9 +267,17 @@ fn verify_destination_parent_identity(
     expected_parent_meta: &super::io::DirectoryIdentity,
     to_effective_relative: &Path,
 ) -> Result<()> {
-    expected_parent_meta.verify_best_effort(destination_parent, to_effective_relative, || {
-        Error::InvalidPath("destination parent directory changed during copy".to_string())
-    })
+    expected_parent_meta.ensure_verified(
+        destination_parent,
+        to_effective_relative,
+        || Error::InvalidPath("destination parent directory changed during copy".to_string()),
+        || {
+            Error::InvalidPath(
+                "destination parent directory identity could not be verified during copy"
+                    .to_string(),
+            )
+        },
+    )
 }
 
 fn noop_response(
@@ -313,6 +321,34 @@ mod tests {
             .expect_err("replaced temp path must be rejected");
         match err {
             Error::InvalidPath(msg) => assert!(msg.contains("temporary copy file changed")),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use std::fs;
+    use std::path::Path;
+
+    use super::verify_destination_parent_identity;
+    use crate::error::Error;
+
+    #[test]
+    fn copy_parent_revalidation_rejects_unverifiable_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = dir.path().join("parent");
+        fs::create_dir(&parent).expect("create parent");
+        let metadata = fs::symlink_metadata(&parent).expect("metadata");
+        let identity = crate::ops::io::DirectoryIdentity::unverifiable_for_tests(metadata);
+
+        let err = verify_destination_parent_identity(&parent, &identity, Path::new("dst.txt"))
+            .expect_err("unverifiable parent identity must fail closed");
+        match err {
+            Error::InvalidPath(message) => assert_eq!(
+                message,
+                "destination parent directory identity could not be verified during copy"
+            ),
             other => panic!("unexpected error: {other:?}"),
         }
     }
