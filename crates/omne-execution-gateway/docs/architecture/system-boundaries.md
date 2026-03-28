@@ -9,7 +9,7 @@
 - `ExecRequest`、`ExecEvent`、`ExecGateway`、`GatewayPolicy` 和能力报告模型。
 - `cwd`、`workspace_root`、隔离级别和 `policy_default` 来源一致性校验。
 - 请求里的 `program` 只能是 bare command name 或绝对路径；像 `./tool`、`bin/tool` 这类相对路径会 fail-closed 拒绝，避免执行语义依赖 gateway 进程自身的工作目录。
-- 对显式绝对 `program` 路径做 file identity 绑定，并在真正 spawn 前再次校验，避免 preflight 通过后被换文件或通过稳定别名漂移到别的可执行文件。
+- 对显式绝对 `program` 路径做 file identity 绑定，并在真正 spawn 前再次校验；mutating allowlist 也按最终可执行文件 identity 匹配，而不是按 basename 或原始路径字面量放行，避免 preflight 通过后被换文件或通过稳定别名漂移到别的可执行文件。
 - 对 `cwd` / `workspace_root` 做 canonical path + 目录 identity 绑定，并在真正 spawn 前重新校验。
 - 声明式变更命令门控，以及 allowlisted mutator、`declared_mutation` 和 opaque launcher 之间的一致性校验。
 - gateway 自己管理的 spawn 路径会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端。

@@ -136,7 +136,18 @@ impl ExecGateway {
 
     /// Project a request into the gateway's canonical pre-execution view.
     pub fn resolve_request(&self, request: &ExecRequest) -> RequestResolution {
-        RequestResolution::from_request(request, self.policy.default_isolation)
+        match self.prepare_request(request) {
+            Ok(prepared) => RequestResolution::from_event(
+                request,
+                &prepared.event,
+                self.policy.default_isolation,
+            ),
+            Err(err) => RequestResolution::from_event(
+                request,
+                err.event.as_ref(),
+                self.policy.default_isolation,
+            ),
+        }
     }
 
     pub fn evaluate(&self, request: &ExecRequest) -> ExecEvent {
@@ -1450,6 +1461,39 @@ mod tests {
         let expected_cwd = real_dir.canonicalize().expect("canonicalize real dir");
         assert_eq!(event.cwd, expected_cwd);
         assert_eq!(prepared.current_dir(), Some(expected_cwd.as_path()));
+    }
+
+    #[test]
+    fn resolve_request_uses_validated_canonical_paths() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let cwd = workspace.path().join("cwd");
+        fs::create_dir_all(&cwd).expect("create cwd");
+
+        let request = ExecRequest::new(
+            dummy_program(),
+            Vec::<OsString>::new(),
+            cwd.join(".."),
+            host_supported_test_isolation(),
+            cwd.join(".."),
+        );
+
+        let resolution = gateway.resolve_request(&request);
+        let canonical_workspace = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+
+        assert_eq!(resolution.cwd, canonical_workspace);
+        assert_eq!(resolution.workspace_root, canonical_workspace);
     }
 
     #[cfg(unix)]
