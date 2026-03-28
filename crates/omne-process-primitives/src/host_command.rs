@@ -27,8 +27,8 @@ pub enum HostCommandExecution {
 #[derive(Debug, Clone, Copy)]
 pub struct HostCommandRequest<'a> {
     pub program: &'a OsStr,
-    pub args: &'a [String],
-    pub env: &'a [(String, String)],
+    pub args: &'a [OsString],
+    pub env: &'a [(OsString, OsString)],
     pub working_directory: Option<&'a Path>,
     pub sudo_mode: HostCommandSudoMode,
 }
@@ -42,14 +42,14 @@ pub struct HostCommandOutput {
 #[derive(Debug, Clone, Copy)]
 pub struct HostRecipeRequest<'a> {
     pub program: &'a OsStr,
-    pub args: &'a [String],
-    pub env: &'a [(String, String)],
+    pub args: &'a [OsString],
+    pub env: &'a [(OsString, OsString)],
     pub working_directory: Option<&'a Path>,
     pub sudo_mode: HostCommandSudoMode,
 }
 
 impl<'a> HostRecipeRequest<'a> {
-    pub fn new(program: &'a OsStr, args: &'a [String]) -> Self {
+    pub fn new(program: &'a OsStr, args: &'a [OsString]) -> Self {
         Self {
             program,
             args,
@@ -59,7 +59,7 @@ impl<'a> HostRecipeRequest<'a> {
         }
     }
 
-    pub fn with_env(mut self, env: &'a [(String, String)]) -> Self {
+    pub fn with_env(mut self, env: &'a [(OsString, OsString)]) -> Self {
         self.env = env;
         self
     }
@@ -254,7 +254,10 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
             let mut cmd = Command::new(resolve_sudo_program(request.env));
             cmd.arg("-n");
             for (name, value) in request.env {
-                cmd.arg(format!("{name}={value}"));
+                let mut assignment = name.clone();
+                assignment.push("=");
+                assignment.push(value);
+                cmd.arg(assignment);
             }
             cmd.arg(&program);
             cmd
@@ -459,22 +462,22 @@ fn explicit_system_command_path(path: &Path) -> bool {
     }
 }
 
-fn resolve_sudo_program(env: &[(String, String)]) -> PathBuf {
+fn resolve_sudo_program(env: &[(OsString, OsString)]) -> PathBuf {
     resolve_sudo_path(env).unwrap_or_else(|| PathBuf::from("sudo"))
 }
 
-fn sudo_available(env: &[(String, String)]) -> bool {
+fn sudo_available(env: &[(OsString, OsString)]) -> bool {
     resolve_sudo_path(env).is_some()
 }
 
-fn resolve_sudo_path(env: &[(String, String)]) -> Option<PathBuf> {
+fn resolve_sudo_path(env: &[(OsString, OsString)]) -> Option<PathBuf> {
     resolve_command_path_os_with_path_var(OsStr::new("sudo"), effective_path_var(env))
 }
 
-fn effective_path_var(env: &[(String, String)]) -> Option<OsString> {
+fn effective_path_var(env: &[(OsString, OsString)]) -> Option<OsString> {
     env.iter()
         .rev()
-        .find_map(|(name, value)| (name == "PATH").then(|| OsString::from(value)))
+        .find_map(|(name, value)| (name == OsStr::new("PATH")).then(|| value.clone()))
         .or_else(|| std::env::var_os("PATH"))
 }
 
@@ -534,7 +537,7 @@ fn map_spawn_error(
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     #[cfg(unix)]
     use std::io;
     use std::path::{Path, PathBuf};
@@ -567,8 +570,8 @@ mod tests {
     fn run_host_command_captures_stdout_and_environment() {
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = write_test_command(temp.path(), "echoenv");
-        let args = vec!["hello".to_string()];
-        let env = vec![("OMNE_TEST_VALUE".to_string(), "world".to_string())];
+        let args = vec![OsString::from("hello")];
+        let env = vec![(OsString::from("OMNE_TEST_VALUE"), OsString::from("world"))];
         let request = HostCommandRequest {
             program: command_path.as_os_str(),
             args: &args,
@@ -625,7 +628,10 @@ mod tests {
     fn sudo_detection_uses_request_path_override() {
         let temp = tempfile::tempdir().expect("tempdir");
         let sudo_path = write_test_command(temp.path(), "sudo");
-        let env = vec![("PATH".to_string(), temp.path().display().to_string())];
+        let env = vec![(
+            OsString::from("PATH"),
+            temp.path().as_os_str().to_os_string(),
+        )];
         let request = HostCommandRequest {
             program: OsStr::new("apt-get"),
             args: &[],
@@ -642,10 +648,10 @@ mod tests {
 
     #[test]
     fn sudo_command_preserves_explicit_environment_for_target_command() {
-        let args = vec!["install".to_string(), "curl".to_string()];
+        let args = vec![OsString::from("install"), OsString::from("curl")];
         let env = vec![
-            ("OMNE_TEST_VALUE".to_string(), "world".to_string()),
-            ("OMNE_SECOND".to_string(), "value".to_string()),
+            (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
+            (OsString::from("OMNE_SECOND"), OsString::from("value")),
         ];
         let request = HostCommandRequest {
             program: OsStr::new("apt-get"),
@@ -688,7 +694,7 @@ mod tests {
 
     #[test]
     fn direct_command_keeps_explicit_environment_on_spawned_process() {
-        let env = vec![("OMNE_TEST_VALUE".to_string(), "world".to_string())];
+        let env = vec![(OsString::from("OMNE_TEST_VALUE"), OsString::from("world"))];
         let request = HostCommandRequest {
             program: OsStr::new("echo"),
             args: &[],
@@ -720,7 +726,10 @@ mod tests {
     fn sudo_missing_target_is_classified_as_command_not_found() {
         let temp = tempfile::tempdir().expect("tempdir");
         let _sudo_path = write_test_command(temp.path(), "sudo");
-        let env = vec![("PATH".to_string(), temp.path().display().to_string())];
+        let env = vec![(
+            OsString::from("PATH"),
+            temp.path().as_os_str().to_os_string(),
+        )];
         let request = HostCommandRequest {
             program: OsStr::new("apt-get"),
             args: &[],
@@ -806,8 +815,8 @@ mod tests {
         let count_file = temp.path().join("count.txt");
         let args = Vec::new();
         let env = vec![(
-            "OMNE_COUNT_FILE".to_string(),
-            count_file.to_string_lossy().into_owned(),
+            OsString::from("OMNE_COUNT_FILE"),
+            count_file.as_os_str().to_os_string(),
         )];
         let request = HostCommandRequest {
             program: command_path.as_os_str(),
@@ -875,8 +884,8 @@ mod tests {
     fn run_host_recipe_captures_success_output() {
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = write_test_command(temp.path(), "echoenv");
-        let args = vec!["hello".to_string()];
-        let env = vec![("OMNE_TEST_VALUE".to_string(), "world".to_string())];
+        let args = vec![OsString::from("hello")];
+        let env = vec![(OsString::from("OMNE_TEST_VALUE"), OsString::from("world"))];
 
         let output = run_host_recipe(
             &HostRecipeRequest::new(command_path.as_os_str(), &args).with_env(&env),
@@ -908,6 +917,42 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_command_build_preserves_non_utf8_arguments_and_env_values() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let args = vec![OsString::from_vec(vec![0x66, 0x6f, 0x80])];
+        let env = vec![(
+            OsString::from("OMNE_TEST_VALUE"),
+            OsString::from_vec(vec![0x62, 0x61, 0x80]),
+        )];
+        let request = HostCommandRequest {
+            program: OsStr::new("echo"),
+            args: &args,
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let command = build_command(&request, HostCommandExecution::Direct);
+        let collected_args = command.get_args().map(OsString::from).collect::<Vec<_>>();
+        let collected_env = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    OsString::from(name),
+                    value
+                        .map(OsString::from)
+                        .expect("explicit env value should exist"),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(collected_args, args);
+        assert_eq!(collected_env, env);
     }
 
     #[cfg(unix)]
