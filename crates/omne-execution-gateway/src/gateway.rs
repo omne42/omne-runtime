@@ -845,6 +845,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_cwd_as_cwd_invalid() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let missing = workspace.path().join("missing");
+
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            &missing,
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        );
+
+        let err = gateway
+            .execute_status(&request)
+            .expect_err("missing cwd should be rejected as invalid");
+
+        match err {
+            ExecError::CwdInvalid { cwd, .. } => assert_eq!(cwd, missing),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
     fn rejects_relative_program_paths() {
         let policy = GatewayPolicy {
             allow_isolation_none: true,
