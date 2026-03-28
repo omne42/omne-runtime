@@ -9,7 +9,7 @@
 - 探测命令是否存在和是否可执行。
 - 对宿主命令 request/recipe 维持 `OsStr` / `OsString` 边界，不把 argv/env 先强制收窄成 UTF-8 `String`。
 - 运行宿主机命令并捕获输出。
-- 当命中 `sudo` 路径时，把调用方显式提供的环境变量作为目标命令赋值参数继续传给目标命令，而不是只注入到 `sudo` 自身进程环境。
+- 当命中 `sudo` 路径时，把调用方显式提供的环境变量改写成 `env -- KEY=VALUE ...` 形式并放到提权后的目标命令边界内，避免只把变量注入到 `sudo` 自身进程环境，或把语义外包给宿主 `sudoers` 配置。
 - `sudo` 可用性判定和 `sudo` 可执行路径选择遵循同一份有效 `PATH`（优先采用调用方在请求里显式覆盖的 `PATH`）。
 - 对需要走 `sudo` 的 bare command，如果目标命令在有效 `PATH` 中不存在，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
 - 对 `/usr/bin/apt-get` 这类显式系统路径，仍保留 `IfNonRootSystemCommand` 语义；相对路径或工作目录下的同名命令不会被误判成系统命令。
