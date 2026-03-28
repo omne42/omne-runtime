@@ -12,8 +12,9 @@ Low-level system package primitives shared across callers.
 ## Scope
 
 - canonical package-manager recognition
+- validated `SystemPackageName` parsing for package identifiers before recipe construction
 - package-manager enum modeling
-- install recipe construction
+- install recipe construction from validated package names, plus `try_*` helpers for string callers
 - default package-manager order per OS
 
 ## Non-Goals
