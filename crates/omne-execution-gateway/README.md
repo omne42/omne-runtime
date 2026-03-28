@@ -17,6 +17,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - workspace boundary enforcement (`cwd` must stay inside `workspace_root`, and execution binds canonicalized directory identities before spawn)
 - two-way mutation declaration enforcement for allowlisted mutating programs
 - fail-closed denial for opaque command launchers such as `sh`, `cmd`, and `pwsh` unless they are explicitly allowlisted
+- gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
 - structured decision events for audit/logging
 
 ## Important Scope Notes
@@ -32,6 +33,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - if audit append succeeds during preflight but the final record write later fails, the execution result is surfaced as an explicit audit-log write failure instead of silently degrading to stderr-only reporting.
 - `prepare_command` returns a spawn-only `PreparedCommand` wrapper instead of handing a mutable validated `Command` back to callers.
 - `execute()` and `PreparedCommand::spawn()` both revalidate bound `cwd` / `workspace_root` identities immediately before spawn.
+- `execute()` and `PreparedCommand::spawn()` bind `stdin/stdout/stderr` to null handles; callers that need interactive or captured stdio should use a different process primitive.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.
 
 ## Platform Capability (v0.1.0)

@@ -85,6 +85,8 @@ policy-default provenance.
 `execute_status()` is a convenience helper that discards the event.
 `prepare_command()` now returns a `PreparedCommand` wrapper with `spawn()`, so validated callers
 cannot mutate program/args/cwd after preflight and silently bypass the gateway decision.
+`execute()` and `PreparedCommand::spawn()` bind child `stdin/stdout/stderr` to null handles, so
+they are intentionally non-interactive and do not surface child output.
 
 ## CapabilityReport
 
@@ -116,6 +118,8 @@ Notable fields:
 - helper methods:
   - `current_dir()`
   - `spawn()`
+- behavior notes:
+  - `spawn()` reapplies validated `cwd` / `workspace_root` checks and binds child `stdin/stdout/stderr` to null handles before launching the child process
 
 ## GatewayPolicy
 

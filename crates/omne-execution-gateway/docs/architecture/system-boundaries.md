@@ -10,6 +10,7 @@
 - `cwd`、`workspace_root`、隔离级别和 `policy_default` 来源一致性校验。
 - 对 `cwd` / `workspace_root` 做 canonical path + 目录 identity 绑定，并在真正 spawn 前重新校验。
 - 声明式变更命令门控，以及 allowlisted mutator、`declared_mutation` 和 opaque launcher 之间的一致性校验。
+- gateway 自己管理的 spawn 路径会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端。
 - 平台 sandbox 编排与 runtime 观测。
 - 结构化审计事件和日志输出。
 
@@ -28,6 +29,7 @@
 - 高层文件系统读写 API。
 - `omne-fs` CLI 语义。
 - 通用进程树原语。
+- 交互式终端桥接或输出捕获适配。
 - 产品层超时、取消和保密策略。
 - 二进制来源或供应链校验。
 
