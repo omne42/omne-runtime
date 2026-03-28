@@ -41,6 +41,9 @@ Fields:
 
 `declared_mutation` is caller input. Use `with_policy_default_isolation(...)` when the caller is
 intentionally delegating isolation selection to `GatewayPolicy::default_isolation`.
+When `GatewayPolicy::enforce_allowlisted_program_for_mutation` remains enabled, callers must still
+finish request construction with `.with_declared_mutation(true/false)` before evaluation or
+execution; otherwise the gateway denies the request with `MutationDeclarationRequired`.
 
 ## RequestResolution
 
@@ -137,7 +140,9 @@ their resolved executable identity rather than basename text.
 
 - `IsolationNotSupported { requested, supported }`
 - `WorkspaceRootInvalid { path }`
+- `CwdInvalid { cwd, detail }`
 - `CwdOutsideWorkspace { cwd, workspace_root }`
+- `MutationDeclarationRequired`
 - `PolicyDefaultIsolationMismatch { requested, policy_default }`
 - `PreparedCommandMismatch { .. }`
 - `Sandbox(String)`

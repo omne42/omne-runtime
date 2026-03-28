@@ -17,7 +17,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed if `program` is neither a bare command name nor an absolute path
 - explicit absolute `program` paths are bound as file identities and revalidated immediately before spawn
 - workspace boundary enforcement (`cwd` must stay inside `workspace_root`, and execution binds canonicalized directory identities before spawn)
-- two-way mutation declaration enforcement for allowlisted mutating programs
+- explicit mutation declaration for every request when mutation enforcement is enabled
 - fail-closed denial for opaque command launchers such as `sh`, `cmd`, and `pwsh` unless they are explicitly allowlisted
 - gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
 - structured decision events for audit/logging
@@ -27,6 +27,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `BestEffort` is a compatibility tier, not a strong sandbox guarantee.
 - Linux, macOS, and Windows currently do not expose a native `BestEffort` or `Strict` sandbox. Requests above `None` fail closed.
 - Linux's previous native Landlock path is intentionally disabled until it can be reintroduced without relying on unsafe post-`fork` Rust execution.
+- when `enforce_allowlisted_program_for_mutation = true`, callers must always set `with_declared_mutation(...)` intentionally instead of relying on the constructor default.
 - allowlisted mutating programs must explicitly set `declared_mutation = true`, and declared mutations must bind to an allowlisted executable identity via an explicit program path.
 - shell-like opaque launchers are denied by default because the gateway cannot trust `declared_mutation = false` for an interpreter that can execute arbitrary subcommands.
 - mutation authorization now requires explicit program paths in both the request and policy allowlist. Bare program names are denied fail-closed because they do not bind to a stable executable, and allowlist checks resolve by executable identity rather than basename text.
@@ -34,10 +35,12 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - explicit program paths are revalidated as file identities before spawn, so even stable aliases such as symlinks cannot silently drift to a different executable after preflight succeeds.
 - allowlist matching binds explicit paths to executable identity; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
 - `GatewayPolicy::load_json()` only accepts no-follow regular files, so symlinks and other special files cannot silently stand in for trusted policy input.
+- the CLI request adapter also rejects unknown JSON fields fail-closed, so misspelled request keys cannot silently degrade execution boundaries.
 - if `audit_log_path` is configured, preflight creates missing parent directories and rejects requests fail-closed when the audit log cannot be opened for append.
 - if audit append succeeds during preflight but the final record write later fails, the execution result is surfaced as an explicit audit-log write failure instead of silently degrading to stderr-only reporting.
 - `prepare_command` returns a spawn-only `PreparedCommand` wrapper instead of handing a mutable validated `Command` back to callers.
 - `execute()` and `PreparedCommand::spawn()` both revalidate bound `cwd` / `workspace_root` identities immediately before spawn.
+- missing, inaccessible, or non-directory `cwd` values are reported as `cwd_invalid` instead of being mislabeled as workspace boundary violations.
 - `execute()` and `PreparedCommand::spawn()` bind `stdin/stdout/stderr` to null handles; callers that need interactive or captured stdio should use a different process primitive.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.
 
@@ -68,7 +71,8 @@ let req = ExecRequest::new(
     ".",
     ExecutionIsolation::None,
     ".",
-);
+)
+.with_declared_mutation(false);
 let execution = gateway.execute(&req);
 let status = execution.result?;
 assert!(status.success());

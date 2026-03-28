@@ -29,6 +29,14 @@ pub enum ExecError {
         workspace_root: PathBuf,
     },
 
+    #[error("working directory is invalid: {cwd} ({detail})")]
+    CwdInvalid { cwd: PathBuf, detail: String },
+
+    #[error(
+        "request must explicitly declare whether it mutates host state before gateway evaluation"
+    )]
+    MutationDeclarationRequired,
+
     #[error("cannot bind validated {kind} identity for {path}")]
     PathIdentityUnavailable { kind: &'static str, path: PathBuf },
 

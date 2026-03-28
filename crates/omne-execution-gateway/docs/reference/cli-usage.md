@@ -36,6 +36,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 `required_isolation` is optional; when omitted, the CLI builds an `ExecRequest` with
 `requested_isolation_source = policy_default` and `required_isolation = policy.default_isolation`.
 `declared_mutation` is required in `request.json`; the CLI no longer defaults it to `false`.
+Unknown request fields are rejected fail-closed instead of being ignored.
 When `program` matches `mutating_program_allowlist`, the gateway requires
 `declared_mutation = true`; declared mutations still must use an allowlisted explicit path.
 Bare program names are denied fail-closed for mutation authorization, even if a same-name string
@@ -99,6 +100,8 @@ defaulted isolation decisions explicit through `input_required_isolation`,
 `requested_isolation_source`, and `policy_default_isolation`.
 `event` is the canonical execution/audit shape and includes canonicalized `cwd`,
 canonicalized `workspace_root`, and declared mutation intent.
+If `cwd` is missing, inaccessible, or not a directory, the CLI surfaces `cwd_invalid` instead of
+mislabeling the input as `cwd_outside_workspace`.
 `requested_isolation_source` explains whether the effective isolation came from the request payload
 or from `policy.default_isolation`.
 Current hosts report `supported_isolation = none`; `best_effort` and `strict` requests fail closed

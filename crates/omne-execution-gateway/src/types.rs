@@ -22,6 +22,7 @@ pub struct ExecRequest {
     pub requested_isolation_source: RequestedIsolationSource,
     pub workspace_root: PathBuf,
     pub declared_mutation: bool,
+    declared_mutation_explicitly: bool,
 }
 
 impl ExecRequest {
@@ -44,6 +45,7 @@ impl ExecRequest {
             requested_isolation_source: RequestedIsolationSource::Request,
             workspace_root: workspace_root.into(),
             declared_mutation: false,
+            declared_mutation_explicitly: false,
         }
     }
 
@@ -66,12 +68,18 @@ impl ExecRequest {
             requested_isolation_source: RequestedIsolationSource::PolicyDefault,
             workspace_root: workspace_root.into(),
             declared_mutation: false,
+            declared_mutation_explicitly: false,
         }
     }
 
     pub fn with_declared_mutation(mut self, declared_mutation: bool) -> Self {
         self.declared_mutation = declared_mutation;
+        self.declared_mutation_explicitly = true;
         self
+    }
+
+    pub(crate) fn declared_mutation_is_explicit(&self) -> bool {
+        self.declared_mutation_explicitly
     }
 
     fn input_required_isolation(&self) -> Option<ExecutionIsolation> {
@@ -200,6 +208,7 @@ mod tests {
             request.input_required_isolation(),
             Some(ExecutionIsolation::None)
         );
+        assert!(!request.declared_mutation_is_explicit());
     }
 
     #[cfg(unix)]
@@ -224,6 +233,7 @@ mod tests {
         let request = ExecRequest::new("echo", vec!["hi"], ".", ExecutionIsolation::None, ".")
             .with_declared_mutation(true);
         assert!(request.declared_mutation);
+        assert!(request.declared_mutation_is_explicit());
     }
 
     #[test]

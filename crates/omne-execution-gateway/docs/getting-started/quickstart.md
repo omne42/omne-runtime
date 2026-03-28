@@ -25,7 +25,8 @@ let req = ExecRequest::new(
     ".",
     ExecutionIsolation::None,
     ".",
-);
+)
+.with_declared_mutation(false);
 
 let execution = gateway.execute(&req);
 let status = execution.result?;
@@ -68,6 +69,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 
 `omne-execution` prints one JSON result object with canonical nested `request_resolution` and `event`
 objects and the exit outcome.
+The request adapter rejects unknown JSON fields and requires an explicit `declared_mutation` field.
 
 Example fragment:
 
@@ -110,9 +112,11 @@ Example fragment:
 ## 5. Common Failure Cases
 
 - `cwd` outside `workspace_root` -> denied.
+- missing, inaccessible, or non-directory `cwd` -> denied as `cwd_invalid`.
 - requested `best_effort` or `strict` on current hosts -> denied as `isolation_not_supported`.
 - requested `strict` above host support -> denied.
 - mutating request with non-allowlisted program -> denied (when policy enforcement is on).
+- request omitted `with_declared_mutation(...)` / `declared_mutation` -> denied as `mutation_declaration_required` (when policy enforcement is on).
 - shell-style launchers such as `sh`, `cmd`, and `pwsh` -> denied unless explicitly allowlisted.
 - `request_resolution` now reports the same validated canonical `cwd` / `workspace_root` view that appears in `event` when preflight reaches path validation.
 - `prepare_command` with a mismatched `Command` program/args -> denied.
