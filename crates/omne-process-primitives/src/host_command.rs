@@ -593,7 +593,6 @@ mod tests {
     use super::command_available_os;
     #[cfg(unix)]
     use super::ensure_sudo_target_is_available;
-    #[cfg(unix)]
     use super::resolve_env_program;
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
