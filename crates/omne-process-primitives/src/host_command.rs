@@ -144,19 +144,19 @@ impl fmt::Display for HostRecipeError {
             } => match execution {
                 HostCommandExecution::Direct => write!(
                     f,
-                    "run {} failed: status={} stderr={} stdout={}",
+                    "run {} failed: status={} stderr_bytes={} stdout_bytes={}",
                     program.to_string_lossy(),
                     output.status,
-                    String::from_utf8_lossy(&output.stderr),
-                    String::from_utf8_lossy(&output.stdout),
+                    output.stderr.len(),
+                    output.stdout.len(),
                 ),
                 HostCommandExecution::Sudo => write!(
                     f,
-                    "run sudo -n {} failed: status={} stderr={} stdout={}",
+                    "run sudo -n {} failed: status={} stderr_bytes={} stdout_bytes={}",
                     program.to_string_lossy(),
                     output.status,
-                    String::from_utf8_lossy(&output.stderr),
-                    String::from_utf8_lossy(&output.stdout),
+                    output.stderr.len(),
+                    output.stdout.len(),
                 ),
             },
         }
@@ -958,6 +958,7 @@ mod tests {
 
         let err = run_host_recipe(&HostRecipeRequest::new(command_path.as_os_str(), &args))
             .expect_err("recipe should fail");
+        let rendered = err.to_string();
         match err {
             HostRecipeError::NonZeroExit {
                 execution, output, ..
@@ -966,6 +967,10 @@ mod tests {
                 assert_eq!(output.status.code(), Some(7));
                 assert_eq!(String::from_utf8_lossy(&output.stdout), "stdout-message");
                 assert_eq!(String::from_utf8_lossy(&output.stderr), "stderr-message");
+                assert!(rendered.contains("stdout_bytes=14"));
+                assert!(rendered.contains("stderr_bytes=14"));
+                assert!(!rendered.contains("stdout-message"));
+                assert!(!rendered.contains("stderr-message"));
             }
             other => panic!("unexpected error: {other}"),
         }

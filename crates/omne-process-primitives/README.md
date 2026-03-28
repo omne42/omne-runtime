@@ -14,6 +14,7 @@ Low-level host-command and process-tree primitives shared across callers.
 - host command discovery, including `OsStr`-friendly probe/resolve helpers
 - host command execution with captured output
 - host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
+- non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
 - sudo-style escalation that applies explicit request env inside the elevated target command via `env -- KEY=VALUE ...`, instead of depending on host `sudoers` env propagation
 - fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved in the effective `PATH`
 - default sudo-mode selection for common system-package commands
@@ -27,7 +28,7 @@ Low-level host-command and process-tree primitives shared across callers.
 
 - product allowlists
 - timeout policy
-- environment filtering or lossy UTF-8 coercion policy
+- environment filtering, lossy UTF-8 coercion, or output-log leakage policy
 - sandbox selection
 
 ## Verification
