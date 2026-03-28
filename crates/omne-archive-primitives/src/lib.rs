@@ -12,7 +12,8 @@
 mod binary_archive;
 
 pub use binary_archive::{
-    ArchiveBinaryMatch, BinaryArchiveFormat, BinaryArchiveRequest, ExtractBinaryFromArchiveError,
-    ExtractedArchiveBinary, extract_binary_from_archive,
-    extract_binary_from_archive_reader_to_writer, is_binary_archive_asset_name,
+    ArchiveBinaryMatch, BinaryArchiveFormat, BinaryArchiveRequest,
+    DEFAULT_MAX_EXTRACTED_BINARY_BYTES, ExtractBinaryFromArchiveError, ExtractedArchiveBinary,
+    extract_binary_from_archive, extract_binary_from_archive_reader_to_writer,
+    is_binary_archive_asset_name,
 };

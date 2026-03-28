@@ -14,8 +14,8 @@ Reusable artifact download and install primitives shared by higher-level callers
 - ordered artifact download candidate execution
 - optional SHA-256 verification for downloaded artifacts
 - direct binary artifact atomic installation
-- binary-from-archive installation with a default extracted-byte budget
-- archive-tree staging and replace installation with default extracted-byte and entry-count budgets
+- binary-from-archive installation with the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget
+- archive-tree installation via `omne-fs-primitives` staged directory replacement plus exported extracted-byte and entry-count budgets
 - archive-tree link extraction that fails closed if a parent directory chain contains symlink ancestors
 - Unix zip symlink materialization and tar forward hard-link resolution inside the staged tree
 

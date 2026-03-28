@@ -5,11 +5,12 @@ use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::process;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use flate2::read::GzDecoder;
-use omne_fs_primitives::{AtomicWriteOptions, stage_file_atomically_with_name};
+use omne_fs_primitives::{
+    AtomicDirectoryOptions, AtomicWriteOptions, stage_directory_atomically,
+    stage_file_atomically_with_name,
+};
 use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 use tar::Archive as TarArchive;
 use xz2::read::XzDecoder;
@@ -20,8 +21,8 @@ use crate::artifact_download::{
     download_candidate_to_writer_with_options, failed_candidates_error,
 };
 
-const DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
-const DEFAULT_MAX_ARCHIVE_TREE_ENTRIES: u64 = 65_536;
+pub const DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_MAX_ARCHIVE_TREE_ENTRIES: u64 = 65_536;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ArchiveTreeInstallRequest<'a> {
@@ -146,25 +147,24 @@ fn install_archive_tree_from_reader_with_limits<R>(
 where
     R: Read + Seek,
 {
-    let staging_dir = create_archive_tree_staging_dir(destination)?;
+    let staged = stage_directory_atomically(destination, &archive_tree_stage_options())
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     let extract_result = if asset_name.ends_with(".zip") {
-        extract_zip_tree(reader, &staging_dir, limits)
+        extract_zip_tree(reader, staged.path(), limits)
     } else if asset_name.ends_with(".tar.gz") {
-        extract_tar_tree(GzDecoder::new(reader), &staging_dir, limits)
+        extract_tar_tree(GzDecoder::new(reader), staged.path(), limits)
     } else if asset_name.ends_with(".tar.xz") {
-        extract_tar_tree(XzDecoder::new(reader), &staging_dir, limits)
+        extract_tar_tree(XzDecoder::new(reader), staged.path(), limits)
     } else {
         Err(ArtifactInstallError::install(format!(
             "unsupported archive tree asset `{asset_name}`"
         )))
     };
 
-    if let Err(err) = extract_result {
-        remove_path_if_exists(&staging_dir);
-        return Err(err);
-    }
-
-    replace_destination_with_staged_tree(destination, &staging_dir)
+    extract_result?;
+    staged
+        .commit()
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))
 }
 
 fn extract_zip_tree<R>(
@@ -678,139 +678,17 @@ fn sanitize_archive_path(path: &Path) -> Result<PathBuf, ArtifactInstallError> {
     Ok(sanitized)
 }
 
-fn create_archive_tree_staging_dir(destination: &Path) -> Result<PathBuf, ArtifactInstallError> {
-    let parent = destination_parent(destination);
-    fs::create_dir_all(parent).map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    create_unique_sibling_dir(destination, "staging")
-}
-
-fn replace_destination_with_staged_tree(
-    destination: &Path,
-    staging_dir: &Path,
-) -> Result<(), ArtifactInstallError> {
-    let backup_path = if destination.exists() {
-        Some(move_existing_destination_aside(destination)?)
-    } else {
-        None
-    };
-
-    if let Err(err) = fs::rename(staging_dir, destination) {
-        let restore_error = backup_path.as_ref().and_then(|backup_path| {
-            fs::rename(backup_path, destination).err().map(|restore_err| {
-                format!(
-                    "restore existing archive tree destination `{}` from `{}` failed: {restore_err}",
-                    destination.display(),
-                    backup_path.display()
-                )
-            })
-        });
-        remove_path_if_exists(staging_dir);
-        let mut message = format!(
-            "replace archive tree destination `{}` failed: {err}",
-            destination.display()
-        );
-        if let Some(restore_error) = restore_error {
-            message.push_str("; ");
-            message.push_str(&restore_error);
-        }
-        return Err(ArtifactInstallError::install(message));
-    }
-
-    if let Some(backup_path) = backup_path {
-        remove_path_if_exists(&backup_path);
-    }
-    Ok(())
-}
-
-fn destination_parent(destination: &Path) -> &Path {
-    match destination.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    }
-}
-
-fn unique_sibling_path(destination: &Path, kind: &str) -> Result<PathBuf, ArtifactInstallError> {
-    let parent = destination_parent(destination);
-    let file_name = destination.file_name().ok_or_else(|| {
-        ArtifactInstallError::install(format!(
-            "archive tree destination `{}` must include a final path component",
-            destination.display()
-        ))
-    })?;
-    let file_name = file_name.to_string_lossy();
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    for attempt in 0..1024_u32 {
-        let candidate = parent.join(format!(
-            ".{file_name}.omne-artifact-install-{kind}-{}-{seed}-{attempt}",
-            process::id()
-        ));
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    Err(ArtifactInstallError::install(format!(
-        "cannot allocate {kind} path next to archive tree destination `{}`",
-        destination.display()
-    )))
-}
-
-fn create_unique_sibling_dir(
-    destination: &Path,
-    kind: &str,
-) -> Result<PathBuf, ArtifactInstallError> {
-    for _ in 0..1024_u32 {
-        let candidate = unique_sibling_path(destination, kind)?;
-        match fs::create_dir(&candidate) {
-            Ok(()) => return Ok(candidate),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(ArtifactInstallError::install(err.to_string())),
-        }
-    }
-    Err(ArtifactInstallError::install(format!(
-        "cannot allocate {kind} path next to archive tree destination `{}`",
-        destination.display()
-    )))
-}
-
-fn move_existing_destination_aside(destination: &Path) -> Result<PathBuf, ArtifactInstallError> {
-    for _ in 0..1024_u32 {
-        let backup_path = unique_sibling_path(destination, "backup")?;
-        match fs::rename(destination, &backup_path) {
-            Ok(()) => return Ok(backup_path),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => {
-                return Err(ArtifactInstallError::install(format!(
-                    "move existing archive tree destination `{}` aside failed: {err}",
-                    destination.display()
-                )));
-            }
-        }
-    }
-    Err(ArtifactInstallError::install(format!(
-        "cannot allocate backup path next to archive tree destination `{}`",
-        destination.display()
-    )))
-}
-
-fn remove_path_if_exists(path: &Path) {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return;
-    };
-    let result = if metadata.file_type().is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    };
-    let _ = result;
-}
-
 fn archive_download_stage_options() -> AtomicWriteOptions {
     AtomicWriteOptions {
         create_parent_directories: true,
         ..AtomicWriteOptions::default()
+    }
+}
+
+fn archive_tree_stage_options() -> AtomicDirectoryOptions {
+    AtomicDirectoryOptions {
+        overwrite_existing: true,
+        create_parent_directories: true,
     }
 }
 

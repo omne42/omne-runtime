@@ -10,7 +10,7 @@
 - no-follow 打开和 regular-file 校验。
 - symlink/reparse point 错误分类。
 - bounded read helper。
-- staged atomic write 与 advisory lock。
+- staged atomic file/directory replace 与 advisory lock。
 
 ## 不负责什么
 

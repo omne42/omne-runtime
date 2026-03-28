@@ -18,7 +18,7 @@
 ## Crates
 
 - `crates/omne-artifact-install-primitives`
-  - 制品下载、SHA 校验、binary/tree 安装原语。
+  - 制品下载、SHA 校验、binary 安装与 archive-tree 安装编排原语。
 - `crates/omne-archive-primitives`
   - 归档格式识别、条目遍历和目标二进制提取原语。
 - `crates/omne-execution-gateway`
@@ -26,7 +26,7 @@
 - `crates/omne-fs`
   - 文件系统策略层、高层操作和 CLI。
 - `crates/omne-fs-primitives`
-  - 低层文件系统原语，如 no-follow open、bounded read、atomic write。
+  - 低层文件系统原语，如 no-follow open、bounded read、atomic file/directory replace。
 - `crates/omne-host-info-primitives`
   - 宿主平台识别、target triple、home 目录和可执行后缀原语。
 - `crates/omne-integrity-primitives`
