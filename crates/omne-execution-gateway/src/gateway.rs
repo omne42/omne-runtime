@@ -1,6 +1,6 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Stdio};
 
 use crate::audit::{ExecDecision, ExecEvent, requested_policy_meta};
 use crate::audit_log::AuditLogger;
@@ -82,6 +82,7 @@ impl PreparedCommand {
     }
 
     pub fn spawn(mut self) -> ExecResult<std::process::Child> {
+        configure_noninteractive_stdio(&mut self.command);
         apply_prepared_request(&self.prepared, &mut self.command)
             .and_then(|_monitor| self.command.spawn().map_err(ExecError::Spawn))
     }
@@ -142,6 +143,7 @@ impl ExecGateway {
     pub fn execute(&self, request: &ExecRequest) -> ExecutionOutcome {
         let mut command = Command::new(&request.program);
         command.args(&request.args);
+        configure_noninteractive_stdio(&mut command);
 
         let (event, result) = match self.prepare_request(request) {
             Ok(prepared) => {
@@ -189,6 +191,7 @@ impl ExecGateway {
             Ok(prepared) => match validate_prepared_command_matches_request(request, &command) {
                 Ok(()) => {
                     let mut command = command;
+                    configure_noninteractive_stdio(&mut command);
                     command.current_dir(&prepared.resolved_paths.cwd.path);
                     let event = prepared.event.clone();
                     (event, Ok(PreparedCommand { command, prepared }))
@@ -491,6 +494,13 @@ fn apply_prepared_request(
     )
 }
 
+fn configure_noninteractive_stdio(command: &mut Command) {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+}
+
 fn validate_prepared_command_matches_request(
     request: &ExecRequest,
     command: &Command,
@@ -604,6 +614,10 @@ fn promote_success_result_with_audit_write<T>(
 mod tests {
     use std::ffi::OsString;
     use std::fs;
+    #[cfg(unix)]
+    use std::process::Stdio;
+    #[cfg(unix)]
+    use std::time::{Duration, Instant};
 
     use tempfile::tempdir;
 
@@ -1398,6 +1412,18 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn execute_status_detaches_stdio_from_open_parent_stdin() {
+        run_noninteractive_stdin_helper("execute");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_command_spawn_detaches_stdio_from_open_parent_stdin() {
+        run_noninteractive_stdin_helper("prepare");
+    }
+
     #[cfg(windows)]
     fn dummy_program() -> &'static str {
         "cmd"
@@ -1461,5 +1487,97 @@ mod tests {
 
     fn host_supported_test_isolation() -> ExecutionIsolation {
         ExecutionIsolation::None
+    }
+
+    #[cfg(unix)]
+    const NONINTERACTIVE_STDIN_HELPER_ENV: &str = "OMNE_EXEC_GATEWAY_NONINTERACTIVE_STDIN_HELPER";
+    #[cfg(unix)]
+    const NONINTERACTIVE_STDIN_MODE_ENV: &str = "OMNE_EXEC_GATEWAY_NONINTERACTIVE_STDIN_MODE";
+
+    #[cfg(unix)]
+    #[test]
+    fn noninteractive_stdin_helper() {
+        if std::env::var_os(NONINTERACTIVE_STDIN_HELPER_ENV).is_none() {
+            return;
+        }
+        let mode = std::env::var_os(NONINTERACTIVE_STDIN_MODE_ENV)
+            .expect("helper mode environment must be set");
+
+        let workspace = tempdir().expect("create temp workspace");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let request = ExecRequest::new(
+            "/bin/sh",
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        );
+
+        match mode.to_string_lossy().as_ref() {
+            "execute" => {
+                let status = gateway
+                    .execute_status(&request)
+                    .expect("execute should not inherit blocking stdin");
+                assert!(status.success());
+            }
+            "prepare" => {
+                let command = Command::new("/bin/sh");
+                let (_event, result) = gateway.prepare_command(&request, command);
+                let prepared = result.expect("prepare command");
+                let status = prepared
+                    .spawn()
+                    .expect("prepared command should spawn")
+                    .wait()
+                    .expect("wait for prepared command");
+                assert!(status.success());
+            }
+            other => panic!("unexpected helper mode: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn run_noninteractive_stdin_helper(mode: &str) {
+        let current_exe = std::env::current_exe().expect("current exe");
+        let mut child = Command::new(current_exe)
+            .arg("--exact")
+            .arg("gateway::tests::noninteractive_stdin_helper")
+            .arg("--nocapture")
+            .env(NONINTERACTIVE_STDIN_HELPER_ENV, "1")
+            .env(NONINTERACTIVE_STDIN_MODE_ENV, mode)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("spawn helper test process");
+        let _blocking_stdin = child.stdin.take().expect("helper stdin");
+        let status = wait_for_child_with_timeout(&mut child, Duration::from_secs(3));
+        assert!(
+            status.success(),
+            "helper process should exit successfully, got {status}"
+        );
+    }
+
+    #[cfg(unix)]
+    fn wait_for_child_with_timeout(
+        child: &mut std::process::Child,
+        timeout: Duration,
+    ) -> std::process::ExitStatus {
+        let start = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().expect("poll child status") {
+                return status;
+            }
+            if start.elapsed() >= timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("helper child did not exit before timeout");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
