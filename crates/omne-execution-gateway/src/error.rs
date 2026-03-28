@@ -17,6 +17,12 @@ pub enum ExecError {
     #[error("workspace root does not exist or is inaccessible: {path}")]
     WorkspaceRootInvalid { path: PathBuf },
 
+    #[error("explicit program paths must be absolute: {program}")]
+    RelativeProgramPath { program: String },
+
+    #[error("program path is invalid: {path} ({detail})")]
+    ProgramPathInvalid { path: PathBuf, detail: String },
+
     #[error("working directory is outside workspace root: cwd={cwd}, root={workspace_root}")]
     CwdOutsideWorkspace {
         cwd: PathBuf,

@@ -8,6 +8,8 @@
 
 - `ExecRequest`、`ExecEvent`、`ExecGateway`、`GatewayPolicy` 和能力报告模型。
 - `cwd`、`workspace_root`、隔离级别和 `policy_default` 来源一致性校验。
+- 请求里的 `program` 只能是 bare command name 或绝对路径；像 `./tool`、`bin/tool` 这类相对路径会 fail-closed 拒绝，避免执行语义依赖 gateway 进程自身的工作目录。
+- 对显式绝对 `program` 路径做 file identity 绑定，并在真正 spawn 前再次校验，避免 preflight 通过后被换文件或通过稳定别名漂移到别的可执行文件。
 - 对 `cwd` / `workspace_root` 做 canonical path + 目录 identity 绑定，并在真正 spawn 前重新校验。
 - 声明式变更命令门控，以及 allowlisted mutator、`declared_mutation` 和 opaque launcher 之间的一致性校验。
 - gateway 自己管理的 spawn 路径会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端。
@@ -21,6 +23,7 @@
 - 当请求的隔离级别高于宿主报告能力时，gateway 必须 fail-closed 拒绝，而不是回退到未隔离执行。
 - mutating allowlist 只授权显式程序路径；bare program name 因为无法绑定稳定可执行文件而 fail-closed 拒绝。
 - Windows 上命令路径和 workspace 边界比较按平台语义做大小写不敏感处理，不要求调用方传入与文件系统完全同大小写的字面量。
+- `GatewayPolicy::load_json()` 只接受 no-follow regular file 输入，不会把 symlink、目录或其他特殊文件当成可信策略文件读取。
 - 配置了 `audit_log_path` 时，gateway 会在 preflight 阶段创建缺失父目录并验证日志可追加；如果审计日志不可用，请求必须 fail-closed 拒绝，而不是在无审计记录下继续执行。
 - 如果 preflight 之后的最终审计写入失败，gateway 会把结果显式返回给调用方，而不是只在 stderr 打印失败后继续返回成功。
 
