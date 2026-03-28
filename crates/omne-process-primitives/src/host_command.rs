@@ -7,7 +7,8 @@ use std::thread;
 
 use crate::command_path::{
     is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
-    resolve_command_path_os, resolve_command_path_os_with_path_var,
+    resolve_available_command_path_os, resolve_command_path_os,
+    resolve_command_path_os_with_path_var,
 };
 
 const MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024 * 1024;
@@ -214,7 +215,7 @@ pub fn command_exists(command: &str) -> bool {
     command_exists_os(OsStr::new(command))
 }
 
-fn command_exists_os(command: &OsStr) -> bool {
+pub fn command_exists_os(command: &OsStr) -> bool {
     if is_explicit_command_path(command) {
         return is_spawnable_command_path(Path::new(command));
     }
@@ -226,11 +227,18 @@ pub fn command_path_exists(command: &Path) -> bool {
 }
 
 pub fn command_available(command: &str) -> bool {
-    let command = OsStr::new(command);
+    let command_os = OsStr::new(command);
+    if is_explicit_command_path(command_os) {
+        return is_regular_command_path(Path::new(command_os));
+    }
+    resolve_available_command_path(command).is_some()
+}
+
+pub fn command_available_os(command: &OsStr) -> bool {
     if is_explicit_command_path(command) {
         return is_regular_command_path(Path::new(command));
     }
-    resolve_available_command_path(command.to_string_lossy().as_ref()).is_some()
+    resolve_available_command_path_os(command).is_some()
 }
 
 pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoMode {
@@ -254,10 +262,7 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
             let mut cmd = Command::new(resolve_sudo_program(request.env));
             cmd.arg("-n");
             for (name, value) in request.env {
-                let mut assignment = name.clone();
-                assignment.push("=");
-                assignment.push(value);
-                cmd.arg(assignment);
+                cmd.arg(env_assignment(name, value));
             }
             cmd.arg(&program);
             cmd
@@ -462,6 +467,24 @@ fn explicit_system_command_path(path: &Path) -> bool {
     }
 }
 
+fn env_assignment(name: &OsStr, value: &OsStr) -> OsString {
+    let mut assignment = OsString::new();
+    assignment.push(name);
+    assignment.push(OsStr::new("="));
+    assignment.push(value);
+    assignment
+}
+
+#[cfg(windows)]
+fn is_path_env_name(name: &OsStr) -> bool {
+    name.to_string_lossy().eq_ignore_ascii_case("PATH")
+}
+
+#[cfg(not(windows))]
+fn is_path_env_name(name: &OsStr) -> bool {
+    name == OsStr::new("PATH")
+}
+
 fn resolve_sudo_program(env: &[(OsString, OsString)]) -> PathBuf {
     resolve_sudo_path(env).unwrap_or_else(|| PathBuf::from("sudo"))
 }
@@ -477,7 +500,7 @@ fn resolve_sudo_path(env: &[(OsString, OsString)]) -> Option<PathBuf> {
 fn effective_path_var(env: &[(OsString, OsString)]) -> Option<OsString> {
     env.iter()
         .rev()
-        .find_map(|(name, value)| (name == OsStr::new("PATH")).then(|| value.clone()))
+        .find_map(|(name, value)| is_path_env_name(name).then(|| value.clone()))
         .or_else(|| std::env::var_os("PATH"))
 }
 
@@ -540,6 +563,8 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     #[cfg(unix)]
     use std::io;
+    #[cfg(unix)]
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
     use std::path::{Path, PathBuf};
 
     #[cfg(unix)]
@@ -548,9 +573,9 @@ mod tests {
     use super::should_try_sudo_for_request_with_status;
     use super::{
         HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
-        HostRecipeError, HostRecipeRequest, build_command, command_available, command_exists,
-        command_path_exists, default_recipe_sudo_mode_for_program, run_host_command,
-        run_host_recipe, should_try_sudo_with_status,
+        HostRecipeError, HostRecipeRequest, build_command, command_available, command_available_os,
+        command_exists, command_path_exists, default_recipe_sudo_mode_for_program,
+        run_host_command, run_host_recipe, should_try_sudo_with_status,
     };
 
     #[test]
@@ -921,38 +946,63 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn direct_command_build_preserves_non_utf8_arguments_and_env_values() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let args = vec![OsString::from_vec(vec![0x66, 0x6f, 0x80])];
-        let env = vec![(
-            OsString::from("OMNE_TEST_VALUE"),
-            OsString::from_vec(vec![0x62, 0x61, 0x80]),
-        )];
+    fn build_command_preserves_non_utf8_arguments() {
+        let non_utf8_arg = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
+        let args = vec![non_utf8_arg.clone()];
         let request = HostCommandRequest {
             program: OsStr::new("echo"),
             args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let command = build_command(&request, HostCommandExecution::Direct);
+        let collected_args = command
+            .get_args()
+            .map(|arg| arg.to_os_string())
+            .collect::<Vec<_>>();
+        assert_eq!(collected_args, vec![non_utf8_arg]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_command_preserves_non_utf8_environment_values() {
+        let non_utf8_value = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
+        let env = vec![(OsString::from("OMNE_TEST_VALUE"), non_utf8_value.clone())];
+        let request = HostCommandRequest {
+            program: OsStr::new("echo"),
+            args: &[],
             env: &env,
             working_directory: None,
             sudo_mode: HostCommandSudoMode::Never,
         };
 
         let command = build_command(&request, HostCommandExecution::Direct);
-        let collected_args = command.get_args().map(OsString::from).collect::<Vec<_>>();
         let collected_env = command
             .get_envs()
             .map(|(name, value)| {
                 (
-                    OsString::from(name),
+                    name.to_os_string(),
                     value
-                        .map(OsString::from)
-                        .expect("explicit env value should exist"),
+                        .expect("explicit env value should exist")
+                        .to_os_string(),
                 )
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(collected_args, args);
-        assert_eq!(collected_env, env);
+        assert_eq!(
+            collected_env,
+            vec![(OsString::from("OMNE_TEST_VALUE"), non_utf8_value.clone())]
+        );
+
+        let sudo_command = build_command(&request, HostCommandExecution::Sudo);
+        let sudo_env_arg = sudo_command
+            .get_args()
+            .nth(1)
+            .expect("sudo should receive env assignment");
+        let expected_bytes = b"OMNE_TEST_VALUE=fo\x80";
+        assert_eq!(sudo_env_arg.as_bytes(), expected_bytes);
     }
 
     #[cfg(unix)]
@@ -971,6 +1021,7 @@ mod tests {
 
         let command_path_string = command_path.to_string_lossy().into_owned();
         assert!(command_available(&command_path_string));
+        assert!(command_available_os(command_path.as_os_str()));
         assert!(!command_path_exists(&command_path));
 
         let args = Vec::new();

@@ -11,10 +11,10 @@ Low-level host-command and process-tree primitives shared across callers.
 
 ## Scope
 
-- host command discovery
-- host command execution with captured output and `OsString`-native argv/env request boundaries
-- host recipe execution with `OsString` argv/env + cwd support and non-zero-exit errors
-- sudo-style escalation that forwards explicit request env as target command assignments without forcing UTF-8 conversion
+- host command discovery, including `OsStr`-friendly probe/resolve helpers
+- host command execution with captured output
+- host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
+- sudo-style escalation that forwards explicit request env as target command assignments
 - fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved in the effective `PATH`
 - default sudo-mode selection for common system-package commands
 - optional `sudo -n` probing on Unix
@@ -27,7 +27,7 @@ Low-level host-command and process-tree primitives shared across callers.
 
 - product allowlists
 - timeout policy
-- environment filtering policy
+- environment filtering or lossy UTF-8 coercion policy
 - sandbox selection
 
 ## Verification
