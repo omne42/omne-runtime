@@ -11,7 +11,7 @@
 - 对下载结果执行可选的 SHA-256 校验。
 - 把直接二进制资产原子安装到目标路径。
 - 从受支持的 archive 中提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束。
-- 把受支持的 archive 目录树解到 staging 目录，并在默认 extracted-byte / entry-count 预算内成功后替换目标目录。
+- 把受支持的 archive 目录树解到 `omne-fs-primitives` 提供的 staged 目录，并在默认 extracted-byte / entry-count 预算内成功后替换目标目录。
 - 对 archive tree 中会物化目录项的条目，要求落点父目录链必须是 staging 目录下的真实目录；命中 symlink 祖先时 fail-closed，不能借由已创建链接把后续 regular file 写出到 staging 目录之外。
 - 在 Unix 上把 zip symlink 条目按 symlink 语义物化；非 Unix 平台遇到 zip symlink 条目时 fail-closed。
 - 对 tar hard link 条目允许目标成员晚于 link 条目出现，只要最终目标仍解析到 staging 目录内的 regular file。
@@ -27,9 +27,9 @@
 
 - 依赖 `http-kit` 做受限响应体下载。
 - 依赖 `omne-integrity-primitives` 做 digest 校验。
-- 依赖 `omne-fs-primitives` 做 staged atomic file write。
+- 依赖 `omne-fs-primitives` 做 staged atomic file/directory replace。
 - 依赖 `omne-archive-primitives` 做 archive binary 提取。
-- 对 archive tree 安装，它自己负责 staging 目录和目标替换，因为这已经是 artifact 安装语义，不再属于纯 archive 读取原语。
+- 对 archive tree 安装，它负责 archive 语义、预算和 link 校验；目录 staging/replace 原语下沉到 `omne-fs-primitives`。
 
 ## 调用方边界
 

@@ -14,7 +14,7 @@
 - `src/read_limited.rs`
   - bounded read 与 UTF-8 文本读取。
 - `src/atomic_write.rs`
-  - staged atomic file write 与替换逻辑。
+  - staged atomic file/directory write、replace 与替换逻辑。
 - `src/advisory_lock.rs`
   - advisory file lock。
 - `src/path_identity.rs`

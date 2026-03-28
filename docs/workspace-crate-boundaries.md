@@ -98,11 +98,11 @@ crate，不是新的兜底桶。
 
 | Crate | 负责什么 | 不负责什么 |
 | --- | --- | --- |
-| `omne-artifact-install-primitives` | 无产品策略的 artifact 安装管道：下载候选执行、可选 SHA-256 校验、direct binary 原子落盘、binary-from-archive 安装、archive-tree staging+replace | GitHub release 元数据、候选顺序策略、产品目录布局、领域错误码、CLI |
-| `omne-archive-primitives` | 无策略的 archive/compression 能力：`.tar.gz`、`.tar.xz`、`.zip` 识别，归档条目遍历，按二进制名/工具名/hint 匹配目标条目，提取目标二进制字节 | 文件写入、权限设置、原子替换、下载、来源校验、领域错误映射、CLI |
+| `omne-artifact-install-primitives` | 无产品策略的 artifact 安装管道：下载候选执行、可选 SHA-256 校验、direct binary 原子落盘、binary-from-archive 安装、archive-tree 预算/link 校验与 staged directory replace 编排 | GitHub release 元数据、候选顺序策略、产品目录布局、领域错误码、CLI |
+| `omne-archive-primitives` | 无策略的 archive/compression 能力：`.tar.gz`、`.tar.xz`、`.zip` 识别，归档条目遍历，按精确 hint 或约定布局匹配目标二进制，提取目标二进制字节 | 文件写入、权限设置、原子替换、下载、来源校验、领域错误映射、CLI |
 | `omne-execution-gateway` | 执行请求模型、隔离级别校验、`policy_default` 来源校验、执行时的 `workspace/cwd` 校验、声明式变更命令门控、sandbox 应用、审计事件与日志 | 文件系统操作策略、通用文件 API、`omne-fs` CLI 语义解析、超时/取消策略、stdout/stderr 保密策略、通用进程树清理原语 |
 | `omne-fs` | 文件系统 `SandboxPolicy`、root/path/permission/limit/secret 语义、redaction、高层文件操作、CLI、policy I/O | 描述符级 no-follow open、通用 bounded-read 原语、进程清理、OS sandbox |
-| `omne-fs-primitives` | 无策略的文件系统原语：root materialization、capability 风格目录访问、no-follow open、symlink/reparse 分类、bounded read、staged atomic write、advisory lock | `SandboxPolicy`、alias-root 语义、权限决策、secret 处理、redaction、CLI |
+| `omne-fs-primitives` | 无策略的文件系统原语：root materialization、capability 风格目录访问、no-follow open、symlink/reparse 分类、bounded read、staged atomic file/directory replace、advisory lock | `SandboxPolicy`、alias-root 语义、权限决策、secret 处理、redaction、CLI |
 | `omne-host-info-primitives` | 无策略的宿主信息原语：宿主 OS/arch 识别、canonical target triple 映射、target override 归一化、home 目录解析、目标可执行后缀推断 | `OMNE_DATA_DIR`/产品目录策略、包管理器适配、安装编排、CLI |
 | `omne-integrity-primitives` | 无策略的完整性原语：`sha256:<hex>` 解析、原始 hex 输入解析、内容摘要计算与校验错误建模 | HTTP 下载、release 元数据、来源选择、安装编排、CLI |
 | `omne-process-primitives` | 无策略的宿主机命令与进程原语：命令探测、带输出捕获的命令执行、host recipe 执行、默认 `sudo` 模式推断、Unix `sudo -n` 试探、process group、Linux `/proc` 身份校验、Windows Job Object、树形终止 helper | 命令 allowlist、环境变量过滤、超时/取消策略、领域错误映射、sandbox 选择 |
@@ -121,7 +121,7 @@ crate，不是新的兜底桶。
 - 对下载结果执行可选的 SHA-256 校验
 - 把 direct binary asset 原子安装到目标路径
 - 从受支持的 archive 中提取目标二进制并安装
-- 把 archive tree 解到 staging 目录并在成功后替换目标目录
+- 把 archive tree 解到 `omne-fs-primitives` 提供的 staged 目录并在成功后替换目标目录
 
 这些职责可以从下面这些文件直接看到：
 
@@ -152,7 +152,7 @@ crate，不是新的兜底桶。
 
 - 识别受支持的二进制归档格式，例如 `.tar.gz`、`.tar.xz`、`.zip`
 - 遍历归档条目并统一归一化条目路径
-- 按二进制名、工具名和 `archive_binary` hint 查找目标条目
+- 按精确 `archive_binary` hint 或约定布局查找目标条目；`tool_name` 只用于少数已知 archive 布局特例
 - 读取并返回匹配到的目标二进制字节
 
 这些职责可以从下面这些文件直接看到：

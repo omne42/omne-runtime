@@ -18,7 +18,8 @@ mod read_limited;
 
 pub use advisory_lock::{AdvisoryLockGuard, lock_advisory_file_in_ambient_root};
 pub use atomic_write::{
-    AtomicWriteError, AtomicWriteOptions, StagedAtomicFile, stage_file_atomically,
+    AtomicDirectoryError, AtomicDirectoryOptions, AtomicWriteError, AtomicWriteOptions,
+    StagedAtomicDirectory, StagedAtomicFile, stage_directory_atomically, stage_file_atomically,
     stage_file_atomically_with_name, write_file_atomically, write_file_atomically_from_reader,
 };
 pub const DEFAULT_TEXT_FILE_BYTES_LIMIT: usize = 1024 * 1024;

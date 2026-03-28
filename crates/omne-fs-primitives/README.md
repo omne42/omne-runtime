@@ -14,7 +14,7 @@ Low-level filesystem primitives shared by higher-level callers.
 - capability-style root opening and directory traversal
 - no-follow file opening and symlink/reparse classification
 - bounded reads for text and byte streams
-- staged atomic writes and advisory locking
+- staged atomic file/directory replacement and advisory locking
 
 ## Non-Goals
 

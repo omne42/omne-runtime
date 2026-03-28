@@ -24,11 +24,33 @@ impl Default for AtomicWriteOptions {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AtomicDirectoryOptions {
+    pub overwrite_existing: bool,
+    pub create_parent_directories: bool,
+}
+
+impl Default for AtomicDirectoryOptions {
+    fn default() -> Self {
+        Self {
+            overwrite_existing: true,
+            create_parent_directories: true,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct StagedAtomicFile {
     destination: PathBuf,
     options: AtomicWriteOptions,
     staged: tempfile::NamedTempFile,
+}
+
+#[derive(Debug)]
+pub struct StagedAtomicDirectory {
+    destination: PathBuf,
+    options: AtomicDirectoryOptions,
+    staged: tempfile::TempDir,
 }
 
 #[derive(Debug)]
@@ -46,7 +68,40 @@ pub enum AtomicWriteError {
     Validation(String),
 }
 
+#[derive(Debug)]
+pub enum AtomicDirectoryError {
+    IoPath {
+        op: &'static str,
+        path: PathBuf,
+        source: io::Error,
+    },
+    CommittedButUnsynced {
+        op: &'static str,
+        path: PathBuf,
+        source: io::Error,
+    },
+    Validation(String),
+}
+
 impl AtomicWriteError {
+    fn io_path(op: &'static str, path: &Path, source: io::Error) -> Self {
+        Self::IoPath {
+            op,
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+
+    fn committed_but_unsynced(op: &'static str, path: &Path, source: io::Error) -> Self {
+        Self::CommittedButUnsynced {
+            op,
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+}
+
+impl AtomicDirectoryError {
     fn io_path(op: &'static str, path: &Path, source: io::Error) -> Self {
         Self::IoPath {
             op,
@@ -80,7 +135,32 @@ impl fmt::Display for AtomicWriteError {
     }
 }
 
+impl fmt::Display for AtomicDirectoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IoPath { op, path, source } => {
+                write!(f, "io error during {op} ({}): {source}", path.display())
+            }
+            Self::CommittedButUnsynced { op, path, source } => write!(
+                f,
+                "filesystem update committed but parent sync failed during {op} ({}): {source}",
+                path.display()
+            ),
+            Self::Validation(message) => write!(f, "{message}"),
+        }
+    }
+}
+
 impl std::error::Error for AtomicWriteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::IoPath { source, .. } | Self::CommittedButUnsynced { source, .. } => Some(source),
+            Self::Validation(_) => None,
+        }
+    }
+}
+
+impl std::error::Error for AtomicDirectoryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::IoPath { source, .. } | Self::CommittedButUnsynced { source, .. } => Some(source),
@@ -154,6 +234,35 @@ pub fn stage_file_atomically_with_name(
     })
 }
 
+pub fn stage_directory_atomically(
+    destination: &Path,
+    options: &AtomicDirectoryOptions,
+) -> Result<StagedAtomicDirectory, AtomicDirectoryError> {
+    if let Some(parent) = destination.parent()
+        && options.create_parent_directories
+    {
+        fs::create_dir_all(parent)
+            .map_err(|err| AtomicDirectoryError::io_path("create_dir_all", parent, err))?;
+    }
+
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "tree".to_string());
+    let staged = tempfile::Builder::new()
+        .prefix(&format!(".{file_name}.tmpdir-"))
+        .tempdir_in(parent)
+        .map_err(|err| AtomicDirectoryError::io_path("create_tempdir", destination, err))?;
+
+    Ok(StagedAtomicDirectory {
+        destination: destination.to_path_buf(),
+        options: options.clone(),
+        staged,
+    })
+}
+
 fn normalize_staged_file_name(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -207,6 +316,17 @@ impl StagedAtomicFile {
     }
 }
 
+impl StagedAtomicDirectory {
+    pub fn path(&self) -> &Path {
+        self.staged.path()
+    }
+
+    pub fn commit(self) -> Result<(), AtomicDirectoryError> {
+        validate_staged_directory(self.staged.path())?;
+        commit_replace_directory(self.staged, &self.destination, &self.options)
+    }
+}
+
 fn validate_staged_file(
     staged_path: &Path,
     options: &AtomicWriteOptions,
@@ -238,6 +358,18 @@ fn validate_staged_file(
     Ok(())
 }
 
+fn validate_staged_directory(staged_path: &Path) -> Result<(), AtomicDirectoryError> {
+    let metadata = fs::metadata(staged_path)
+        .map_err(|err| AtomicDirectoryError::io_path("metadata", staged_path, err))?;
+    if metadata.is_dir() {
+        return Ok(());
+    }
+    Err(AtomicDirectoryError::Validation(format!(
+        "staged directory `{}` is not a directory",
+        staged_path.display()
+    )))
+}
+
 fn commit_replace(
     staged_path: tempfile::TempPath,
     destination: &Path,
@@ -254,6 +386,92 @@ fn commit_replace(
     }
     sync_parent_directory(destination)
         .map_err(|err| AtomicWriteError::committed_but_unsynced("sync_parent", destination, err))
+}
+
+fn commit_replace_directory(
+    staged_dir: tempfile::TempDir,
+    destination: &Path,
+    options: &AtomicDirectoryOptions,
+) -> Result<(), AtomicDirectoryError> {
+    let staged_path = staged_dir.keep();
+    let mut backup_root = None;
+    let mut backup_path = None;
+
+    if options.overwrite_existing {
+        let destination_metadata = match fs::symlink_metadata(destination) {
+            Ok(metadata) => Some(metadata),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => {
+                remove_path_if_exists(&staged_path);
+                return Err(AtomicDirectoryError::io_path(
+                    "symlink_metadata",
+                    destination,
+                    err,
+                ));
+            }
+        };
+
+        if let Some(metadata) = destination_metadata {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                remove_path_if_exists(&staged_path);
+                return Err(AtomicDirectoryError::Validation(format!(
+                    "directory destination `{}` must be an existing directory or absent",
+                    destination.display()
+                )));
+            }
+            let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+            let holder = tempfile::Builder::new()
+                .prefix(".directory-backup-")
+                .tempdir_in(parent)
+                .map_err(|err| {
+                    AtomicDirectoryError::io_path("create_backup_dir", destination, err)
+                })?;
+            let path = holder.path().join("previous");
+            fs::rename(destination, &path).map_err(|err| {
+                AtomicDirectoryError::io_path("rename_existing", destination, err)
+            })?;
+            backup_path = Some(path);
+            backup_root = Some(holder);
+        }
+    }
+
+    if let Err(err) = fs::rename(&staged_path, destination) {
+        let restore_error = match backup_path.as_ref() {
+            Some(path) => fs::rename(path, destination).err(),
+            None => None,
+        };
+        remove_path_if_exists(&staged_path);
+        let mut error = AtomicDirectoryError::io_path("rename_staged", destination, err);
+        if let Some(restore_error) = restore_error {
+            error = AtomicDirectoryError::Validation(format!(
+                "{error}; restore existing directory `{}` failed: {restore_error}",
+                destination.display()
+            ));
+        }
+        return Err(error);
+    }
+
+    if let Some(holder) = backup_root {
+        holder
+            .close()
+            .map_err(|err| AtomicDirectoryError::io_path("remove_backup_dir", destination, err))?;
+    }
+
+    sync_parent_directory(destination).map_err(|err| {
+        AtomicDirectoryError::committed_but_unsynced("sync_parent", destination, err)
+    })
+}
+
+fn remove_path_if_exists(path: &Path) {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    let result = if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
+    let _ = result;
 }
 
 #[cfg(all(not(windows), unix))]
@@ -278,8 +496,8 @@ mod tests {
     use std::io::{Read, Seek, SeekFrom, Write};
 
     use super::{
-        AtomicWriteError, AtomicWriteOptions, stage_file_atomically,
-        stage_file_atomically_with_name, write_file_atomically,
+        AtomicDirectoryOptions, AtomicWriteError, AtomicWriteOptions, stage_directory_atomically,
+        stage_file_atomically, stage_file_atomically_with_name, write_file_atomically,
     };
 
     #[test]
@@ -397,5 +615,41 @@ mod tests {
             .permissions()
             .mode();
         assert_ne!(mode & 0o111, 0);
+    }
+
+    #[test]
+    fn staged_atomic_directory_replaces_existing_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tree");
+        std::fs::create_dir_all(&destination).expect("mkdir destination");
+        std::fs::write(destination.join("old.txt"), b"old").expect("seed file");
+
+        let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+            .expect("stage directory");
+        std::fs::create_dir_all(staged.path().join("bin")).expect("mkdir staged");
+        std::fs::write(staged.path().join("bin/tool"), b"new").expect("write staged file");
+
+        staged.commit().expect("commit directory");
+
+        assert!(!destination.join("old.txt").exists());
+        assert_eq!(
+            std::fs::read(destination.join("bin/tool")).expect("read staged file"),
+            b"new"
+        );
+    }
+
+    #[test]
+    fn staged_atomic_directory_rejects_non_directory_destination() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tree");
+        std::fs::write(&destination, b"not a dir").expect("seed file");
+
+        let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+            .expect("stage directory");
+
+        let err = staged
+            .commit()
+            .expect_err("non-directory destination must fail");
+        assert!(matches!(err, super::AtomicDirectoryError::Validation(_)));
     }
 }

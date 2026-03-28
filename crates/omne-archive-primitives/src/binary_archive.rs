@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
 
-const DEFAULT_MAX_EXTRACTED_BINARY_BYTES: u64 = 256 * 1024 * 1024;
+pub const DEFAULT_MAX_EXTRACTED_BINARY_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryArchiveFormat {
@@ -45,7 +45,11 @@ pub fn is_binary_archive_asset_name(asset_name: &str) -> bool {
 #[derive(Debug, Clone, Copy)]
 pub struct BinaryArchiveRequest<'a> {
     pub binary_name: &'a str,
+    /// Archive-format-specific selector for known layout quirks.
+    ///
+    /// Current fallback matching only uses this for cases like Git-for-Windows ZIP layouts.
     pub tool_name: &'a str,
+    /// Exact archive-relative path to the desired binary, normalized with `/`.
     pub archive_binary_hint: Option<&'a str>,
 }
 
