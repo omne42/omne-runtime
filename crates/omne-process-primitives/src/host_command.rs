@@ -234,7 +234,7 @@ pub fn command_available(command: &str) -> bool {
 }
 
 pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoMode {
-    let Some(program) = program.to_str() else {
+    let Some(program) = sudo_mode_program_name(program) else {
         return HostCommandSudoMode::Never;
     };
     match program {
@@ -394,7 +394,7 @@ fn should_try_sudo_with_status(
     if !process_is_non_root || !sudo_available {
         return false;
     }
-    !has_path_separator(program)
+    sudo_eligible_program(program)
 }
 
 #[cfg(unix)]
@@ -412,6 +412,51 @@ fn has_path_separator(command: &OsStr) -> bool {
         .to_string_lossy()
         .chars()
         .any(|ch| ch == '/' || ch == '\\')
+}
+
+fn sudo_eligible_program(program: &OsStr) -> bool {
+    if !is_explicit_command_path(program) {
+        return true;
+    }
+
+    explicit_system_command_path(Path::new(program))
+}
+
+fn sudo_mode_program_name(program: &OsStr) -> Option<&str> {
+    if !is_explicit_command_path(program) {
+        return program.to_str();
+    }
+
+    let path = Path::new(program);
+    explicit_system_command_path(path)
+        .then_some(path.file_name()?.to_str())
+        .flatten()
+}
+
+fn explicit_system_command_path(path: &Path) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        [
+            "/usr/bin",
+            "/usr/sbin",
+            "/bin",
+            "/sbin",
+            "/usr/local/bin",
+            "/opt/homebrew/bin",
+            "/opt/local/bin",
+        ]
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+    }
+
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 fn resolve_sudo_program(env: &[(String, String)]) -> PathBuf {
@@ -548,8 +593,15 @@ mod tests {
             true,
             true,
         ));
-        assert!(!should_try_sudo_with_status(
+        #[cfg(unix)]
+        assert!(should_try_sudo_with_status(
             OsStr::new("/usr/bin/apt-get"),
+            HostCommandSudoMode::IfNonRootSystemCommand,
+            true,
+            true,
+        ));
+        assert!(!should_try_sudo_with_status(
+            OsStr::new("./apt-get"),
             HostCommandSudoMode::IfNonRootSystemCommand,
             true,
             true,
@@ -688,6 +740,11 @@ mod tests {
             default_recipe_sudo_mode_for_program(OsStr::new("apt-get")),
             HostCommandSudoMode::IfNonRootSystemCommand
         );
+        #[cfg(unix)]
+        assert_eq!(
+            default_recipe_sudo_mode_for_program(OsStr::new("/usr/bin/apt-get")),
+            HostCommandSudoMode::IfNonRootSystemCommand
+        );
         assert_eq!(
             default_recipe_sudo_mode_for_program(OsStr::new("dnf")),
             HostCommandSudoMode::IfNonRootSystemCommand
@@ -698,6 +755,10 @@ mod tests {
         );
         assert_eq!(
             default_recipe_sudo_mode_for_program(OsStr::new("cargo")),
+            HostCommandSudoMode::Never
+        );
+        assert_eq!(
+            default_recipe_sudo_mode_for_program(OsStr::new("./apt-get")),
             HostCommandSudoMode::Never
         );
     }

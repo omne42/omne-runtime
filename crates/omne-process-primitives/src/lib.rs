@@ -11,8 +11,9 @@
 //!
 //! Unix uses per-child process groups. Cleanup capture fails closed unless the spawned child is
 //! the leader of its own dedicated process group, so callers cannot accidentally arm cleanup
-//! against the parent's process group by skipping setup. Once the original leader exits, Unix
-//! cleanup also fails closed instead of trusting a potentially reused PGID.
+//! against the parent's process group by skipping setup. Linux and other Unix targets both stop
+//! before `killpg` once the original leader identity can no longer be revalidated, so cleanup does
+//! not trust a potentially reused PGID.
 //!
 //! Windows prefers Job Objects. When the current process cannot attach the child to a kill-on-close
 //! job, cleanup falls back to best-effort tree cleanup rooted at the captured child PID:
@@ -188,23 +189,41 @@ fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
 
 #[cfg(target_os = "linux")]
 fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
-    should_kill_linux_process_group_with(identity, read_linux_process_identity(identity.leader_pid))
+    should_kill_linux_process_group_with_group_probe(
+        identity,
+        read_linux_process_identity(identity.leader_pid),
+        || linux_process_group_exists(identity.process_group_id),
+    )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 fn should_kill_linux_process_group_with(
     identity: UnixProcessGroupIdentity,
     current: io::Result<LinuxProcessIdentity>,
 ) -> bool {
+    should_kill_linux_process_group_with_group_probe(identity, current, || {
+        linux_process_group_exists(identity.process_group_id)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn should_kill_linux_process_group_with_group_probe<F>(
+    identity: UnixProcessGroupIdentity,
+    current: io::Result<LinuxProcessIdentity>,
+    group_exists: F,
+) -> bool
+where
+    F: FnOnce() -> bool,
+{
     match current {
-        Ok(current) => {
-            identity.leader_start_ticks.is_some_and(|start_ticks| {
-                current.start_ticks == start_ticks
-                    && current.process_group_id == identity.process_group_id.as_raw_pid()
-            }) || linux_process_group_exists(identity.process_group_id)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            linux_process_group_exists(identity.process_group_id)
+        Ok(current) => identity.leader_start_ticks.is_some_and(|start_ticks| {
+            current.start_ticks == start_ticks
+                && current.process_group_id == identity.process_group_id.as_raw_pid()
+        }),
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound && identity.leader_start_ticks.is_none() =>
+        {
+            group_exists()
         }
         Err(_) => false,
     }
@@ -556,7 +575,7 @@ mod tests {
     use super::{
         CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
         configure_command_for_process_tree, ensure_unix_process_group_is_dedicated,
-        should_kill_linux_process_group_with,
+        should_kill_linux_process_group_with, should_kill_linux_process_group_with_group_probe,
     };
     use rustix::process::Pid;
     use std::io;
@@ -592,6 +611,39 @@ mod tests {
         assert!(!should_kill_linux_process_group_with(
             identity,
             Err(io::ErrorKind::NotFound.into())
+        ));
+    }
+
+    #[test]
+    fn orphaned_group_is_killed_when_leader_exited_before_capture_completed() {
+        let identity = UnixProcessGroupIdentity {
+            leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
+            process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
+            leader_start_ticks: None,
+        };
+
+        assert!(should_kill_linux_process_group_with_group_probe(
+            identity,
+            Err(io::ErrorKind::NotFound.into()),
+            || true,
+        ));
+    }
+
+    #[test]
+    fn reused_leader_pid_still_fails_closed_when_capture_lost_start_ticks() {
+        let identity = UnixProcessGroupIdentity {
+            leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
+            process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
+            leader_start_ticks: None,
+        };
+
+        assert!(!should_kill_linux_process_group_with_group_probe(
+            identity,
+            Ok(LinuxProcessIdentity {
+                process_group_id: 31337,
+                start_ticks: 22,
+            }),
+            || true,
         ));
     }
 

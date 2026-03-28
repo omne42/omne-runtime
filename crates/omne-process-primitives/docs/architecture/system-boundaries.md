@@ -11,13 +11,14 @@
 - 当命中 `sudo` 路径时，把调用方显式提供的环境变量作为目标命令赋值参数继续传给目标命令，而不是只注入到 `sudo` 自身进程环境。
 - `sudo` 可用性判定和 `sudo` 可执行路径选择遵循同一份有效 `PATH`（优先采用调用方在请求里显式覆盖的 `PATH`）。
 - 对需要走 `sudo` 的 bare command，如果目标命令在有效 `PATH` 中不存在，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
+- 对 `/usr/bin/apt-get` 这类显式系统路径，仍保留 `IfNonRootSystemCommand` 语义；相对路径或工作目录下的同名命令不会被误判成系统命令。
 - 运行 host recipe，并把非零退出统一建模成结构化错误。
 - 为常见系统包命令提供默认 `sudo` 模式选择。
 - Unix 下对 bare system command 做 `sudo -n` 试探。
 - 配置子进程以支持进程树清理；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
 - 捕获进程树清理标识并执行 best-effort 终止。
 - Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 descendant sweep。
-- 在 Linux 上，当原始 leader 已退出但原始 process-group 仍存在时，继续对 orphan process-group 做 best-effort 清理；其他 Unix 平台在这个场景下仍然 fail-closed，避免仅凭复用 PGID 误杀无关进程。
+- Unix 上一旦无法重新验证原始 leader 身份，默认停止继续对该 process-group 做 `killpg`；但 Linux 如果在 cleanup capture 阶段就已经丢失 leader 身份，仍会按原 PGID 清理遗留 orphan descendants，同时继续对 leader PID 复用 fail closed。
 
 ## 不负责什么
 
