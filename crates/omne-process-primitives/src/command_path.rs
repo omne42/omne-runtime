@@ -5,7 +5,7 @@ pub fn resolve_command_path(command: &str) -> Option<PathBuf> {
     resolve_command_path_os(OsStr::new(command))
 }
 
-pub(crate) fn resolve_command_path_os(command: &OsStr) -> Option<PathBuf> {
+pub fn resolve_command_path_os(command: &OsStr) -> Option<PathBuf> {
     resolve_command_path_os_with_path_var(command, std::env::var_os("PATH"))
 }
 
@@ -23,13 +23,21 @@ pub(crate) fn resolve_command_path_os_with_path_var(
 }
 
 pub fn resolve_command_path_or_standard_location(command: &str) -> Option<PathBuf> {
-    resolve_command_path(command).or_else(|| {
+    resolve_command_path_or_standard_location_os(OsStr::new(command))
+}
+
+pub fn resolve_command_path_or_standard_location_os(command: &OsStr) -> Option<PathBuf> {
+    resolve_command_path_os(command).or_else(|| {
         resolve_command_path_from_standard_locations(command, is_spawnable_command_path)
     })
 }
 
 pub(crate) fn resolve_available_command_path(command: &str) -> Option<PathBuf> {
-    resolve_available_command_path_with_path_var(OsStr::new(command), std::env::var_os("PATH"))
+    resolve_available_command_path_os(OsStr::new(command))
+}
+
+pub(crate) fn resolve_available_command_path_os(command: &OsStr) -> Option<PathBuf> {
+    resolve_available_command_path_with_path_var(command, std::env::var_os("PATH"))
 }
 
 fn resolve_available_command_path_with_path_var(
@@ -66,11 +74,15 @@ pub(crate) fn is_regular_command_path(path: &Path) -> bool {
     path.is_file()
 }
 
-fn resolve_command_path_from_standard_locations<F>(command: &str, predicate: F) -> Option<PathBuf>
+fn resolve_command_path_from_standard_locations<F>(command: &OsStr, predicate: F) -> Option<PathBuf>
 where
     F: Fn(&Path) -> bool + Copy,
 {
-    if command.contains('/') || command.contains('\\') {
+    if command
+        .to_string_lossy()
+        .chars()
+        .any(|ch| ch == '/' || ch == '\\')
+    {
         return None;
     }
 
@@ -86,7 +98,7 @@ where
     let candidate_dirs: [&str; 0] = [];
 
     for dir in candidate_dirs {
-        if let Some(path) = resolve_command_in_dir(OsStr::new(command), Path::new(dir), predicate) {
+        if let Some(path) = resolve_command_in_dir(command, Path::new(dir), predicate) {
             return Some(path);
         }
     }
