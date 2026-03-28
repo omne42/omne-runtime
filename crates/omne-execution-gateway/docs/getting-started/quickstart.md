@@ -76,8 +76,8 @@ Example fragment:
   "request_resolution": {
     "program": "echo",
     "args": ["hello-from-omne-execution"],
-    "cwd": ".",
-    "workspace_root": ".",
+    "cwd": "/abs/workspace",
+    "workspace_root": "/abs/workspace",
     "declared_mutation": false,
     "requested_isolation": "none",
     "requested_isolation_source": "request",
@@ -114,4 +114,5 @@ Example fragment:
 - requested `strict` above host support -> denied.
 - mutating request with non-allowlisted program -> denied (when policy enforcement is on).
 - shell-style launchers such as `sh`, `cmd`, and `pwsh` -> denied unless explicitly allowlisted.
+- `request_resolution` now reports the same validated canonical `cwd` / `workspace_root` view that appears in `event` when preflight reaches path validation.
 - `prepare_command` with a mismatched `Command` program/args -> denied.

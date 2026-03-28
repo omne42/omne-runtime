@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use crate::audit::ExecEvent;
 use policy_meta::{ExecutionIsolation, PolicyMetaV1};
 use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
@@ -99,15 +100,46 @@ pub struct RequestResolution {
 }
 
 impl RequestResolution {
+    #[cfg(test)]
     pub(crate) fn from_request(
         request: &ExecRequest,
         policy_default_isolation: ExecutionIsolation,
     ) -> Self {
+        Self::from_effective_fields(
+            request,
+            request.program.clone(),
+            request.cwd.clone(),
+            request.workspace_root.clone(),
+            policy_default_isolation,
+        )
+    }
+
+    pub(crate) fn from_event(
+        request: &ExecRequest,
+        event: &ExecEvent,
+        policy_default_isolation: ExecutionIsolation,
+    ) -> Self {
+        Self::from_effective_fields(
+            request,
+            event.program.clone(),
+            event.cwd.clone(),
+            event.workspace_root.clone(),
+            policy_default_isolation,
+        )
+    }
+
+    fn from_effective_fields(
+        request: &ExecRequest,
+        program: OsString,
+        cwd: PathBuf,
+        workspace_root: PathBuf,
+        policy_default_isolation: ExecutionIsolation,
+    ) -> Self {
         Self {
-            program: request.program.clone(),
+            program,
             args: request.args.clone(),
-            cwd: request.cwd.clone(),
-            workspace_root: request.workspace_root.clone(),
+            cwd,
+            workspace_root,
             declared_mutation: request.declared_mutation,
             input_required_isolation: request.input_required_isolation(),
             requested_isolation: request.required_isolation,
@@ -140,6 +172,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::audit::{ExecDecision, requested_policy_meta};
+
     use super::*;
 
     #[test]
@@ -255,5 +289,37 @@ mod tests {
         assert_eq!(value["program"], "echo");
         assert_eq!(value["args"], serde_json::json!(["hello"]));
         assert_eq!(value["input_required_isolation"], "best_effort");
+    }
+
+    #[test]
+    fn request_resolution_from_event_uses_effective_paths() {
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            ".",
+            ExecutionIsolation::BestEffort,
+            ".",
+        );
+        let event = ExecEvent {
+            decision: ExecDecision::Run,
+            requested_isolation: ExecutionIsolation::BestEffort,
+            requested_policy_meta: requested_policy_meta(ExecutionIsolation::BestEffort),
+            supported_isolation: ExecutionIsolation::BestEffort,
+            program: OsString::from("echo"),
+            cwd: PathBuf::from("/canonical/workspace"),
+            workspace_root: PathBuf::from("/canonical/workspace"),
+            declared_mutation: false,
+            reason: None,
+            sandbox_runtime: None,
+        };
+
+        let resolution = RequestResolution::from_event(&request, &event, ExecutionIsolation::None);
+
+        assert_eq!(resolution.cwd, PathBuf::from("/canonical/workspace"));
+        assert_eq!(
+            resolution.workspace_root,
+            PathBuf::from("/canonical/workspace")
+        );
+        assert_eq!(resolution.program, OsString::from("echo"));
     }
 }

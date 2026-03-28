@@ -40,6 +40,8 @@ When `program` matches `mutating_program_allowlist`, the gateway requires
 `declared_mutation = true`; declared mutations still must use an allowlisted explicit path.
 Bare program names are denied fail-closed for mutation authorization, even if a same-name string
 appears in `mutating_program_allowlist`.
+Allowlisted explicit paths are compared by resolved executable identity, so a symlink alias is only
+authorized while it still points at the same executable file.
 Shell-like opaque launchers such as `sh`, `cmd`, `powershell`, and `pwsh` are denied unless
 their full executable paths are explicitly allowlisted. The gateway does not parse `omne-fs` subcommands to infer
 mutation intent.
@@ -61,8 +63,8 @@ Example output fragment:
   "request_resolution": {
     "program": "echo",
     "args": ["hello-from-omne-execution"],
-    "cwd": ".",
-    "workspace_root": ".",
+    "cwd": "/abs/workspace",
+    "workspace_root": "/abs/workspace",
     "declared_mutation": false,
     "requested_isolation": "none",
     "requested_isolation_source": "request",
@@ -92,8 +94,7 @@ Example output fragment:
 }
 ```
 
-`request_resolution` is the gateway-generated canonical pre-execution request view. It preserves the
-request payload shape (`program`, `args`, `cwd`, `workspace_root`, `declared_mutation`) and makes
+`request_resolution` is the gateway-generated canonical pre-execution request view. It makes
 defaulted isolation decisions explicit through `input_required_isolation`,
 `requested_isolation_source`, and `policy_default_isolation`.
 `event` is the canonical execution/audit shape and includes canonicalized `cwd`,

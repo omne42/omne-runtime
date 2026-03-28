@@ -130,6 +130,10 @@ fn is_explicit_program_path(program: &str) -> bool {
 
 #[cfg(windows)]
 fn program_path_matches(expected: &str, actual: &str) -> bool {
+    if same_file::is_same_file(expected, actual).unwrap_or(false) {
+        return true;
+    }
+
     if normalize_windows_path_text(expected) == normalize_windows_path_text(actual) {
         return true;
     }
@@ -155,7 +159,7 @@ fn program_path_matches(expected: &str, actual: &str) -> bool {
 
 #[cfg(not(windows))]
 fn program_path_matches(expected: &str, actual: &str) -> bool {
-    expected == actual
+    same_file::is_same_file(expected, actual).unwrap_or(false) || expected == actual
 }
 
 #[cfg(windows)]
@@ -228,6 +232,25 @@ mod tests {
 
         assert!(policy.is_mutating_program_allowlisted("/usr/local/bin/omne-fs"));
         assert!(!policy.is_mutating_program_allowlisted("/tmp/omne-fs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_path_allowlist_matches_same_binary_identity_via_symlink_alias() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("omne-fs");
+        let alias = dir.path().join("omne-fs-link");
+        fs::write(&target, b"#!/bin/sh\nexit 0\n").expect("write tool");
+        symlink(&target, &alias).expect("create symlink alias");
+
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec![target.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(policy.is_mutating_program_allowlisted(&alias.display().to_string()));
     }
 
     #[cfg(windows)]

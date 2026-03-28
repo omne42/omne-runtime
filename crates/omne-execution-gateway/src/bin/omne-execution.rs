@@ -169,15 +169,20 @@ mod tests {
     use omne_execution_gateway::{ExecDecision, RequestedIsolationSource, requested_policy_meta};
     use policy_meta::SpecVersion;
 
+    fn sample_workspace() -> std::path::PathBuf {
+        std::env::current_dir().expect("current_dir")
+    }
+
     fn sample_event() -> omne_execution_gateway::ExecEvent {
+        let workspace = sample_workspace();
         omne_execution_gateway::ExecEvent {
             decision: ExecDecision::Run,
             requested_isolation: ExecutionIsolation::BestEffort,
             requested_policy_meta: requested_policy_meta(ExecutionIsolation::BestEffort),
             supported_isolation: ExecutionIsolation::BestEffort,
             program: "echo".into(),
-            cwd: ".".into(),
-            workspace_root: ".".into(),
+            cwd: workspace.clone(),
+            workspace_root: workspace,
             declared_mutation: false,
             reason: None,
             sandbox_runtime: None,
@@ -185,12 +190,13 @@ mod tests {
     }
 
     fn sample_request_resolution() -> RequestResolution {
+        let workspace = sample_workspace();
         let request = ExecRequest::new(
             "echo",
             vec!["hello"],
-            ".",
+            &workspace,
             ExecutionIsolation::BestEffort,
-            ".",
+            &workspace,
         );
         ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort)
             .resolve_request(&request)
@@ -198,12 +204,13 @@ mod tests {
 
     #[cfg(unix)]
     fn sample_policy_default_request_resolution() -> RequestResolution {
+        let workspace = sample_workspace();
         let request = ExecRequest::with_policy_default_isolation(
             "echo",
             vec!["hello"],
-            ".",
+            &workspace,
             ExecutionIsolation::BestEffort,
-            ".",
+            &workspace,
         );
         ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort)
             .resolve_request(&request)
@@ -212,6 +219,7 @@ mod tests {
     #[test]
     fn exec_output_keeps_nonzero_exit_code() {
         let status = nonzero_exit_status();
+        let workspace = sample_workspace();
         let output =
             exec_output_from_result(sample_request_resolution(), sample_event(), Ok(status));
         assert_eq!(output.event.program.to_string_lossy(), "echo");
@@ -245,8 +253,8 @@ mod tests {
             serde_json::json!({
                 "program": "echo",
                 "args": ["hello"],
-                "cwd": ".",
-                "workspace_root": ".",
+                "cwd": workspace,
+                "workspace_root": workspace,
                 "declared_mutation": false,
                 "input_required_isolation": "best_effort",
                 "requested_isolation": "best_effort",
@@ -269,8 +277,8 @@ mod tests {
                 },
                 "supported_isolation": "best_effort",
                 "program": "echo",
-                "cwd": ".",
-                "workspace_root": ".",
+                "cwd": output.event.cwd,
+                "workspace_root": output.event.workspace_root,
                 "declared_mutation": false,
                 "reason": null
             })
@@ -298,12 +306,13 @@ mod tests {
     #[test]
     fn shared_request_resolution_tracks_raw_and_effective_isolation() {
         let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = sample_workspace();
         let request = ExecRequest::with_policy_default_isolation(
             "sh",
             vec!["-lc", "echo hi"],
-            ".",
+            &workspace,
             ExecutionIsolation::BestEffort,
-            ".",
+            &workspace,
         )
         .with_declared_mutation(true);
 
@@ -331,6 +340,8 @@ mod tests {
             omne_execution_gateway::requested_policy_meta(ExecutionIsolation::BestEffort)
         );
         assert!(resolution.declared_mutation);
+        assert_eq!(resolution.cwd, workspace);
+        assert_eq!(resolution.workspace_root, sample_workspace());
     }
 
     #[test]
