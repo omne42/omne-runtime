@@ -9,12 +9,19 @@ use crate::policy::GatewayPolicy;
 use crate::sandbox;
 use crate::types::{ExecRequest, RequestResolution, RequestedIsolationSource};
 use policy_meta::ExecutionIsolation;
+use same_file::Handle as SameFileHandle;
 use serde::Serialize;
 
 #[derive(Debug)]
+struct BoundDirectory {
+    path: PathBuf,
+    identity: SameFileHandle,
+}
+
+#[derive(Debug)]
 struct ResolvedRequestPaths {
-    workspace_root: PathBuf,
-    cwd: PathBuf,
+    workspace_root: BoundDirectory,
+    cwd: BoundDirectory,
 }
 
 #[derive(Debug)]
@@ -56,9 +63,27 @@ pub struct ExecutionOutcome {
     pub result: ExecResult<ExitStatus>,
 }
 
+#[derive(Debug)]
+#[must_use = "prepared commands must be spawned to apply validated cwd and sandbox state"]
+pub struct PreparedCommand {
+    command: Command,
+    prepared: PreparedExecRequest,
+}
+
 impl ExecutionOutcome {
     pub fn into_parts(self) -> (ExecEvent, ExecResult<ExitStatus>) {
         (self.event, self.result)
+    }
+}
+
+impl PreparedCommand {
+    pub fn current_dir(&self) -> Option<&Path> {
+        self.command.get_current_dir()
+    }
+
+    pub fn spawn(mut self) -> ExecResult<std::process::Child> {
+        apply_prepared_request(&self.prepared, &mut self.command)
+            .and_then(|_monitor| self.command.spawn().map_err(ExecError::Spawn))
     }
 }
 
@@ -120,14 +145,12 @@ impl ExecGateway {
 
         let (event, result) = match self.prepare_request(request) {
             Ok(prepared) => {
-                let result = self
-                    .apply_prepared_request(&prepared, &mut command)
-                    .and_then(|monitor| {
-                        let mut child = command.spawn().map_err(ExecError::Spawn)?;
-                        let sandbox_runtime = monitor.observe_after_spawn();
-                        let status = child.wait().map_err(ExecError::Spawn)?;
-                        Ok((sandbox_runtime, status))
-                    });
+                let result = apply_prepared_request(&prepared, &mut command).and_then(|monitor| {
+                    let mut child = command.spawn().map_err(ExecError::Spawn)?;
+                    let sandbox_runtime = monitor.observe_after_spawn();
+                    let status = child.wait().map_err(ExecError::Spawn)?;
+                    Ok((sandbox_runtime, status))
+                });
                 match result {
                     Ok((sandbox_runtime, status)) => {
                         let mut event = prepared.event;
@@ -156,19 +179,19 @@ impl ExecGateway {
         self.execute(request).result
     }
 
-    /// Apply validated cwd/sandbox settings to an existing command.
-    ///
-    /// The command's program and args must exactly match the supplied request.
+    /// Validate command identity and return a spawn-only prepared wrapper.
     pub fn prepare_command(
         &self,
         request: &ExecRequest,
-        command: &mut Command,
-    ) -> (ExecEvent, ExecResult<()>) {
+        command: Command,
+    ) -> (ExecEvent, ExecResult<PreparedCommand>) {
         let (event, result) = match self.prepare_request(request) {
-            Ok(prepared) => match validate_prepared_command_matches_request(request, command) {
+            Ok(prepared) => match validate_prepared_command_matches_request(request, &command) {
                 Ok(()) => {
-                    let result = self.apply_prepared_request(&prepared, command).map(|_| ());
-                    (prepared.event, result)
+                    let mut command = command;
+                    command.current_dir(&prepared.resolved_paths.cwd.path);
+                    let event = prepared.event.clone();
+                    (event, Ok(PreparedCommand { command, prepared }))
                 }
                 Err(err) => {
                     let event = self.deny_event(prepared.event, "prepared_command_mismatch");
@@ -275,8 +298,8 @@ impl ExecGateway {
 
         match resolve_request_paths(&request.cwd, &request.workspace_root) {
             Ok(resolved_paths) => {
-                event.cwd = resolved_paths.cwd.clone();
-                event.workspace_root = resolved_paths.workspace_root.clone();
+                event.cwd = resolved_paths.cwd.path.clone();
+                event.workspace_root = resolved_paths.workspace_root.path.clone();
                 Ok(PreparedExecRequest {
                     event,
                     required_isolation: request.required_isolation,
@@ -286,9 +309,11 @@ impl ExecGateway {
             Err(err @ ExecError::WorkspaceRootInvalid { .. }) => {
                 Err(self.deny_preflight(event, "workspace_root_invalid", err))
             }
-            Err(err @ ExecError::CwdOutsideWorkspace { .. }) => {
-                Err(self.deny_preflight(event, "cwd_outside_workspace", err))
-            }
+            Err(
+                err @ ExecError::CwdOutsideWorkspace { .. }
+                | err @ ExecError::PathIdentityUnavailable { .. }
+                | err @ ExecError::RequestPathChanged { .. },
+            ) => Err(self.deny_preflight(event, "cwd_outside_workspace", err)),
             Err(err) => unreachable!("resolve_request_paths returned unexpected error: {err}"),
         }
     }
@@ -321,19 +346,6 @@ impl ExecGateway {
             error: err,
         }
     }
-
-    fn apply_prepared_request(
-        &self,
-        prepared: &PreparedExecRequest,
-        command: &mut Command,
-    ) -> ExecResult<sandbox::SandboxMonitor> {
-        command.current_dir(&prepared.resolved_paths.cwd);
-        sandbox::apply_sandbox(
-            command,
-            prepared.required_isolation,
-            &prepared.resolved_paths.workspace_root,
-        )
-    }
 }
 
 fn uses_opaque_command_launcher(program: &OsStr) -> bool {
@@ -357,15 +369,27 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
 }
 
 fn canonicalize_workspace_root(path: &Path) -> ExecResult<PathBuf> {
-    path.canonicalize()
+    let canonical = path
+        .canonicalize()
         .map_err(|_| ExecError::WorkspaceRootInvalid {
             path: path.to_path_buf(),
-        })
+        })?;
+    if !std::fs::metadata(&canonical)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
+    {
+        return Err(ExecError::WorkspaceRootInvalid { path: canonical });
+    }
+    Ok(canonical)
 }
 
 fn resolve_request_paths(cwd: &Path, workspace_root: &Path) -> ExecResult<ResolvedRequestPaths> {
-    let workspace_root = canonicalize_workspace_root(workspace_root)?;
-    let cwd = canonicalize_cwd_within_workspace(cwd, &workspace_root)?;
+    let workspace_root = capture_bound_directory(
+        canonicalize_workspace_root(workspace_root)?,
+        "workspace_root",
+    )?;
+    let cwd_path = canonicalize_cwd_within_workspace(cwd, &workspace_root.path)?;
+    let cwd = capture_bound_directory(cwd_path, "cwd")?;
     Ok(ResolvedRequestPaths {
         workspace_root,
         cwd,
@@ -379,8 +403,10 @@ fn canonicalize_cwd_within_workspace(cwd: &Path, workspace_root: &Path) -> ExecR
             cwd: cwd.to_path_buf(),
             workspace_root: workspace_root.to_path_buf(),
         })?;
-
-    if !cwd.starts_with(workspace_root) {
+    let cwd_is_dir = std::fs::metadata(&cwd)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false);
+    if !cwd_is_dir || !path_starts_with(&cwd, workspace_root) {
         return Err(ExecError::CwdOutsideWorkspace {
             cwd,
             workspace_root: workspace_root.to_path_buf(),
@@ -388,6 +414,81 @@ fn canonicalize_cwd_within_workspace(cwd: &Path, workspace_root: &Path) -> ExecR
     }
 
     Ok(cwd)
+}
+
+fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<BoundDirectory> {
+    let identity =
+        SameFileHandle::from_path(&path).map_err(|_| ExecError::PathIdentityUnavailable {
+            kind,
+            path: path.clone(),
+        })?;
+    Ok(BoundDirectory { path, identity })
+}
+
+fn revalidate_prepared_request_paths(paths: &ResolvedRequestPaths) -> ExecResult<()> {
+    revalidate_bound_directory(&paths.workspace_root, "workspace_root")?;
+    revalidate_bound_directory(&paths.cwd, "cwd")?;
+    if !path_starts_with(&paths.cwd.path, &paths.workspace_root.path) {
+        return Err(ExecError::CwdOutsideWorkspace {
+            cwd: paths.cwd.path.clone(),
+            workspace_root: paths.workspace_root.path.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn revalidate_bound_directory(bound: &BoundDirectory, kind: &'static str) -> ExecResult<()> {
+    let current = bound
+        .path
+        .canonicalize()
+        .map_err(|_| ExecError::RequestPathChanged {
+            kind,
+            path: bound.path.clone(),
+            detail: "path is no longer accessible".to_string(),
+        })?;
+    if !path_equals(&current, &bound.path) {
+        return Err(ExecError::RequestPathChanged {
+            kind,
+            path: bound.path.clone(),
+            detail: format!("canonical path changed to {}", current.display()),
+        });
+    }
+    let current_is_dir = std::fs::metadata(&current)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false);
+    if !current_is_dir {
+        return Err(ExecError::RequestPathChanged {
+            kind,
+            path: bound.path.clone(),
+            detail: "path is no longer a directory".to_string(),
+        });
+    }
+    let current_identity =
+        SameFileHandle::from_path(&current).map_err(|_| ExecError::PathIdentityUnavailable {
+            kind,
+            path: bound.path.clone(),
+        })?;
+    if current_identity != bound.identity {
+        return Err(ExecError::RequestPathChanged {
+            kind,
+            path: bound.path.clone(),
+            detail: "directory identity changed".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn apply_prepared_request(
+    prepared: &PreparedExecRequest,
+    command: &mut Command,
+) -> ExecResult<sandbox::SandboxMonitor> {
+    revalidate_prepared_request_paths(&prepared.resolved_paths)?;
+    command.current_dir(&prepared.resolved_paths.cwd.path);
+    sandbox::apply_sandbox(
+        command,
+        prepared.required_isolation,
+        &prepared.resolved_paths.workspace_root.path,
+    )
 }
 
 fn validate_prepared_command_matches_request(
@@ -402,7 +503,8 @@ fn validate_prepared_command_matches_request(
         .map(OsString::as_os_str)
         .collect::<Vec<_>>();
 
-    if actual_program != request.program.as_os_str() || actual_args != requested_args {
+    if !programs_match(actual_program, request.program.as_os_str()) || actual_args != requested_args
+    {
         return Err(ExecError::PreparedCommandMismatch {
             requested_program: request.program.to_string_lossy().into_owned(),
             requested_args: request
@@ -419,6 +521,73 @@ fn validate_prepared_command_matches_request(
     }
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn path_components(path: &Path) -> Vec<String> {
+    path.components()
+        .map(|component| {
+            normalize_windows_component(component.as_os_str().to_string_lossy().as_ref())
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn path_components(path: &Path) -> Vec<OsString> {
+    path.components()
+        .map(|component| component.as_os_str().to_os_string())
+        .collect()
+}
+
+#[cfg(windows)]
+fn normalize_windows_component(component: &str) -> String {
+    let component = component.replace('/', "\\");
+    if let Some(rest) = component.strip_prefix("\\\\?\\UNC\\") {
+        format!("\\\\{}", rest).to_ascii_lowercase()
+    } else if let Some(rest) = component.strip_prefix("\\\\?\\") {
+        rest.to_ascii_lowercase()
+    } else {
+        component.to_ascii_lowercase()
+    }
+}
+
+fn path_equals(lhs: &Path, rhs: &Path) -> bool {
+    path_components(lhs) == path_components(rhs)
+}
+
+fn path_starts_with(path: &Path, prefix: &Path) -> bool {
+    let path = path_components(path);
+    let prefix = path_components(prefix);
+    path.starts_with(&prefix)
+}
+
+#[cfg(windows)]
+fn programs_match(actual: &OsStr, requested: &OsStr) -> bool {
+    let actual_path = Path::new(actual);
+    let requested_path = Path::new(requested);
+    if actual_path.components().count() > 1
+        || requested_path.components().count() > 1
+        || actual_path.is_absolute()
+        || requested_path.is_absolute()
+    {
+        return path_equals(actual_path, requested_path);
+    }
+
+    let actual = actual.to_string_lossy();
+    let requested = requested.to_string_lossy();
+    actual.eq_ignore_ascii_case(&requested)
+        || strip_windows_exe_suffix(&actual)
+            .eq_ignore_ascii_case(strip_windows_exe_suffix(&requested))
+}
+
+#[cfg(not(windows))]
+fn programs_match(actual: &OsStr, requested: &OsStr) -> bool {
+    actual == requested
+}
+
+#[cfg(windows)]
+fn strip_windows_exe_suffix(value: &str) -> &str {
+    value.strip_suffix(".exe").unwrap_or(value)
 }
 
 fn promote_success_result_with_audit_write<T>(
@@ -676,8 +845,8 @@ mod tests {
         );
 
         let evaluated = gateway.evaluate(&request);
-        let mut command = Command::new(dummy_program());
-        let (event, result) = gateway.prepare_command(&request, &mut command);
+        let command = Command::new(dummy_program());
+        let (event, result) = gateway.prepare_command(&request, command);
 
         assert_eq!(event.reason, evaluated.reason);
         assert_eq!(event.decision, evaluated.decision);
@@ -942,13 +1111,13 @@ mod tests {
         );
         let mut command = Command::new("echo");
         command.arg("hello");
-        let (_event, result) = gateway.prepare_command(&request, &mut command);
-        assert!(result.is_ok());
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let prepared = result.expect("prepare command");
         let expected_cwd = workspace
             .path()
             .canonicalize()
             .expect("canonicalize workspace");
-        assert_eq!(command.get_current_dir(), Some(expected_cwd.as_path()));
+        assert_eq!(prepared.current_dir(), Some(expected_cwd.as_path()));
     }
 
     #[test]
@@ -972,7 +1141,7 @@ mod tests {
         let mut command = Command::new("printf");
         command.arg("hello");
 
-        let (event, result) = gateway.prepare_command(&request, &mut command);
+        let (event, result) = gateway.prepare_command(&request, command);
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(event.reason.as_deref(), Some("prepared_command_mismatch"));
         assert!(matches!(
@@ -1009,11 +1178,98 @@ mod tests {
         );
         let mut command = Command::new("echo");
         command.arg("hello");
-        let (event, result) = gateway.prepare_command(&request, &mut command);
-        assert!(result.is_ok());
+        let (event, result) = gateway.prepare_command(&request, command);
+        let prepared = result.expect("prepare command");
         let expected_cwd = real_dir.canonicalize().expect("canonicalize real dir");
         assert_eq!(event.cwd, expected_cwd);
-        assert_eq!(command.get_current_dir(), Some(expected_cwd.as_path()));
+        assert_eq!(prepared.current_dir(), Some(expected_cwd.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_command_fails_closed_when_cwd_identity_changes_before_spawn() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let cwd = workspace.path().join("cwd");
+        let moved = workspace.path().join("cwd-moved");
+        fs::create_dir_all(&cwd).expect("create cwd");
+
+        let request = ExecRequest::new(
+            "sh",
+            vec!["-c", "exit 0"],
+            &cwd,
+            host_supported_test_isolation(),
+            workspace.path(),
+        );
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 0"]);
+
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let prepared = result.expect("prepare command");
+
+        fs::rename(&cwd, &moved).expect("move original cwd away");
+        fs::create_dir_all(&cwd).expect("replace cwd with different directory");
+
+        let err = prepared
+            .spawn()
+            .expect_err("identity change should fail closed");
+        match err {
+            ExecError::RequestPathChanged { kind, .. } => assert_eq!(kind, "cwd"),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn prepare_command_allows_case_insensitive_windows_program_match() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            r"C:\Tools\OMNE-FS.EXE",
+            Vec::<OsString>::new(),
+            workspace.path(),
+            host_supported_test_isolation(),
+            workspace.path(),
+        );
+        let command = Command::new(r"c:\tools\omne-fs.exe");
+
+        let (event, result) = gateway.prepare_command(&request, command);
+        assert_eq!(event.decision, ExecDecision::Run);
+        assert!(result.is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_boundary_checks_are_case_insensitive() {
+        let cases = [
+            (r"C:\Root\Sub", r"c:\root"),
+            (r"\\?\C:\Root\Sub", r"c:\root"),
+            (r"\\server\share\Root\Sub", r"\\SERVER\SHARE\root"),
+            (r"\\?\UNC\Server\Share\Root\Sub", r"\\server\share\root"),
+        ];
+
+        for (path, prefix) in cases {
+            assert!(
+                path_starts_with(Path::new(path), Path::new(prefix)),
+                "expected {path} to stay within {prefix}"
+            );
+        }
     }
 
     #[test]

@@ -14,7 +14,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - capability model: `None | BestEffort | Strict`
 - fail-closed if requested isolation exceeds host support
 - fail-closed if a request marked as `policy_default` no longer matches the gateway's current policy default
-- workspace boundary enforcement (`cwd` must be inside `workspace_root`, and execution uses the canonicalized working directory)
+- workspace boundary enforcement (`cwd` must stay inside `workspace_root`, and execution binds canonicalized directory identities before spawn)
 - two-way mutation declaration enforcement for allowlisted mutating programs
 - fail-closed denial for opaque command launchers such as `sh`, `cmd`, and `pwsh` unless they are explicitly allowlisted
 - structured decision events for audit/logging
@@ -30,7 +30,8 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - allowlist matching remains path based; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
 - if `audit_log_path` is configured, preflight creates missing parent directories and rejects requests fail-closed when the audit log cannot be opened for append.
 - if audit append succeeds during preflight but the final record write later fails, the execution result is surfaced as an explicit audit-log write failure instead of silently degrading to stderr-only reporting.
-- `prepare_command` rejects a `Command` when its program/args diverge from the validated `ExecRequest`.
+- `prepare_command` returns a spawn-only `PreparedCommand` wrapper instead of handing a mutable validated `Command` back to callers.
+- `execute()` and `PreparedCommand::spawn()` both revalidate bound `cwd` / `workspace_root` identities immediately before spawn.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.
 
 ## Platform Capability (v0.1.0)

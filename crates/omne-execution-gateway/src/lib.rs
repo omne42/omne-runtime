@@ -14,6 +14,8 @@ pub use crate::audit::{
     SandboxRuntimeOutcome,
 };
 pub use crate::error::{ExecError, ExecResult};
-pub use crate::gateway::{CapabilityReport, ExecGateway, ExecutionOutcome, PreflightError};
+pub use crate::gateway::{
+    CapabilityReport, ExecGateway, ExecutionOutcome, PreflightError, PreparedCommand,
+};
 pub use crate::policy::GatewayPolicy;
 pub use crate::types::{ExecRequest, RequestResolution, RequestedIsolationSource};
