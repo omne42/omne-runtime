@@ -208,20 +208,6 @@ impl DirectoryIdentity {
         self.verify_metadata(&current_meta, changed_error)
     }
 
-    pub(super) fn verify_best_effort<F>(
-        &self,
-        path: &Path,
-        relative: &Path,
-        changed_error: F,
-    ) -> Result<()>
-    where
-        F: Fn() -> Error,
-    {
-        match self.verify(path, relative, changed_error)? {
-            MetadataIdentityCheck::Verified | MetadataIdentityCheck::Unverifiable => Ok(()),
-        }
-    }
-
     pub(super) fn ensure_verified<F, G>(
         &self,
         path: &Path,

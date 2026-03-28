@@ -25,11 +25,20 @@ fn revalidate_parent_before_move(
         )));
     }
 
-    expected_parent_meta.verify_best_effort(&rechecked_parent, requested_parent, || {
-        Error::InvalidPath(format!(
-            "{side} parent identity changed during move; refusing to continue"
-        ))
-    })?;
+    expected_parent_meta.ensure_verified(
+        &rechecked_parent,
+        requested_parent,
+        || {
+            Error::InvalidPath(format!(
+                "{side} parent identity changed during move; refusing to continue"
+            ))
+        },
+        || {
+            Error::InvalidPath(format!(
+                "cannot verify {side} parent identity during move; refusing to continue"
+            ))
+        },
+    )?;
 
     Ok(rechecked_parent)
 }
@@ -375,6 +384,39 @@ mod tests {
             Error::InvalidPath(message) => assert_eq!(
                 message,
                 "cannot verify source identity during move; refusing to continue"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn move_parent_revalidation_rejects_unverifiable_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = dir.path().join("parent");
+        fs::create_dir(&parent).expect("create parent");
+        let meta = fs::symlink_metadata(&parent).expect("metadata");
+        let identity = super::super::io::DirectoryIdentity::unverifiable_for_tests(meta);
+        let canonical_parent = parent.canonicalize().expect("canonicalize parent");
+
+        let err = super::revalidate_parent_before_move(
+            &crate::ops::Context::new(crate::policy::SandboxPolicy::single_root(
+                "root",
+                dir.path(),
+                policy_meta::WriteScope::WorkspaceWrite,
+            ))
+            .expect("ctx"),
+            "root",
+            Path::new("parent"),
+            &canonical_parent,
+            &identity,
+            Path::new("file.txt"),
+            "source",
+        )
+        .expect_err("unverifiable parent identity must fail closed");
+        match err {
+            Error::InvalidPath(message) => assert_eq!(
+                message,
+                "cannot verify source parent identity during move; refusing to continue"
             ),
             other => panic!("unexpected error: {other:?}"),
         }
