@@ -219,7 +219,6 @@ mod tests {
     #[test]
     fn exec_output_keeps_nonzero_exit_code() {
         let status = nonzero_exit_status();
-        let workspace = sample_workspace();
         let output =
             exec_output_from_result(sample_request_resolution(), sample_event(), Ok(status));
         assert_eq!(output.event.program.to_string_lossy(), "echo");
@@ -253,8 +252,8 @@ mod tests {
             serde_json::json!({
                 "program": "echo",
                 "args": ["hello"],
-                "cwd": workspace,
-                "workspace_root": workspace,
+                "cwd": output.request_resolution.cwd,
+                "workspace_root": output.request_resolution.workspace_root,
                 "declared_mutation": false,
                 "input_required_isolation": "best_effort",
                 "requested_isolation": "best_effort",
