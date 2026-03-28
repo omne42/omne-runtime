@@ -316,13 +316,6 @@ impl ExecGateway {
                     ),
                 ));
             }
-            if !request.declared_mutation_is_explicit() {
-                return Err(self.deny_preflight(
-                    event,
-                    "mutation_declaration_required",
-                    ExecError::MutationDeclarationRequired,
-                ));
-            }
         }
 
         if request.required_isolation > self.supported_isolation {
