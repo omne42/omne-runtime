@@ -31,6 +31,33 @@ require_agents_length() {
   fi
 }
 
+require_no_conflict_markers() {
+  local path="$1"
+  if grep -nE '^(<<<<<<< .+|=======|>>>>>>> .+)$' "$path" >/dev/null; then
+    echo "git conflict marker detected in ${path#$root/}" >&2
+    exit 1
+  fi
+}
+
+check_docs_conflict_markers() {
+  while IFS= read -r -d '' path; do
+    require_no_conflict_markers "$path"
+  done < <(
+    find "$root" \
+      \( -path "$root/.git" -o -path "$root/target" -o -path "$root/site" \) -prune -o \
+      -type f \
+      \( \
+        -path "$root/docs/*" -o \
+        -path "$root/crates/*/docs/*" -o \
+        -path "$root/README.md" -o \
+        -path "$root/AGENTS.md" -o \
+        -path "$root/crates/*/README.md" -o \
+        -path "$root/crates/*/AGENTS.md" \
+      \) \
+      -print0
+  )
+}
+
 check_crate_docs() {
   local crate_dir="$1"
   require_file "$crate_dir/README.md"
@@ -53,6 +80,7 @@ require_contains "$root/README.md" "docs/README.md"
 require_contains "$root/README.md" "docs/docs-system-map.md"
 require_contains "$root/AGENTS.md" "docs/README.md"
 require_agents_length "$root/AGENTS.md" 160
+check_docs_conflict_markers
 
 for crate_dir in "$root"/crates/*; do
   [[ -d "$crate_dir" ]] || continue
