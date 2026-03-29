@@ -8,8 +8,8 @@ use std::path::{Component, Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use omne_fs_primitives::{
-    AtomicDirectoryOptions, AtomicWriteOptions, stage_directory_atomically,
-    stage_file_atomically_with_name,
+    AtomicDirectoryOptions, AtomicWriteOptions, lock_advisory_file_in_ambient_root,
+    stage_directory_atomically, stage_file_atomically_with_name,
 };
 use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 use tar::Archive as TarArchive;
@@ -23,6 +23,8 @@ use crate::artifact_download::{
 
 pub const DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_ARCHIVE_TREE_ENTRIES: u64 = 65_536;
+const ARCHIVE_TREE_INSTALL_LOCK_PREFIX: &str = ".archive-tree-install-";
+const ARCHIVE_TREE_INSTALL_LOCK_SUFFIX: &str = ".lock";
 
 #[derive(Debug, Clone, Copy)]
 pub struct ArchiveTreeInstallRequest<'a> {
@@ -147,6 +149,7 @@ fn install_archive_tree_from_reader_with_limits<R>(
 where
     R: Read + Seek,
 {
+    let _install_lock = lock_archive_tree_destination(destination)?;
     let staged = stage_directory_atomically(destination, &archive_tree_stage_options())
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     let extract_result = if asset_name.ends_with(".zip") {
@@ -165,6 +168,46 @@ where
     staged
         .commit()
         .map_err(|err| ArtifactInstallError::install(err.to_string()))
+}
+
+fn lock_archive_tree_destination(
+    destination: &Path,
+) -> Result<omne_fs_primitives::AdvisoryLockGuard, ArtifactInstallError> {
+    let lock_root = destination.parent().unwrap_or_else(|| Path::new("."));
+    let lock_file = archive_tree_install_lock_file_name(destination);
+    lock_advisory_file_in_ambient_root(
+        lock_root,
+        "archive tree install lock root",
+        &lock_file,
+        "archive tree install lock file",
+    )
+    .map_err(|err| {
+        ArtifactInstallError::install(format!(
+            "failed to lock archive tree destination `{}`: {err}",
+            destination.display()
+        ))
+    })
+}
+
+fn archive_tree_install_lock_file_name(destination: &Path) -> PathBuf {
+    let label = destination
+        .file_name()
+        .map(|name| sanitize_lock_component(&name.to_string_lossy()))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "tree".to_string());
+    PathBuf::from(format!(
+        "{ARCHIVE_TREE_INSTALL_LOCK_PREFIX}{label}{ARCHIVE_TREE_INSTALL_LOCK_SUFFIX}"
+    ))
+}
+
+fn sanitize_lock_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => ch,
+            _ => '_',
+        })
+        .collect()
 }
 
 fn extract_zip_tree<R>(
@@ -761,13 +804,17 @@ mod tests {
     use std::net::TcpListener;
     #[cfg(unix)]
     use std::path::PathBuf;
+    use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
+
+    use omne_fs_primitives::lock_advisory_file_in_ambient_root;
 
     use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
 
     use super::{
-        ArchiveExtractionLimits, ArchiveTreeInstallRequest, download_and_install_archive_tree,
-        install_archive_tree_from_reader_with_limits,
+        ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
+        download_and_install_archive_tree, install_archive_tree_from_reader_with_limits,
     };
     #[cfg(unix)]
     use super::{extract_tar_tree, extract_zip_tree};
@@ -987,6 +1034,48 @@ mod tests {
                 .contains("archive entry count exceeds limit"),
             "unexpected error: {err}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn archive_tree_install_serializes_same_destination() -> Result<(), Box<dyn Error>> {
+        let archive = make_zip_archive(&[("bin/demo", b"demo".as_slice(), 0o755)])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        let lock_root = destination.parent().expect("destination parent");
+        let lock_file = archive_tree_install_lock_file_name(&destination);
+        let guard = lock_advisory_file_in_ambient_root(
+            lock_root,
+            "archive tree install lock root",
+            &lock_file,
+            "archive tree install lock file",
+        )?;
+        let (tx, rx) = mpsc::channel();
+        let destination_for_thread = destination.clone();
+        let handle = thread::spawn(move || {
+            let result = install_archive_tree_from_reader_with_limits(
+                "demo.zip",
+                Cursor::new(archive),
+                &destination_for_thread,
+                ArchiveExtractionLimits::default(),
+            );
+            tx.send(result).expect("send install result");
+        });
+
+        assert!(
+            matches!(
+                rx.recv_timeout(Duration::from_millis(200)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "same-destination install should wait for the advisory lock"
+        );
+
+        drop(guard);
+
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("install should complete after lock release")?;
+        handle.join().expect("install thread join");
+        assert_eq!(fs::read(destination.join("bin/demo"))?, b"demo");
         Ok(())
     }
 
