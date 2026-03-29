@@ -2,8 +2,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::audit::ExecEvent;
+use crate::os_serialization::{ExactOsStr, ExactOsStrings, LossyOsStr, LossyOsStrings};
 use policy_meta::{ExecutionIsolation, PolicyMetaV1};
-use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -90,16 +90,13 @@ impl ExecRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestResolution {
-    #[serde(serialize_with = "serialize_os_string_lossy")]
     pub program: OsString,
-    #[serde(serialize_with = "serialize_os_strings_lossy")]
     pub args: Vec<OsString>,
     pub cwd: PathBuf,
     pub workspace_root: PathBuf,
     pub declared_mutation: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_required_isolation: Option<ExecutionIsolation>,
     pub requested_isolation: ExecutionIsolation,
     pub requested_isolation_source: RequestedIsolationSource,
@@ -160,22 +157,44 @@ impl RequestResolution {
     }
 }
 
-fn serialize_os_string_lossy<S>(value: &OsString, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(&value.to_string_lossy())
-}
+impl Serialize for RequestResolution {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct RequestResolutionSerde<'a> {
+            program: LossyOsStr<'a>,
+            args: LossyOsStrings<'a>,
+            program_exact: ExactOsStr<'a>,
+            args_exact: ExactOsStrings<'a>,
+            cwd: &'a PathBuf,
+            workspace_root: &'a PathBuf,
+            declared_mutation: bool,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            input_required_isolation: Option<ExecutionIsolation>,
+            requested_isolation: ExecutionIsolation,
+            requested_isolation_source: RequestedIsolationSource,
+            requested_policy_meta: &'a PolicyMetaV1,
+            policy_default_isolation: ExecutionIsolation,
+        }
 
-fn serialize_os_strings_lossy<S>(values: &[OsString], serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let mut seq = serializer.serialize_seq(Some(values.len()))?;
-    for value in values {
-        seq.serialize_element(&value.to_string_lossy())?;
+        RequestResolutionSerde {
+            program: LossyOsStr(self.program.as_os_str()),
+            args: LossyOsStrings(&self.args),
+            program_exact: ExactOsStr(self.program.as_os_str()),
+            args_exact: ExactOsStrings(&self.args),
+            cwd: &self.cwd,
+            workspace_root: &self.workspace_root,
+            declared_mutation: self.declared_mutation,
+            input_required_isolation: self.input_required_isolation,
+            requested_isolation: self.requested_isolation,
+            requested_isolation_source: self.requested_isolation_source,
+            requested_policy_meta: &self.requested_policy_meta,
+            policy_default_isolation: self.policy_default_isolation,
+        }
+        .serialize(serializer)
     }
-    seq.end()
 }
 
 #[cfg(test)]
@@ -298,7 +317,46 @@ mod tests {
         let value = serde_json::to_value(&resolution).expect("serialize resolution");
         assert_eq!(value["program"], "echo");
         assert_eq!(value["args"], serde_json::json!(["hello"]));
+        assert_eq!(
+            value["program_exact"],
+            serde_json::json!({
+                "encoding": "utf8",
+                "value": "echo"
+            })
+        );
+        assert_eq!(
+            value["args_exact"],
+            serde_json::json!([{
+                "encoding": "utf8",
+                "value": "hello"
+            }])
+        );
         assert_eq!(value["input_required_isolation"], "best_effort");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn request_resolution_serializes_non_utf8_arguments_exactly() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let request = ExecRequest::new(
+            "echo",
+            vec![OsString::from_vec(vec![0x66, 0x6f, 0x80])],
+            ".",
+            ExecutionIsolation::BestEffort,
+            ".",
+        );
+        let resolution = RequestResolution::from_request(&request, ExecutionIsolation::BestEffort);
+
+        let value = serde_json::to_value(&resolution).expect("serialize resolution");
+        assert_eq!(value["args"], serde_json::json!(["fo\u{fffd}"]));
+        assert_eq!(
+            value["args_exact"],
+            serde_json::json!([{
+                "encoding": "unix_bytes_hex",
+                "value": "666f80"
+            }])
+        );
     }
 
     #[test]
@@ -316,6 +374,7 @@ mod tests {
             requested_policy_meta: requested_policy_meta(ExecutionIsolation::BestEffort),
             supported_isolation: ExecutionIsolation::BestEffort,
             program: OsString::from("echo"),
+            args: vec![OsString::from("hello")],
             cwd: PathBuf::from("/canonical/workspace"),
             workspace_root: PathBuf::from("/canonical/workspace"),
             declared_mutation: false,

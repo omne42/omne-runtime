@@ -68,6 +68,8 @@ Fields:
 Use it when you need the gateway's canonical pre-execution request view, including explicit
 policy-default provenance. When preflight reaches path validation, `program` / `cwd` /
 `workspace_root` mirror the authoritative validated view that also appears in `ExecEvent`.
+Its JSON form also emits `program_exact` / `args_exact` so callers can reconstruct non-UTF-8
+OS strings exactly instead of depending on lossy display fields.
 
 ## ExecGateway Constructors
 
@@ -102,6 +104,10 @@ they are intentionally non-interactive and do not surface child output.
 
 Notable fields:
 
+- `program`
+- `args`
+- serialized `program_exact`
+- serialized `args_exact`
 - `requested_isolation`
 - `requested_policy_meta`
 - `supported_isolation`

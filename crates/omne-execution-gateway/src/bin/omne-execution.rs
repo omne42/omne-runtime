@@ -261,6 +261,7 @@ mod tests {
             requested_policy_meta: requested_policy_meta(ExecutionIsolation::BestEffort),
             supported_isolation: ExecutionIsolation::BestEffort,
             program: "echo".into(),
+            args: vec!["hello".into()],
             cwd: workspace.clone(),
             workspace_root: workspace,
             declared_mutation: false,
@@ -334,6 +335,14 @@ mod tests {
             serde_json::json!({
                 "program": "echo",
                 "args": ["hello"],
+                "program_exact": {
+                    "encoding": "utf8",
+                    "value": "echo"
+                },
+                "args_exact": [{
+                    "encoding": "utf8",
+                    "value": "hello"
+                }],
                 "cwd": output.request_resolution.cwd,
                 "workspace_root": output.request_resolution.workspace_root,
                 "declared_mutation": false,
@@ -358,6 +367,15 @@ mod tests {
                 },
                 "supported_isolation": "best_effort",
                 "program": "echo",
+                "args": ["hello"],
+                "program_exact": {
+                    "encoding": "utf8",
+                    "value": "echo"
+                },
+                "args_exact": [{
+                    "encoding": "utf8",
+                    "value": "hello"
+                }],
                 "cwd": output.event.cwd,
                 "workspace_root": output.event.workspace_root,
                 "declared_mutation": false,

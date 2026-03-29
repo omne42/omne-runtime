@@ -504,6 +504,7 @@ mod tests {
             ),
             supported_isolation: ExecutionIsolation::BestEffort,
             program: program.into(),
+            args: Vec::new(),
             cwd: ".".into(),
             workspace_root: ".".into(),
             declared_mutation: false,

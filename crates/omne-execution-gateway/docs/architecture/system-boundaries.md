@@ -14,7 +14,7 @@
 - 声明式变更命令门控，以及显式 mutation declaration、allowlisted mutator 和 opaque launcher 之间的一致性校验。
 - gateway 自己管理的 spawn 路径会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端。
 - 平台 sandbox 编排与 runtime 观测。
-- 结构化审计事件和日志输出。
+- 结构化审计事件和日志输出，包括可读的 lossy `program` / `args` 字段，以及面向机器恢复的 exact OS-string 编码字段。
 
 当前平台语义补充：
 

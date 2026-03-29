@@ -10,7 +10,10 @@ The gateway exposes `ExecEvent` to describe decision outcomes.
 | `requested_isolation` | Isolation requested by caller. |
 | `requested_policy_meta` | Canonical `policy-meta` projection of the requested isolation. Currently emitted as `{ "version": 1, "execution_isolation": ... }`. |
 | `supported_isolation` | Host-supported isolation detected by gateway. |
-| `program` | Program name (serialized lossily for OS strings). |
+| `program` | Program name in readable lossy form. |
+| `args` | Full argv in readable lossy form. |
+| `program_exact` | Exact JSON encoding of `program`. UTF-8 values emit `{ "encoding": "utf8", "value": ... }`; non-UTF-8 Unix values emit `{ "encoding": "unix_bytes_hex", "value": ... }`. |
+| `args_exact` | Exact JSON encoding of each argv entry, parallel to `args`. |
 | `cwd` | Effective working directory. Canonicalized when validation succeeds. |
 | `workspace_root` | Effective workspace boundary root. Canonicalized when validation succeeds. |
 | `declared_mutation` | Raw caller-declared mutation intent. |
@@ -30,6 +33,7 @@ When `audit_log_path` is set, the gateway appends JSONL records with:
 
 - `ts_unix_ms`
 - full `event`
+- exact `event.program_exact` / `event.args_exact` alongside the readable lossy `event.program` / `event.args`
 - `event.requested_policy_meta` for cross-repo canonical policy metadata
 - `result.status` (`prepared`, `prepare_error`, `exited`, or `spawn_error`)
 - `result.error` (if present)
