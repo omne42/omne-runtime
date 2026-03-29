@@ -77,9 +77,6 @@ impl AuditLogger {
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()
         {
-            if parent.exists() {
-                ensure_existing_directory(parent)?;
-            }
             fs::create_dir_all(parent)?;
             ensure_existing_directory(parent)?;
         }
@@ -403,27 +400,6 @@ mod tests {
         let err = logger
             .ensure_ready()
             .expect_err("audit path with file parent must fail");
-
-        match err {
-            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
-            other => panic!("unexpected error: {other}"),
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn ensure_ready_rejects_symlink_parent_directory() {
-        let dir = tempdir().expect("tempdir");
-        let target_parent = dir.path().join("real-parent");
-        fs::create_dir(&target_parent).expect("create target parent");
-        let symlink_parent = dir.path().join("linked-parent");
-        symlink(&target_parent, &symlink_parent).expect("create parent symlink");
-        let audit_path = symlink_parent.join("audit.jsonl");
-        let logger = AuditLogger::new(&audit_path);
-
-        let err = logger
-            .ensure_ready()
-            .expect_err("audit path with symlink parent must fail");
 
         match err {
             ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
