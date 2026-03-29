@@ -370,7 +370,6 @@ where
 {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 8192];
-    let mut exceeded = false;
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {
@@ -380,13 +379,10 @@ where
         let to_copy = remaining.min(read);
         bytes.extend_from_slice(&buffer[..to_copy]);
         if to_copy < read || bytes.len() == MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM {
-            exceeded = true;
+            return Err(io::Error::other(format!(
+                "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
+            )));
         }
-    }
-    if exceeded {
-        return Err(io::Error::other(format!(
-            "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
-        )));
     }
     Ok(bytes)
 }
@@ -911,6 +907,31 @@ mod tests {
     }
 
     #[test]
+    fn run_host_command_rejects_unbounded_stderr_capture() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_large_stderr_command(temp.path(), "loud-stderr");
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let err = run_host_command(&request).expect_err("oversized stderr should fail");
+        match err {
+            HostCommandError::SpawnFailed { source, .. } => {
+                assert!(
+                    source.to_string().contains("stderr exceeded capture limit"),
+                    "unexpected error: {source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
     fn run_host_command_resolves_relative_program_against_working_directory() {
         let temp = tempfile::tempdir().expect("tempdir");
         let working_directory = temp.path().join("cwd");
@@ -1142,6 +1163,15 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn write_large_stderr_command(dir: &Path, name: &str) -> PathBuf {
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stderr.write('x' * (8 * 1024 * 1024 + 1))\nPY\n",
+        )
+    }
+
+    #[cfg(unix)]
     fn write_unix_executable(dir: &Path, name: &str, content: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
 
@@ -1207,6 +1237,17 @@ mod tests {
             "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * (8MB + 1); [Console]::Out.Write($s)\"\r\n",
         )
         .expect("write windows loud command");
+        path
+    }
+
+    #[cfg(windows)]
+    fn write_large_stderr_command(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.cmd"));
+        std::fs::write(
+            &path,
+            "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * (8MB + 1); [Console]::Error.Write($s)\"\r\n",
+        )
+        .expect("write windows loud stderr command");
         path
     }
 
