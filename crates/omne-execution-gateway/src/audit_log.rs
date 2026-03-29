@@ -77,8 +77,11 @@ impl AuditLogger {
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()
         {
-            ensure_existing_directory_chain(parent)?;
+            if let Some(existing_parent) = existing_ancestor(parent) {
+                ensure_existing_directory(existing_parent)?;
+            }
             fs::create_dir_all(parent)?;
+            ensure_existing_directory(parent)?;
         }
         if self.path.exists() {
             ensure_existing_regular_file_path(&self.path)?;
@@ -87,26 +90,12 @@ impl AuditLogger {
     }
 }
 
-fn ensure_existing_directory_chain(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    for ancestor in existing_ancestors(path) {
-        let metadata = fs::symlink_metadata(&ancestor)?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(format!("path is not a directory: {}", ancestor.display()).into());
-        }
+fn ensure_existing_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!("path is not a directory: {}", path.display()).into());
     }
     Ok(())
-}
-
-fn existing_ancestors(path: &Path) -> Vec<PathBuf> {
-    let mut current = PathBuf::new();
-    let mut ancestors = Vec::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        if current.exists() {
-            ancestors.push(current.clone());
-        }
-    }
-    ancestors
 }
 
 fn ensure_existing_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -166,6 +155,10 @@ fn ensure_regular_file(path: &Path, file: File) -> Result<File, Box<dyn std::err
     }
 
     Err(format!("path is not a regular file: {}", path.display()).into())
+}
+
+fn existing_ancestor(path: &Path) -> Option<&Path> {
+    path.ancestors().find(|ancestor| ancestor.exists())
 }
 
 #[derive(Debug, Serialize)]
@@ -467,12 +460,12 @@ mod tests {
         fs::create_dir(&target_parent).expect("create target parent");
         let symlink_parent = dir.path().join("linked-parent");
         symlink(&target_parent, &symlink_parent).expect("create parent symlink");
-        let audit_path = symlink_parent.join("audit.jsonl");
+        let audit_path = symlink_parent.join("nested").join("audit.jsonl");
         let logger = AuditLogger::new(&audit_path);
 
         let err = logger
             .ensure_ready()
-            .expect_err("audit path with symlink parent must fail");
+            .expect_err("audit path with symlink ancestor must fail");
 
         match err {
             ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
