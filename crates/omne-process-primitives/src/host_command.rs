@@ -370,7 +370,17 @@ where
 {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 8192];
+    let mut reached_capture_limit = false;
     loop {
+        if reached_capture_limit {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            return Err(io::Error::other(format!(
+                "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
+            )));
+        }
         let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -378,10 +388,13 @@ where
         let remaining = MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM.saturating_sub(bytes.len());
         let to_copy = remaining.min(read);
         bytes.extend_from_slice(&buffer[..to_copy]);
-        if to_copy < read || bytes.len() == MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM {
+        if to_copy < read {
             return Err(io::Error::other(format!(
                 "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
             )));
+        }
+        if bytes.len() == MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM {
+            reached_capture_limit = true;
         }
     }
     Ok(bytes)
@@ -907,6 +920,27 @@ mod tests {
     }
 
     #[test]
+    fn run_host_command_allows_stdout_exactly_at_capture_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_exact_limit_stdout_command(temp.path(), "exact-limit");
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let output = run_host_command(&request).expect("exact-limit stdout should succeed");
+        assert!(output.output.status.success());
+        assert_eq!(
+            output.output.stdout.len(),
+            super::MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM
+        );
+    }
+
+    #[test]
     fn run_host_command_rejects_unbounded_stderr_capture() {
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = write_large_stderr_command(temp.path(), "loud-stderr");
@@ -1163,6 +1197,15 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn write_exact_limit_stdout_command(dir: &Path, name: &str) -> PathBuf {
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (8 * 1024 * 1024))\nPY\n",
+        )
+    }
+
+    #[cfg(unix)]
     fn write_large_stderr_command(dir: &Path, name: &str) -> PathBuf {
         write_unix_executable(
             dir,
@@ -1237,6 +1280,17 @@ mod tests {
             "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * (8MB + 1); [Console]::Out.Write($s)\"\r\n",
         )
         .expect("write windows loud command");
+        path
+    }
+
+    #[cfg(windows)]
+    fn write_exact_limit_stdout_command(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.cmd"));
+        std::fs::write(
+            &path,
+            "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * 8MB; [Console]::Out.Write($s)\"\r\n",
+        )
+        .expect("write windows exact-limit stdout command");
         path
     }
 
