@@ -10,3 +10,4 @@
 - surface missing, inaccessible, and non-directory working directories as `cwd_invalid` instead of `cwd_outside_workspace`
 - make `resolve_request()` and CLI `request_resolution` reuse the gateway's validated canonical path view
 - reject unknown `omne-execution` request JSON fields fail-closed
+- stabilize oversized JSON fixture coverage so request/policy size-limit tests do not depend on free disk space

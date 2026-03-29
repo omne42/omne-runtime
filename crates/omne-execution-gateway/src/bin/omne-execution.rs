@@ -504,11 +504,12 @@ mod tests {
     fn load_request_rejects_oversized_input() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("request.json");
-        let oversized = format!(
-            "{{\"program\":\"{}\",\"args\":[],\"cwd\":\".\",\"workspace_root\":\".\",\"declared_mutation\":false}}",
-            "x".repeat(MAX_REQUEST_JSON_BYTES)
-        );
-        fs::write(&path, oversized).expect("write oversized request");
+        let oversized_len = u64::try_from(MAX_REQUEST_JSON_BYTES)
+            .expect("request size bound fits u64")
+            .saturating_add(1);
+        let file = File::create(&path).expect("create oversized request placeholder");
+        file.set_len(oversized_len)
+            .expect("extend oversized request placeholder");
 
         let err = load_request(&path).expect_err("oversized request should fail closed");
         assert!(
