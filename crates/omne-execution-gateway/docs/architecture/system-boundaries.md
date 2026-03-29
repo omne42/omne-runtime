@@ -25,6 +25,7 @@
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，所有请求都必须显式声明 `declared_mutation`；否则 gateway 会以 `mutation_declaration_required` fail-closed 拒绝。
 - Windows 上命令路径和 workspace 边界比较按平台语义做大小写不敏感处理，不要求调用方传入与文件系统完全同大小写的字面量。
 - `GatewayPolicy::load_json()` 只接受 no-follow regular file 输入，不会把 symlink、目录或其他特殊文件当成可信策略文件读取。
+- `omne-execution` CLI 的 `request.json` 也只接受 bounded no-follow regular file 输入，避免通过 symlink、特殊文件或超大输入把 CLI 边界退化成非确定性文件读取。
 - 缺失、不可访问或不是目录的 `cwd` 会被报告为 `cwd_invalid`，避免把普通输入/环境错误误记成 workspace 越界。
 - 配置了 `audit_log_path` 时，gateway 会在 preflight 阶段创建缺失父目录并验证日志可追加；如果审计日志不可用，请求必须 fail-closed 拒绝，而不是在无审计记录下继续执行。
 - 如果 preflight 之后的最终审计写入失败，gateway 会把结果显式返回给调用方，而不是只在 stderr 打印失败后继续返回成功。
