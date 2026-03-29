@@ -83,7 +83,7 @@ impl AuditLogger {
         if self.path.exists() {
             ensure_existing_regular_file_path(&self.path)?;
         }
-        Ok(open_appendable_regular_file_nofollow(&self.path)?)
+        open_appendable_regular_file_nofollow(&self.path)
     }
 }
 
