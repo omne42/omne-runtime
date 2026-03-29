@@ -122,7 +122,7 @@ fn build_exec_request(
     Ok(request.with_declared_mutation(request_wire.declared_mutation))
 }
 
-fn load_request(path: &PathBuf) -> Result<ExecRequestWire, String> {
+fn load_request(path: &Path) -> Result<ExecRequestWire, String> {
     let content = read_utf8_regular_file_nofollow(path, MAX_REQUEST_JSON_BYTES)
         .map_err(|e| format!("failed to read request {}: {e}", path.display()))?;
     serde_json::from_str(&content)
