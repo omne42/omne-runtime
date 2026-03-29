@@ -61,6 +61,7 @@ fn windows_wide_hex(value: &OsStr) -> String {
     encoded
 }
 
+#[cfg(unix)]
 fn encode_hex_bytes(bytes: &[u8]) -> String {
     let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
     for &byte in bytes {

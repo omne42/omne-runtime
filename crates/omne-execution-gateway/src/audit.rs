@@ -61,8 +61,8 @@ pub fn requested_policy_meta(requested_isolation: ExecutionIsolation) -> PolicyM
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::ffi::OsString;
-
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
 
