@@ -46,9 +46,11 @@ pub fn is_binary_archive_asset_name(asset_name: &str) -> bool {
 #[derive(Debug, Clone, Copy)]
 pub struct BinaryArchiveRequest<'a> {
     pub binary_name: &'a str,
-    /// Archive-format-specific selector for known layout quirks.
+    /// Compatibility field retained so existing callers do not need a lockstep API change.
     ///
-    /// Current fallback matching only uses this for cases like Git-for-Windows ZIP layouts.
+    /// Generic archive matching does not interpret product/tool identity. Callers that need
+    /// layout-specific targeting must pass an exact archive-relative path via
+    /// `archive_binary_hint`.
     pub tool_name: &'a str,
     /// Exact archive-relative path to the desired binary, normalized with `/`.
     pub archive_binary_hint: Option<&'a str>,
@@ -356,7 +358,7 @@ where
             }
             continue;
         }
-        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
+        if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
             return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
         }
@@ -423,7 +425,7 @@ where
             }
             continue;
         }
-        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
+        if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
             return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
         }
@@ -482,7 +484,7 @@ where
             }
             continue;
         }
-        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
+        if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
             return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
         }
@@ -549,7 +551,7 @@ where
             }
             continue;
         }
-        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
+        if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
             return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
         }
@@ -592,7 +594,7 @@ where
             }
             continue;
         }
-        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
+        if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
             return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
         }
@@ -646,7 +648,7 @@ where
             }
             continue;
         }
-        if is_binary_entry_match_without_hint(&path, request.binary_name, request.tool_name) {
+        if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
             return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
         }
@@ -820,17 +822,8 @@ fn normalize_archive_binary_hint(archive_binary_hint: Option<&str>) -> Option<St
     (!hint.is_empty()).then_some(hint.to_string())
 }
 
-fn is_binary_entry_match_without_hint(path: &str, binary_name: &str, tool_name: &str) -> bool {
-    if path.ends_with(&format!("/bin/{binary_name}")) {
-        return true;
-    }
-    if tool_name == "git" && binary_name.eq_ignore_ascii_case("git.exe") {
-        return path.ends_with("/cmd/git.exe")
-            || path.ends_with("/mingw64/bin/git.exe")
-            || path.ends_with("/usr/bin/git.exe")
-            || path.ends_with("/bin/git.exe");
-    }
-    false
+fn is_binary_entry_match_without_hint(path: &str, binary_name: &str) -> bool {
+    path.ends_with(&format!("/bin/{binary_name}"))
 }
 
 #[cfg(test)]
@@ -958,9 +951,9 @@ mod tests {
     }
 
     #[test]
-    fn extracts_zip_binary_by_git_windows_fallback_paths() {
+    fn zip_git_layout_requires_exact_hint_instead_of_tool_specific_fallback() {
         let archive = make_zip_archive(&[("PortableGit/cmd/git.exe", b"MZ".as_slice(), 0o755)]);
-        let extracted = extract_binary_from_archive(
+        let err = extract_binary_from_archive(
             "MinGit-1.2.3-64-bit.zip",
             &archive,
             &BinaryArchiveRequest {
@@ -969,7 +962,30 @@ mod tests {
                 archive_binary_hint: None,
             },
         )
-        .expect("extract git.exe");
+        .expect_err("product-specific layout should require an explicit archive hint");
+
+        assert!(matches!(
+            err,
+            ExtractBinaryFromArchiveError::BinaryNotFound {
+                archive_format: BinaryArchiveFormat::Zip,
+                binary_name,
+            } if binary_name == "git.exe"
+        ));
+    }
+
+    #[test]
+    fn zip_git_layout_can_still_be_selected_by_exact_hint() {
+        let archive = make_zip_archive(&[("PortableGit/cmd/git.exe", b"MZ".as_slice(), 0o755)]);
+        let extracted = extract_binary_from_archive(
+            "MinGit-1.2.3-64-bit.zip",
+            &archive,
+            &BinaryArchiveRequest {
+                binary_name: "git.exe",
+                tool_name: "git",
+                archive_binary_hint: Some("PortableGit/cmd/git.exe"),
+            },
+        )
+        .expect("explicit hint should select product-specific layout");
 
         assert_eq!(extracted.archive_path, "PortableGit/cmd/git.exe");
         assert_eq!(extracted.bytes, b"MZ");
