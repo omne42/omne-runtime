@@ -11,6 +11,7 @@
 - 按精确的 `archive_binary` hint 或约定的 `bin/<binary>` 布局匹配目标条目；`tool_name` 只用于少数格式特例，例如 Git for Windows。
 - 在读取内容前验证命中的目标条目确实是 regular file。
 - 在默认 extracted-byte 预算内读取并返回匹配条目的二进制字节；预算需要覆盖大型官方单文件 release。
+- 在默认 archive scan-entry 预算内查找目标条目，避免恶意 archive 通过海量小条目把目标成员拖到极后位置时放大线性扫描成本。
 
 ## 不负责什么
 

@@ -2,6 +2,7 @@ use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
 
 pub const DEFAULT_MAX_EXTRACTED_BINARY_BYTES: u64 = 256 * 1024 * 1024;
+pub const DEFAULT_MAX_ARCHIVE_SCAN_ENTRIES: u64 = 65_536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryArchiveFormat {
@@ -88,6 +89,10 @@ pub enum ExtractBinaryFromArchiveError {
         archive_path: String,
         limit_bytes: u64,
     },
+    ArchiveScanBudgetExceeded {
+        archive_format: BinaryArchiveFormat,
+        limit_entries: u64,
+    },
 }
 
 impl ExtractBinaryFromArchiveError {
@@ -140,6 +145,13 @@ impl fmt::Display for ExtractBinaryFromArchiveError {
                 f,
                 "matched archive entry `{archive_path}` in {archive_format} archive exceeds extraction budget of {limit_bytes} bytes"
             ),
+            Self::ArchiveScanBudgetExceeded {
+                archive_format,
+                limit_entries,
+            } => write!(
+                f,
+                "{archive_format} archive scan exceeds entry budget of {limit_entries} entries before locating the requested binary"
+            ),
         }
     }
 }
@@ -179,6 +191,25 @@ fn extract_binary_from_archive_reader_with_limit<R>(
 where
     R: Read + Seek,
 {
+    extract_binary_from_archive_reader_with_limits(
+        asset_name,
+        reader,
+        request,
+        max_entry_bytes,
+        DEFAULT_MAX_ARCHIVE_SCAN_ENTRIES,
+    )
+}
+
+fn extract_binary_from_archive_reader_with_limits<R>(
+    asset_name: &str,
+    reader: R,
+    request: &BinaryArchiveRequest<'_>,
+    max_entry_bytes: u64,
+    max_scan_entries: u64,
+) -> Result<ExtractedArchiveBinary, ExtractBinaryFromArchiveError>
+where
+    R: Read + Seek,
+{
     let archive_format = BinaryArchiveFormat::from_asset_name(asset_name).ok_or_else(|| {
         ExtractBinaryFromArchiveError::UnsupportedArchiveType {
             asset_name: asset_name.to_string(),
@@ -186,9 +217,15 @@ where
     })?;
 
     match archive_format {
-        BinaryArchiveFormat::TarGz => extract_from_tar_gz(reader, request, max_entry_bytes),
-        BinaryArchiveFormat::TarXz => extract_from_tar_xz(reader, request, max_entry_bytes),
-        BinaryArchiveFormat::Zip => extract_from_zip(reader, request, max_entry_bytes),
+        BinaryArchiveFormat::TarGz => {
+            extract_from_tar_gz(reader, request, max_entry_bytes, max_scan_entries)
+        }
+        BinaryArchiveFormat::TarXz => {
+            extract_from_tar_xz(reader, request, max_entry_bytes, max_scan_entries)
+        }
+        BinaryArchiveFormat::Zip => {
+            extract_from_zip(reader, request, max_entry_bytes, max_scan_entries)
+        }
     }
 }
 
@@ -222,6 +259,28 @@ where
     R: Read + Seek,
     W: Write + ?Sized,
 {
+    extract_binary_from_archive_reader_to_writer_with_limits(
+        asset_name,
+        reader,
+        request,
+        writer,
+        max_entry_bytes,
+        DEFAULT_MAX_ARCHIVE_SCAN_ENTRIES,
+    )
+}
+
+fn extract_binary_from_archive_reader_to_writer_with_limits<R, W>(
+    asset_name: &str,
+    reader: R,
+    request: &BinaryArchiveRequest<'_>,
+    writer: &mut W,
+    max_entry_bytes: u64,
+    max_scan_entries: u64,
+) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
+where
+    R: Read + Seek,
+    W: Write + ?Sized,
+{
     let archive_format = BinaryArchiveFormat::from_asset_name(asset_name).ok_or_else(|| {
         ExtractBinaryFromArchiveError::UnsupportedArchiveType {
             asset_name: asset_name.to_string(),
@@ -229,14 +288,22 @@ where
     })?;
 
     match archive_format {
-        BinaryArchiveFormat::TarGz => {
-            extract_from_tar_gz_to_writer(reader, request, writer, max_entry_bytes)
-        }
-        BinaryArchiveFormat::TarXz => {
-            extract_from_tar_xz_to_writer(reader, request, writer, max_entry_bytes)
-        }
+        BinaryArchiveFormat::TarGz => extract_from_tar_gz_to_writer(
+            reader,
+            request,
+            writer,
+            max_entry_bytes,
+            max_scan_entries,
+        ),
+        BinaryArchiveFormat::TarXz => extract_from_tar_xz_to_writer(
+            reader,
+            request,
+            writer,
+            max_entry_bytes,
+            max_scan_entries,
+        ),
         BinaryArchiveFormat::Zip => {
-            extract_from_zip_to_writer(reader, request, writer, max_entry_bytes)
+            extract_from_zip_to_writer(reader, request, writer, max_entry_bytes, max_scan_entries)
         }
     }
 }
@@ -245,11 +312,13 @@ fn extract_from_tar_gz<R>(
     reader: R,
     request: &BinaryArchiveRequest<'_>,
     max_entry_bytes: u64,
+    max_scan_entries: u64,
 ) -> Result<ExtractedArchiveBinary, ExtractBinaryFromArchiveError>
 where
     R: Read,
 {
     let archive_format = BinaryArchiveFormat::TarGz;
+    let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let decoder = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
@@ -264,6 +333,7 @@ where
                 err.to_string(),
             )
         })?;
+        scan_budget.record_entry()?;
         let path = entry
             .path()
             .map_err(|err| {
@@ -302,12 +372,14 @@ fn extract_from_tar_gz_to_writer<R, W>(
     request: &BinaryArchiveRequest<'_>,
     writer: &mut W,
     max_entry_bytes: u64,
+    max_scan_entries: u64,
 ) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
 where
     R: Read,
     W: Write + ?Sized,
 {
     let archive_format = BinaryArchiveFormat::TarGz;
+    let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let decoder = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
@@ -322,6 +394,7 @@ where
                 err.to_string(),
             )
         })?;
+        scan_budget.record_entry()?;
         let path = entry
             .path()
             .map_err(|err| {
@@ -365,11 +438,13 @@ fn extract_from_tar_xz<R>(
     reader: R,
     request: &BinaryArchiveRequest<'_>,
     max_entry_bytes: u64,
+    max_scan_entries: u64,
 ) -> Result<ExtractedArchiveBinary, ExtractBinaryFromArchiveError>
 where
     R: Read,
 {
     let archive_format = BinaryArchiveFormat::TarXz;
+    let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let decoder = xz2::read::XzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
@@ -384,6 +459,7 @@ where
                 err.to_string(),
             )
         })?;
+        scan_budget.record_entry()?;
         let path = entry
             .path()
             .map_err(|err| {
@@ -422,12 +498,14 @@ fn extract_from_tar_xz_to_writer<R, W>(
     request: &BinaryArchiveRequest<'_>,
     writer: &mut W,
     max_entry_bytes: u64,
+    max_scan_entries: u64,
 ) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
 where
     R: Read,
     W: Write + ?Sized,
 {
     let archive_format = BinaryArchiveFormat::TarXz;
+    let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let decoder = xz2::read::XzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
@@ -442,6 +520,7 @@ where
                 err.to_string(),
             )
         })?;
+        scan_budget.record_entry()?;
         let path = entry
             .path()
             .map_err(|err| {
@@ -485,11 +564,13 @@ fn extract_from_zip<R>(
     reader: R,
     request: &BinaryArchiveRequest<'_>,
     max_entry_bytes: u64,
+    max_scan_entries: u64,
 ) -> Result<ExtractedArchiveBinary, ExtractBinaryFromArchiveError>
 where
     R: Read + Seek,
 {
     let archive_format = BinaryArchiveFormat::Zip;
+    let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let mut archive = zip::ZipArchive::new(reader).map_err(|err| {
         ExtractBinaryFromArchiveError::archive_read(archive_format, "open_archive", err.to_string())
@@ -502,6 +583,7 @@ where
                 format!("entry #{index}: {err}"),
             )
         })?;
+        scan_budget.record_entry()?;
         let path = entry.name().replace('\\', "/");
         if let Some(hint) = normalized_hint.as_deref() {
             if path == hint {
@@ -529,12 +611,14 @@ fn extract_from_zip_to_writer<R, W>(
     request: &BinaryArchiveRequest<'_>,
     writer: &mut W,
     max_entry_bytes: u64,
+    max_scan_entries: u64,
 ) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
 where
     R: Read + Seek,
     W: Write + ?Sized,
 {
     let archive_format = BinaryArchiveFormat::Zip;
+    let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let mut archive = zip::ZipArchive::new(reader).map_err(|err| {
         ExtractBinaryFromArchiveError::archive_read(archive_format, "open_archive", err.to_string())
@@ -547,6 +631,7 @@ where
                 format!("entry #{index}: {err}"),
             )
         })?;
+        scan_budget.record_entry()?;
         let path = entry.name().replace('\\', "/");
         if let Some(hint) = normalized_hint.as_deref() {
             if path == hint {
@@ -701,6 +786,33 @@ fn ensure_zip_entry_is_regular_file(
     Ok(())
 }
 
+struct ArchiveScanBudget {
+    archive_format: BinaryArchiveFormat,
+    max_entries: u64,
+    scanned_entries: u64,
+}
+
+impl ArchiveScanBudget {
+    fn new(archive_format: BinaryArchiveFormat, max_entries: u64) -> Self {
+        Self {
+            archive_format,
+            max_entries,
+            scanned_entries: 0,
+        }
+    }
+
+    fn record_entry(&mut self) -> Result<(), ExtractBinaryFromArchiveError> {
+        self.scanned_entries = self.scanned_entries.saturating_add(1);
+        if self.scanned_entries > self.max_entries {
+            return Err(ExtractBinaryFromArchiveError::ArchiveScanBudgetExceeded {
+                archive_format: self.archive_format,
+                limit_entries: self.max_entries,
+            });
+        }
+        Ok(())
+    }
+}
+
 fn normalize_archive_binary_hint(archive_binary_hint: Option<&str>) -> Option<String> {
     let hint = archive_binary_hint?;
     let hint = hint.trim().replace('\\', "/");
@@ -730,7 +842,9 @@ mod tests {
         ExtractBinaryFromArchiveError, extract_binary_from_archive,
         extract_binary_from_archive_reader, extract_binary_from_archive_reader_to_writer,
         extract_binary_from_archive_reader_to_writer_with_limit,
-        extract_binary_from_archive_reader_with_limit, is_binary_archive_asset_name,
+        extract_binary_from_archive_reader_to_writer_with_limits,
+        extract_binary_from_archive_reader_with_limit,
+        extract_binary_from_archive_reader_with_limits, is_binary_archive_asset_name,
     };
 
     #[test]
@@ -1044,6 +1158,65 @@ mod tests {
             ExtractBinaryFromArchiveError::ExtractionBudgetExceeded { .. }
         ));
         assert!(out.len() <= 16);
+    }
+
+    #[test]
+    fn archive_scan_budget_limits_tar_entry_search() {
+        let archive = make_tar_gz_archive(&[
+            ("bin/first", b"first".as_slice(), 0o755),
+            ("bin/second", b"second".as_slice(), 0o755),
+        ]);
+        let err = extract_binary_from_archive_reader_with_limits(
+            "demo.tar.gz",
+            Cursor::new(archive),
+            &BinaryArchiveRequest {
+                binary_name: "second",
+                tool_name: "demo",
+                archive_binary_hint: Some("bin/second"),
+            },
+            1024,
+            1,
+        )
+        .expect_err("scan should exceed entry budget before reaching the second entry");
+
+        assert!(matches!(
+            err,
+            ExtractBinaryFromArchiveError::ArchiveScanBudgetExceeded {
+                archive_format: BinaryArchiveFormat::TarGz,
+                limit_entries: 1,
+            }
+        ));
+    }
+
+    #[test]
+    fn archive_scan_budget_limits_zip_writer_search() {
+        let archive = make_zip_archive(&[
+            ("bin/first", b"first".as_slice(), 0o755),
+            ("bin/second", b"second".as_slice(), 0o755),
+        ]);
+        let mut out = Vec::new();
+        let err = extract_binary_from_archive_reader_to_writer_with_limits(
+            "demo.zip",
+            Cursor::new(archive),
+            &BinaryArchiveRequest {
+                binary_name: "second",
+                tool_name: "demo",
+                archive_binary_hint: Some("bin/second"),
+            },
+            &mut out,
+            1024,
+            1,
+        )
+        .expect_err("scan should exceed entry budget before reaching the second entry");
+
+        assert!(matches!(
+            err,
+            ExtractBinaryFromArchiveError::ArchiveScanBudgetExceeded {
+                archive_format: BinaryArchiveFormat::Zip,
+                limit_entries: 1,
+            }
+        ));
+        assert!(out.is_empty());
     }
 
     #[test]
