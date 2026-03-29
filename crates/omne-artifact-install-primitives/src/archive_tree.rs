@@ -661,7 +661,8 @@ mod tests {
 
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
-        download_and_install_archive_tree, install_archive_tree_from_reader_with_limits,
+        download_and_install_archive_tree, install_archive_tree_from_bytes,
+        install_archive_tree_from_reader_with_limits,
     };
     #[cfg(unix)]
     use super::{MAX_ZIP_SYMLINK_TARGET_BYTES, extract_tar_tree, extract_zip_tree};
@@ -1183,6 +1184,34 @@ mod tests {
         let alias = destination.join("alias");
         assert!(fs::symlink_metadata(&alias)?.file_type().is_symlink());
         assert_eq!(fs::read_link(&alias)?, PathBuf::from("safe/target.txt"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_tree_install_preserves_zip_symlinks_across_replace() -> Result<(), Box<dyn Error>> {
+        let archive = make_zip_archive(&[
+            ("safe/target.txt", b"demo".as_slice(), 0o644),
+            ("alias", b"safe/target.txt".as_slice(), 0o120777),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        fs::create_dir_all(&destination)?;
+        fs::write(destination.join("stale.txt"), b"stale")?;
+
+        install_archive_tree_from_bytes("demo.zip", &archive, &destination)?;
+
+        let alias = destination.join("alias");
+        assert!(
+            fs::symlink_metadata(&alias)?.file_type().is_symlink(),
+            "zip symlink should survive the archive-tree staged replace path"
+        );
+        assert_eq!(fs::read_link(&alias)?, PathBuf::from("safe/target.txt"));
+        assert_eq!(fs::read(destination.join("safe/target.txt"))?, b"demo");
+        assert!(
+            !destination.join("stale.txt").exists(),
+            "staged replace should remove stale destination contents"
+        );
         Ok(())
     }
 
