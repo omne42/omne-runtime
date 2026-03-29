@@ -56,7 +56,7 @@ declare mutation and use an explicitly allowlisted executable path.
 One JSON line with:
 
 - `request_resolution` (authoritative normalized request plus isolation provenance)
-- `event` (authoritative full `ExecEvent` payload)
+- `event` (authoritative full `ExecEvent` payload, including argv)
 - `exit_code`
 - `signal`
 - `error`
@@ -68,6 +68,16 @@ Example output fragment:
   "request_resolution": {
     "program": "echo",
     "args": ["hello-from-omne-execution"],
+    "program_exact": {
+      "encoding": "utf8",
+      "value": "echo"
+    },
+    "args_exact": [
+      {
+        "encoding": "utf8",
+        "value": "hello-from-omne-execution"
+      }
+    ],
     "cwd": "/abs/workspace",
     "workspace_root": "/abs/workspace",
     "declared_mutation": false,
@@ -88,6 +98,17 @@ Example output fragment:
     },
     "supported_isolation": "none",
     "program": "echo",
+    "args": ["hello-from-omne-execution"],
+    "program_exact": {
+      "encoding": "utf8",
+      "value": "echo"
+    },
+    "args_exact": [
+      {
+        "encoding": "utf8",
+        "value": "hello-from-omne-execution"
+      }
+    ],
     "cwd": "/abs/workspace",
     "workspace_root": "/abs/workspace",
     "declared_mutation": false,
@@ -103,7 +124,11 @@ Example output fragment:
 defaulted isolation decisions explicit through `input_required_isolation`,
 `requested_isolation_source`, and `policy_default_isolation`.
 `event` is the canonical execution/audit shape and includes canonicalized `cwd`,
-canonicalized `workspace_root`, and declared mutation intent.
+canonicalized `workspace_root`, declared mutation intent, and the authoritative argv seen by the
+gateway.
+Both `request_resolution` and `event` keep readable lossy `program` / `args` fields and also emit
+`program_exact` / `args_exact` so non-UTF-8 OS strings remain reconstructable in machine-facing
+output.
 If `cwd` is missing, inaccessible, or not a directory, the CLI surfaces `cwd_invalid` instead of
 mislabeling the input as `cwd_outside_workspace`.
 `requested_isolation_source` explains whether the effective isolation came from the request payload

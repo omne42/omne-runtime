@@ -3,9 +3,11 @@ use std::path::PathBuf;
 
 use policy_meta::PolicyMetaV1;
 use serde::Serialize;
-use serde::ser::Serializer;
+use serde::Serializer;
 
 use policy_meta::ExecutionIsolation;
+
+use crate::os_serialization::{ExactOsStr, ExactOsStrings, LossyOsStr, LossyOsStrings};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,19 +39,18 @@ pub struct SandboxRuntimeObservation {
     pub detail: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecEvent {
     pub decision: ExecDecision,
     pub requested_isolation: ExecutionIsolation,
     pub requested_policy_meta: PolicyMetaV1,
     pub supported_isolation: ExecutionIsolation,
-    #[serde(serialize_with = "serialize_os_string_lossy")]
     pub program: OsString,
+    pub args: Vec<OsString>,
     pub cwd: PathBuf,
     pub workspace_root: PathBuf,
     pub declared_mutation: bool,
     pub reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_runtime: Option<SandboxRuntimeObservation>,
 }
 
@@ -59,11 +60,46 @@ pub fn requested_policy_meta(requested_isolation: ExecutionIsolation) -> PolicyM
         .with_execution_isolation(requested_isolation)
 }
 
-fn serialize_os_string_lossy<S>(value: &OsString, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(&value.to_string_lossy())
+impl Serialize for ExecEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct ExecEventSerde<'a> {
+            decision: ExecDecision,
+            requested_isolation: ExecutionIsolation,
+            requested_policy_meta: &'a PolicyMetaV1,
+            supported_isolation: ExecutionIsolation,
+            program: LossyOsStr<'a>,
+            args: LossyOsStrings<'a>,
+            program_exact: ExactOsStr<'a>,
+            args_exact: ExactOsStrings<'a>,
+            cwd: &'a PathBuf,
+            workspace_root: &'a PathBuf,
+            declared_mutation: bool,
+            reason: &'a Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            sandbox_runtime: &'a Option<SandboxRuntimeObservation>,
+        }
+
+        ExecEventSerde {
+            decision: self.decision,
+            requested_isolation: self.requested_isolation,
+            requested_policy_meta: &self.requested_policy_meta,
+            supported_isolation: self.supported_isolation,
+            program: LossyOsStr(self.program.as_os_str()),
+            args: LossyOsStrings(&self.args),
+            program_exact: ExactOsStr(self.program.as_os_str()),
+            args_exact: ExactOsStrings(&self.args),
+            cwd: &self.cwd,
+            workspace_root: &self.workspace_root,
+            declared_mutation: self.declared_mutation,
+            reason: &self.reason,
+            sandbox_runtime: &self.sandbox_runtime,
+        }
+        .serialize(serializer)
+    }
 }
 
 #[cfg(test)]

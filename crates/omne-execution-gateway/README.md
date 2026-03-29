@@ -21,7 +21,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed denial for shell-like or interpreter launchers such as `sh`, `cmd`, `pwsh`, `python`, and `node` unless they are explicitly allowlisted
 - fail-closed denial for known mutating tool families such as `git`, `make`, package managers, and core file-mutating utilities unless they declare mutation and use an explicitly allowlisted path
 - gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
-- structured decision events for audit/logging
+- structured decision events for audit/logging, including lossy display fields plus exact JSON encodings for `program` / `args` when OS strings are not valid UTF-8
 
 ## Important Scope Notes
 
@@ -36,6 +36,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - relative executable paths such as `./tool` or `bin/tool` are denied fail-closed because their spawn semantics can drift with the gateway process context; callers must use a bare command name or absolute path.
 - explicit program paths are revalidated as file identities before spawn, so even stable aliases such as symlinks cannot silently drift to a different executable after preflight succeeds.
 - allowlist matching binds explicit paths to executable identity; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
+- JSON surfaces keep readable lossy `program` / `args` fields and also emit `program_exact` / `args_exact`, so audit consumers can reconstruct non-UTF-8 argv exactly instead of guessing from replacement characters.
 - `GatewayPolicy::load_json()` only accepts no-follow regular files, so symlinks and other special files cannot silently stand in for trusted policy input.
 - the CLI request adapter also rejects unknown JSON fields fail-closed, so misspelled request keys cannot silently degrade execution boundaries.
 - if `audit_log_path` is configured, preflight creates missing parent directories and rejects requests fail-closed when the audit log cannot be opened for append.

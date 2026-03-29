@@ -386,6 +386,7 @@ impl ExecGateway {
             requested_policy_meta: requested_policy_meta(request.required_isolation),
             supported_isolation: self.supported_isolation,
             program: request.program.clone(),
+            args: request.args.clone(),
             cwd: request.cwd.clone(),
             workspace_root: request.workspace_root.clone(),
             declared_mutation: request.declared_mutation,
