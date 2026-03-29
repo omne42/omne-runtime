@@ -417,7 +417,24 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
             .to_ascii_lowercase();
         matches!(
             normalized.as_str(),
-            "sh" | "bash" | "dash" | "zsh" | "fish" | "ksh" | "cmd" | "powershell" | "pwsh"
+            "sh" | "bash"
+                | "dash"
+                | "zsh"
+                | "fish"
+                | "ksh"
+                | "cmd"
+                | "powershell"
+                | "pwsh"
+                | "python"
+                | "python2"
+                | "python3"
+                | "node"
+                | "deno"
+                | "bun"
+                | "ruby"
+                | "perl"
+                | "php"
+                | "lua"
         )
     }
 
@@ -1289,6 +1306,27 @@ mod tests {
     }
 
     #[test]
+    fn denies_interpreter_launcher_without_allowlist() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            interpreter_program(),
+            vec![interpreter_inline_flag(), interpreter_mutating_snippet()],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("opaque_command_requires_allowlisted_program")
+        );
+    }
+
+    #[test]
     fn allows_opaque_command_launcher_when_explicitly_allowlisted() {
         #[cfg(windows)]
         let program = r"C:\Windows\System32\cmd.exe";
@@ -1817,6 +1855,16 @@ mod tests {
         "/bin/sh"
     }
 
+    #[cfg(windows)]
+    fn interpreter_program() -> &'static str {
+        "python.exe"
+    }
+
+    #[cfg(not(windows))]
+    fn interpreter_program() -> &'static str {
+        "python3"
+    }
+
     fn allowlisted_program_path() -> &'static str {
         dummy_program_absolute_path()
     }
@@ -1880,6 +1928,26 @@ mod tests {
     #[cfg(not(windows))]
     fn dummy_shell_flag() -> &'static str {
         "-c"
+    }
+
+    #[cfg(windows)]
+    fn interpreter_inline_flag() -> &'static str {
+        "-c"
+    }
+
+    #[cfg(not(windows))]
+    fn interpreter_inline_flag() -> &'static str {
+        "-c"
+    }
+
+    #[cfg(windows)]
+    fn interpreter_mutating_snippet() -> &'static str {
+        "open('deleteme.txt','w').write('x')"
+    }
+
+    #[cfg(not(windows))]
+    fn interpreter_mutating_snippet() -> &'static str {
+        "open('deleteme.txt','w').write('x')"
     }
 
     fn host_supported_test_isolation() -> ExecutionIsolation {
