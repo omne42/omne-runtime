@@ -10,7 +10,7 @@ The gateway exposes `ExecEvent` to describe decision outcomes.
 | `requested_isolation` | Isolation requested by caller. |
 | `requested_policy_meta` | Canonical `policy-meta` projection of the requested isolation. Currently emitted as `{ "version": 1, "execution_isolation": ... }`. |
 | `supported_isolation` | Host-supported isolation detected by gateway. |
-| `program` | Program name (serialized lossily for OS strings). |
+| `program` | Program name. UTF-8 values stay strings; non-UTF-8 OS strings emit a lossless object with `display` plus platform raw bytes/code units. |
 | `cwd` | Effective working directory. Canonicalized when validation succeeds. |
 | `workspace_root` | Effective workspace boundary root. Canonicalized when validation succeeds. |
 | `declared_mutation` | Raw caller-declared mutation intent. |
@@ -29,6 +29,7 @@ The gateway exposes `ExecEvent` to describe decision outcomes.
 When `audit_log_path` is set, the gateway appends JSONL records with:
 
 - `ts_unix_ms`
+- `request_resolution` so the exact canonical argv and isolation provenance remain available in the audit sink
 - full `event`
 - `event.requested_policy_meta` for cross-repo canonical policy metadata
 - `result.status` (`prepared`, `prepare_error`, `exited`, or `spawn_error`)
@@ -44,3 +45,9 @@ enforcement state without changing the audit contract.
 
 The audit sink itself is fail-closed: the gateway rejects symlinked audit files, special files,
 and paths that traverse existing symlinked parent directories.
+
+For JSON consumers, `request_resolution.program`, `request_resolution.args`, and `event.program`
+serialize as plain strings for UTF-8 values. When an OS string is not valid UTF-8, the gateway
+emits an object like `{ "display": "...", "unix_bytes_hex": "..." }` on Unix or
+`{ "display": "...", "windows_wide_hex": "..." }` on Windows so audit readers can recover the
+exact command bytes/code units instead of relying on lossy replacement text.

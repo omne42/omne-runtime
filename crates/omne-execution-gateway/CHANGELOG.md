@@ -12,4 +12,5 @@
 - surface missing, inaccessible, and non-directory working directories as `cwd_invalid` instead of `cwd_outside_workspace`
 - make `resolve_request()` and CLI `request_resolution` reuse the gateway's validated canonical path view
 - reject unknown `omne-execution` request JSON fields fail-closed
+- preserve non-UTF-8 `program` / `args` losslessly in JSON output and include `request_resolution` in audit JSONL records
 - stabilize oversized JSON fixture coverage so request/policy size-limit tests do not depend on free disk space

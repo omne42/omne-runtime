@@ -4,6 +4,7 @@ mod audit;
 mod audit_log;
 mod error;
 mod gateway;
+mod os_json;
 mod policy;
 mod sandbox;
 mod types;

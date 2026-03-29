@@ -102,14 +102,19 @@ Example output fragment:
 `request_resolution` is the gateway-generated canonical pre-execution request view. It makes
 defaulted isolation decisions explicit through `input_required_isolation`,
 `requested_isolation_source`, and `policy_default_isolation`.
+Its `program` / `args` fields stay JSON strings for UTF-8 values, but switch to a lossless object
+with `display` plus platform raw bytes/code units when an OS string is not valid UTF-8.
 `event` is the canonical execution/audit shape and includes canonicalized `cwd`,
 canonicalized `workspace_root`, and declared mutation intent.
+`event.program` follows the same lossless non-UTF-8 encoding rule.
 If `cwd` is missing, inaccessible, or not a directory, the CLI surfaces `cwd_invalid` instead of
 mislabeling the input as `cwd_outside_workspace`.
 `requested_isolation_source` explains whether the effective isolation came from the request payload
 or from `policy.default_isolation`.
 Current hosts report `supported_isolation = none`; `best_effort` and `strict` requests fail closed
 until a native sandbox backend is reintroduced safely.
+When audit logging is enabled, the JSONL sink also includes the same `request_resolution` payload,
+so downstream parsers do not need to reconstruct argv from the shorter `event` view.
 
 ## Exit Behavior
 

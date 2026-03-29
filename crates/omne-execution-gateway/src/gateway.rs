@@ -186,7 +186,9 @@ impl ExecGateway {
             }
         };
         let result = if let Some(audit) = &self.audit {
-            let audit_result = audit.write_execution_record(&event, &result);
+            let request_resolution =
+                RequestResolution::from_event(request, &event, self.policy.default_isolation);
+            let audit_result = audit.write_execution_record(&request_resolution, &event, &result);
             promote_success_result_with_audit_write(result, audit_result)
         } else {
             result
@@ -236,7 +238,9 @@ impl ExecGateway {
             }
         };
         let result = if let Some(audit) = &self.audit {
-            let audit_result = audit.write_prepare_record(&event, &result);
+            let request_resolution =
+                RequestResolution::from_event(request, &event, self.policy.default_isolation);
+            let audit_result = audit.write_prepare_record(&request_resolution, &event, &result);
             promote_success_result_with_audit_write(result, audit_result)
         } else {
             result

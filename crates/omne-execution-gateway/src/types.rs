@@ -2,9 +2,9 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::audit::ExecEvent;
+use crate::os_json::{serialize_os_string, serialize_os_strings};
 use policy_meta::{ExecutionIsolation, PolicyMetaV1};
-use serde::ser::SerializeSeq;
-use serde::{Serialize, Serializer};
+use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -92,9 +92,9 @@ impl ExecRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RequestResolution {
-    #[serde(serialize_with = "serialize_os_string_lossy")]
+    #[serde(serialize_with = "serialize_os_string")]
     pub program: OsString,
-    #[serde(serialize_with = "serialize_os_strings_lossy")]
+    #[serde(serialize_with = "serialize_os_strings")]
     pub args: Vec<OsString>,
     pub cwd: PathBuf,
     pub workspace_root: PathBuf,
@@ -160,29 +160,14 @@ impl RequestResolution {
     }
 }
 
-fn serialize_os_string_lossy<S>(value: &OsString, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(&value.to_string_lossy())
-}
-
-fn serialize_os_strings_lossy<S>(values: &[OsString], serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let mut seq = serializer.serialize_seq(Some(values.len()))?;
-    for value in values {
-        seq.serialize_element(&value.to_string_lossy())?;
-    }
-    seq.end()
-}
-
 #[cfg(test)]
 mod tests {
     use crate::audit::{ExecDecision, requested_policy_meta};
 
     use super::*;
+
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
 
     #[test]
     fn request_new_accepts_string_like_args() {
@@ -299,6 +284,35 @@ mod tests {
         assert_eq!(value["program"], "echo");
         assert_eq!(value["args"], serde_json::json!(["hello"]));
         assert_eq!(value["input_required_isolation"], "best_effort");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn request_resolution_serializes_non_utf8_program_and_args_losslessly() {
+        let request = ExecRequest::new(
+            OsString::from_vec(vec![0x66, 0x6f, 0x80]),
+            vec![OsString::from_vec(vec![0xff])],
+            ".",
+            ExecutionIsolation::BestEffort,
+            ".",
+        );
+        let resolution = RequestResolution::from_request(&request, ExecutionIsolation::BestEffort);
+
+        let value = serde_json::to_value(&resolution).expect("serialize resolution");
+        assert_eq!(
+            value["program"],
+            serde_json::json!({
+                "display": "fo\u{fffd}",
+                "unix_bytes_hex": "666f80"
+            })
+        );
+        assert_eq!(
+            value["args"],
+            serde_json::json!([{
+                "display": "\u{fffd}",
+                "unix_bytes_hex": "ff"
+            }])
+        );
     }
 
     #[test]

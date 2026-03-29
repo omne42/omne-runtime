@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use crate::audit::ExecEvent;
 use crate::error::{ExecError, ExecResult};
+use crate::types::RequestResolution;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AuditLogger {
@@ -25,21 +26,27 @@ impl AuditLogger {
 
     pub(crate) fn write_prepare_record<T, E>(
         &self,
+        request_resolution: &RequestResolution,
         event: &ExecEvent,
         result: &Result<T, E>,
     ) -> ExecResult<()>
     where
         E: Display,
     {
-        self.write_record(AuditRecord::from_prepare(event, result))
+        self.write_record(AuditRecord::from_prepare(request_resolution, event, result))
     }
 
     pub(crate) fn write_execution_record(
         &self,
+        request_resolution: &RequestResolution,
         event: &ExecEvent,
         result: &ExecResult<ExitStatus>,
     ) -> ExecResult<()> {
-        self.write_record(AuditRecord::from_execution(event, result))
+        self.write_record(AuditRecord::from_execution(
+            request_resolution,
+            event,
+            result,
+        ))
     }
 
     pub(crate) fn ensure_ready(&self) -> ExecResult<()> {
@@ -164,25 +171,36 @@ fn existing_ancestor(path: &Path) -> Option<&Path> {
 #[derive(Debug, Serialize)]
 struct AuditRecord {
     ts_unix_ms: u128,
+    request_resolution: RequestResolution,
     event: ExecEvent,
     result: AuditResult,
 }
 
 impl AuditRecord {
-    fn from_prepare<T, E>(event: &ExecEvent, result: &Result<T, E>) -> Self
+    fn from_prepare<T, E>(
+        request_resolution: &RequestResolution,
+        event: &ExecEvent,
+        result: &Result<T, E>,
+    ) -> Self
     where
         E: Display,
     {
         Self {
             ts_unix_ms: now_unix_ms(),
+            request_resolution: request_resolution.clone(),
             event: event.clone(),
             result: AuditResult::from_prepare(result),
         }
     }
 
-    fn from_execution(event: &ExecEvent, result: &ExecResult<ExitStatus>) -> Self {
+    fn from_execution(
+        request_resolution: &RequestResolution,
+        event: &ExecEvent,
+        result: &ExecResult<ExitStatus>,
+    ) -> Self {
         Self {
             ts_unix_ms: now_unix_ms(),
+            request_resolution: request_resolution.clone(),
             event: event.clone(),
             result: AuditResult::from_execution(result),
         }
@@ -273,6 +291,8 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
@@ -296,7 +316,11 @@ mod tests {
         let event = sample_event("echo");
 
         logger
-            .write_prepare_record(&event, &Ok::<(), ExecError>(()))
+            .write_prepare_record(
+                &sample_request_resolution("echo"),
+                &event,
+                &Ok::<(), ExecError>(()),
+            )
             .expect("write prepare record");
 
         let content = fs::read_to_string(path).expect("read audit");
@@ -305,6 +329,8 @@ mod tests {
         assert_eq!(record["result"]["status"], "prepared");
         assert_eq!(record["event"]["decision"], "run");
         assert_eq!(record["event"]["program"], "echo");
+        assert_eq!(record["request_resolution"]["program"], "echo");
+        assert_eq!(record["request_resolution"]["args"], json!(["hello"]));
         assert_eq!(
             record["event"]["requested_policy_meta"],
             json!({
@@ -323,7 +349,11 @@ mod tests {
         let event = sample_event("false");
 
         logger
-            .write_execution_record(&event, &Ok(nonzero_exit_status()))
+            .write_execution_record(
+                &sample_request_resolution("false"),
+                &event,
+                &Ok(nonzero_exit_status()),
+            )
             .expect("write execution record");
 
         let content = fs::read_to_string(path).expect("read audit");
@@ -332,6 +362,7 @@ mod tests {
         assert_eq!(record["result"]["status"], "exited");
         assert_eq!(record["result"]["exit_code"], 1);
         assert_eq!(record["result"]["success"], false);
+        assert_eq!(record["request_resolution"]["program"], "false");
         assert_eq!(
             record["event"]["requested_policy_meta"],
             json!({
@@ -356,10 +387,15 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 thread::spawn(move || {
                     let event = sample_event(format!("echo-{index}"));
+                    let request_resolution = sample_request_resolution(format!("echo-{index}"));
                     barrier.wait();
                     for _ in 0..writes_per_thread {
                         logger
-                            .write_prepare_record(&event, &Ok::<(), ExecError>(()))
+                            .write_prepare_record(
+                                &request_resolution,
+                                &event,
+                                &Ok::<(), ExecError>(()),
+                            )
                             .expect("concurrent audit write should succeed");
                     }
                 })
@@ -376,6 +412,7 @@ mod tests {
         for line in lines {
             let record: serde_json::Value = serde_json::from_str(line).expect("valid json line");
             assert_eq!(record["result"]["status"], "prepared");
+            assert_eq!(record["request_resolution"]["args"], json!(["hello"]));
         }
     }
 
@@ -487,12 +524,50 @@ mod tests {
         fs::create_dir(&path).expect("replace audit file with directory");
 
         let err = logger
-            .write_prepare_record(&event, &Ok::<(), ExecError>(()))
+            .write_prepare_record(
+                &sample_request_resolution("echo"),
+                &event,
+                &Ok::<(), ExecError>(()),
+            )
             .expect_err("write failure should be returned");
         match err {
             ExecError::AuditLogWriteFailed { path: err_path, .. } => assert_eq!(err_path, path),
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_record_keeps_non_utf8_program_and_args_losslessly() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("audit.jsonl");
+        let logger = AuditLogger::new(&path);
+        let program = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
+        let args = vec![OsString::from_vec(vec![0xff])];
+        let event = sample_event(program.clone());
+        let request_resolution = sample_request_resolution_with_args(program, args);
+
+        logger
+            .write_prepare_record(&request_resolution, &event, &Ok::<(), ExecError>(()))
+            .expect("write prepare record");
+
+        let content = fs::read_to_string(path).expect("read audit");
+        let record: serde_json::Value =
+            serde_json::from_str(content.lines().next().expect("audit line")).expect("json");
+        assert_eq!(
+            record["request_resolution"]["program"],
+            json!({
+                "display": "fo\u{fffd}",
+                "unix_bytes_hex": "666f80"
+            })
+        );
+        assert_eq!(
+            record["request_resolution"]["args"],
+            json!([{
+                "display": "\u{fffd}",
+                "unix_bytes_hex": "ff"
+            }])
+        );
     }
 
     fn sample_event(program: impl Into<OsString>) -> ExecEvent {
@@ -509,6 +584,30 @@ mod tests {
             declared_mutation: false,
             reason: None,
             sandbox_runtime: None,
+        }
+    }
+
+    fn sample_request_resolution(program: impl Into<OsString>) -> RequestResolution {
+        sample_request_resolution_with_args(program, vec![OsString::from("hello")])
+    }
+
+    fn sample_request_resolution_with_args(
+        program: impl Into<OsString>,
+        args: Vec<OsString>,
+    ) -> RequestResolution {
+        RequestResolution {
+            program: program.into(),
+            args,
+            cwd: ".".into(),
+            workspace_root: ".".into(),
+            declared_mutation: false,
+            input_required_isolation: Some(ExecutionIsolation::BestEffort),
+            requested_isolation: ExecutionIsolation::BestEffort,
+            requested_isolation_source: crate::RequestedIsolationSource::Request,
+            requested_policy_meta: crate::audit::requested_policy_meta(
+                ExecutionIsolation::BestEffort,
+            ),
+            policy_default_isolation: ExecutionIsolation::BestEffort,
         }
     }
 

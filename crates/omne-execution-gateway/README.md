@@ -40,10 +40,12 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - the CLI request adapter also rejects unknown JSON fields fail-closed, so misspelled request keys cannot silently degrade execution boundaries.
 - if `audit_log_path` is configured, preflight creates missing parent directories and rejects requests fail-closed when the audit log cannot be opened for append.
 - if audit append succeeds during preflight but the final record write later fails, the execution result is surfaced as an explicit audit-log write failure instead of silently degrading to stderr-only reporting.
+- audit JSON that carries `program` / `args` stays lossless for non-UTF-8 OS strings by emitting a `{ "display": ..., "unix_bytes_hex" | "windows_wide_hex": ... }` object only when plain UTF-8 text would be lossy.
 - `prepare_command` returns a spawn-only `PreparedCommand` wrapper instead of handing a mutable validated `Command` back to callers.
 - `execute()` and `PreparedCommand::spawn()` both revalidate bound `cwd` / `workspace_root` identities immediately before spawn.
 - missing, inaccessible, or non-directory `cwd` values are reported as `cwd_invalid` instead of being mislabeled as workspace boundary violations.
 - `execute()` and `PreparedCommand::spawn()` bind `stdin/stdout/stderr` to null handles; callers that need interactive or captured stdio should use a different process primitive.
+- audit JSONL records now include `request_resolution`, so the exact argv view that the gateway validated is preserved alongside the final `event`.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.
 
 ## Platform Capability (v0.1.0)
