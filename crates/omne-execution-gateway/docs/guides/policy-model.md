@@ -41,9 +41,10 @@
 - bare program names do not grant mutation rights, even if a same-name entry appears in the allowlist. If a caller wants to mutate via `omne-fs`, the request must use an explicit path such as `/path/to/omne-fs`.
 - allowlist matching binds to the resolved executable identity behind an explicit path, so stable aliases such as symlinks may match only when they still resolve to the same executable file.
 - shell-like opaque launchers such as `sh`, `cmd`, `powershell`, and `pwsh` are denied unless they are explicitly allowlisted, because the gateway cannot trust `declared_mutation = false` for an interpreter boundary.
-- known mutating tool families such as `git`, `make`, package managers, and core file-mutating utilities are denied when they claim `declared_mutation = false`, because the gateway should not trust `declared_mutation = false` for obvious host-mutating entry points; callers must treat them as mutating and pair them with an allowlisted explicit path.
+- known mutating tool families such as `git`, `make`, `cargo`, `go`, package managers, and core file-mutating utilities are denied when they claim `declared_mutation = false`, because the gateway should not trust `declared_mutation = false` for obvious host-mutating entry points. The built-in list currently includes package-manager/toolchain entry points such as `npm`, `pip`, `apt`, `dnf`, `yum`, `pacman`, `brew`, `winget`, and `cargo`, plus core file-mutating utilities such as `rm`, `mv`, `cp`, `mkdir`, `touch`, `chmod`, and `ln`; callers must treat them as mutating and pair them with an allowlisted explicit path.
 - the gateway still does not parse arbitrary tool-specific CLI syntax or infer arbitrary binary semantics for unknown non-allowlisted direct executables; the built-in mutator list is only a narrow fail-closed guardrail for obvious host-mutating entry points.
 - allowlist matching is executable-identity based for explicit paths; it is not binary provenance verification.
+- `execute()` owns the final execution audit record; `prepare_command()` only records the preflight `prepared` / `prepare_error` audit state because the caller owns the child lifecycle after `spawn()`.
 - Linux、macOS 和 Windows 当前都只报告 `None` 为受支持能力；如果 policy/default/request 仍要求 `best_effort` 或 `strict`，gateway 会按 `isolation_not_supported` fail-closed。
 
 ## Denial Reasons

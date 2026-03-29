@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 - include `event.args` plus exact `program_exact` / `args_exact` JSON encodings so audit logs and CLI output preserve non-UTF-8 argv without relying on lossy replacement characters
-- document the existing known-mutating tool-family gate so `git`/`make`/package-manager style commands are clearly described as fail-closed unless callers declare mutation and bind an allowlisted executable path
+- deny known-mutating tool families such as `git`, `make`, package managers, and core file-mutating utilities when callers label them `declared_mutation = false`; those tools must now declare mutation and bind an allowlisted explicit path
 - add regression coverage for `cwd_invalid` so missing working directories do not regress back into `cwd_outside_workspace`
 - reject symlinked, ancestor-symlinked, and special-file audit log destinations so audit logging fails closed on unsafe sinks
 - reject symlinked, special-file, and oversized `omne-execution` request JSON inputs fail-closed

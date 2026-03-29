@@ -93,6 +93,8 @@ OS strings exactly instead of depending on lossy display fields.
 cannot mutate program/args/cwd after preflight and silently bypass the gateway decision.
 `execute()` and `PreparedCommand::spawn()` bind child `stdin/stdout/stderr` to null handles, so
 they are intentionally non-interactive and do not surface child output.
+`prepare_command()` only records preflight audit state; final exit auditing and runtime sandbox
+observation remain part of `execute()`, which still owns the complete child lifecycle.
 
 ## CapabilityReport
 
