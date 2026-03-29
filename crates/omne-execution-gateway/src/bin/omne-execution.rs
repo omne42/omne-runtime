@@ -243,11 +243,11 @@ mod tests {
     use super::*;
     use omne_execution_gateway::{ExecDecision, RequestedIsolationSource, requested_policy_meta};
     use policy_meta::SpecVersion;
-    use tempfile::tempdir;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
+    use tempfile::tempdir;
 
     fn sample_workspace() -> std::path::PathBuf {
         std::env::current_dir().expect("current_dir")
@@ -511,7 +511,10 @@ mod tests {
         fs::write(&path, oversized).expect("write oversized request");
 
         let err = load_request(&path).expect_err("oversized request should fail closed");
-        assert!(err.contains("exceeds size limit"), "unexpected error: {err}");
+        assert!(
+            err.contains("exceeds size limit"),
+            "unexpected error: {err}"
+        );
     }
 
     #[cfg(unix)]
@@ -528,7 +531,10 @@ mod tests {
         symlink(&target, &link).expect("create request symlink");
 
         let err = load_request(&link).expect_err("symlink request should fail closed");
-        assert!(err.contains("path is not a regular file"), "unexpected error: {err}");
+        assert!(
+            err.contains("path is not a regular file"),
+            "unexpected error: {err}"
+        );
     }
 
     #[cfg(unix)]
@@ -539,7 +545,10 @@ mod tests {
         let _listener = UnixListener::bind(&path).expect("bind socket");
 
         let err = load_request(&path).expect_err("special-file request should fail closed");
-        assert!(err.contains("path is not a regular file"), "unexpected error: {err}");
+        assert!(
+            err.contains("path is not a regular file"),
+            "unexpected error: {err}"
+        );
     }
 
     #[cfg(windows)]
