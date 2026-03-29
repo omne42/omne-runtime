@@ -15,7 +15,7 @@ This project centralizes execution policy and platform capability handling.
 - Explicit isolation levels (`none`, `best_effort`, `strict`).
 - Fail-closed denial when required isolation is unavailable.
 - Workspace boundary enforcement for `cwd` and `workspace_root`.
-- Policy control for mutating commands via allowlisted tools.
+- Policy control for mutating commands and ambient script launchers via allowlisted tools.
 - Structured event outputs for audit and debugging.
 
 ## Scope

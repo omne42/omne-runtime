@@ -18,7 +18,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - explicit absolute `program` paths are bound as file identities and revalidated immediately before spawn
 - workspace boundary enforcement (`cwd` must stay inside `workspace_root`, and execution binds canonicalized directory identities before spawn)
 - explicit mutation declaration for every request when mutation enforcement is enabled
-- fail-closed denial for opaque command launchers such as `sh`, `cmd`, and `pwsh` unless they are explicitly allowlisted
+- fail-closed denial for shell-like or interpreter launchers such as `sh`, `cmd`, `pwsh`, `python`, and `node` unless they are explicitly allowlisted
 - gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
 - structured decision events for audit/logging
 
@@ -29,7 +29,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - Linux's previous native Landlock path is intentionally disabled until it can be reintroduced without relying on unsafe post-`fork` Rust execution.
 - when `enforce_allowlisted_program_for_mutation = true`, callers must always set `with_declared_mutation(...)` intentionally instead of relying on the constructor default.
 - allowlisted mutating programs must explicitly set `declared_mutation = true`, and declared mutations must bind to an allowlisted executable identity via an explicit program path.
-- shell-like opaque launchers are denied by default because the gateway cannot trust `declared_mutation = false` for an interpreter that can execute arbitrary subcommands.
+- shell-like and interpreter launchers are denied by default because the gateway cannot trust `declared_mutation = false` for runtimes that can execute arbitrary subcommands or scripts.
 - mutation authorization now requires explicit program paths in both the request and policy allowlist. Bare program names are denied fail-closed because they do not bind to a stable executable, and allowlist checks resolve by executable identity rather than basename text.
 - relative executable paths such as `./tool` or `bin/tool` are denied fail-closed because their spawn semantics can drift with the gateway process context; callers must use a bare command name or absolute path.
 - explicit program paths are revalidated as file identities before spawn, so even stable aliases such as symlinks cannot silently drift to a different executable after preflight succeeds.
