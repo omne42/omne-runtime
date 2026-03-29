@@ -306,6 +306,25 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
+    #[test]
+    fn load_json_rejects_oversized_input() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("policy.json");
+        let oversized_len = u64::try_from(MAX_POLICY_JSON_BYTES)
+            .expect("policy size bound fits u64")
+            .saturating_add(1);
+        let file = File::create(&path).expect("create oversized policy placeholder");
+        file.set_len(oversized_len)
+            .expect("extend oversized policy placeholder");
+
+        let err = GatewayPolicy::load_json(&path).expect_err("oversized policy should fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("exceeds size limit"),
+            "unexpected error: {err}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn load_json_rejects_symlink_input() {
