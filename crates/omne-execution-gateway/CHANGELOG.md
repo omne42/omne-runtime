@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - add regression coverage for `cwd_invalid` so missing working directories do not regress back into `cwd_outside_workspace`
+- reject symlinked, special-file, and symlink-parent audit log destinations so audit logging fails closed on unsafe sinks
 - require callers to declare mutation intent explicitly before gateway evaluation when mutation enforcement is enabled
 - bind mutating allowlist checks to the resolved executable identity behind explicit program paths instead of basename text
 - surface missing, inaccessible, and non-directory working directories as `cwd_invalid` instead of `cwd_outside_workspace`
