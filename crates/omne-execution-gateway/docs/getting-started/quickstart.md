@@ -118,5 +118,6 @@ Example fragment:
 - mutating request with non-allowlisted program -> denied (when policy enforcement is on).
 - request omitted `with_declared_mutation(...)` / `declared_mutation` -> denied as `mutation_declaration_required` (when policy enforcement is on).
 - shell-style launchers such as `sh`, `cmd`, and `pwsh` -> denied unless explicitly allowlisted.
+- known mutating tools such as `git`, `make`, package managers, and `rm` -> denied unless explicitly allowlisted.
 - `request_resolution` now reports the same validated canonical `cwd` / `workspace_root` view that appears in `event` when preflight reaches path validation.
 - `prepare_command` with a mismatched `Command` program/args -> denied.

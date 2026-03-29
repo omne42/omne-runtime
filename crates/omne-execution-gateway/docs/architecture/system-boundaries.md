@@ -23,6 +23,7 @@
 - 当请求的隔离级别高于宿主报告能力时，gateway 必须 fail-closed 拒绝，而不是回退到未隔离执行。
 - mutating allowlist 只授权显式程序路径；bare program name 因为无法绑定稳定可执行文件而 fail-closed 拒绝。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，所有请求都必须显式声明 `declared_mutation`；否则 gateway 会以 `mutation_declaration_required` fail-closed 拒绝。
+- 当 `enforce_allowlisted_program_for_mutation=true` 时，已知高风险 mutator/toolchain（例如 `git`、`make`、包管理器和核心文件变更命令）即使声明 `declared_mutation=false` 也必须绑定到 allowlisted 显式程序路径，避免调用方把明显 mutating 的工具伪装成只读命令。
 - Windows 上命令路径和 workspace 边界比较按平台语义做大小写不敏感处理，不要求调用方传入与文件系统完全同大小写的字面量。
 - `GatewayPolicy::load_json()` 只接受 no-follow regular file 输入，不会把 symlink、目录或其他特殊文件当成可信策略文件读取。
 - `omne-execution` CLI 的 `request.json` 也只接受 bounded no-follow regular file 输入，避免通过 symlink、特殊文件或超大输入把 CLI 边界退化成非确定性文件读取。

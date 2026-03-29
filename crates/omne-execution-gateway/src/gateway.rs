@@ -316,6 +316,16 @@ impl ExecGateway {
                     ),
                 ));
             }
+            if uses_known_host_mutating_program(&request.program) && !request.declared_mutation {
+                return Err(self.deny_preflight(
+                    event,
+                    "known_mutating_program_requires_declared_mutation",
+                    ExecError::PolicyDenied(
+                        "known mutating programs cannot declare mutation=false; use an allowlisted explicit program path with declared mutation"
+                            .to_string(),
+                    ),
+                ));
+            }
         }
 
         if request.required_isolation > self.supported_isolation {
@@ -409,14 +419,23 @@ impl ExecGateway {
     }
 }
 
+fn program_name_matches(program: &OsStr, predicate: impl Fn(&str) -> bool) -> bool {
+    let path = Path::new(program);
+    path.to_str().is_some_and(&predicate)
+        || path.file_name().and_then(|name| name.to_str()).is_some_and(predicate)
+}
+
+fn normalized_program_name(candidate: &str) -> String {
+    candidate
+        .strip_suffix(".exe")
+        .unwrap_or(candidate)
+        .to_ascii_lowercase()
+}
+
 fn uses_opaque_command_launcher(program: &OsStr) -> bool {
-    fn matches_opaque_command_name(candidate: &str) -> bool {
-        let normalized = candidate
-            .strip_suffix(".exe")
-            .unwrap_or(candidate)
-            .to_ascii_lowercase();
+    program_name_matches(program, |candidate| {
         matches!(
-            normalized.as_str(),
+            normalized_program_name(candidate).as_str(),
             "sh" | "bash"
                 | "dash"
                 | "zsh"
@@ -436,14 +455,62 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
                 | "php"
                 | "lua"
         )
+    })
+}
+
+fn uses_known_host_mutating_program(program: &OsStr) -> bool {
+    fn matches_known_host_mutating_program(candidate: &str) -> bool {
+        let normalized = candidate
+            .strip_suffix(".exe")
+            .unwrap_or(candidate)
+            .to_ascii_lowercase();
+        matches!(
+            normalized.as_str(),
+            "rm"
+                | "mv"
+                | "cp"
+                | "mkdir"
+                | "rmdir"
+                | "touch"
+                | "install"
+                | "ln"
+                | "chmod"
+                | "chown"
+                | "chgrp"
+                | "git"
+                | "make"
+                | "cmake"
+                | "ninja"
+                | "cargo"
+                | "go"
+                | "npm"
+                | "pnpm"
+                | "yarn"
+                | "pip"
+                | "pip3"
+                | "uv"
+                | "poetry"
+                | "apt"
+                | "apt-get"
+                | "yum"
+                | "dnf"
+                | "pacman"
+                | "zypper"
+                | "brew"
+                | "winget"
+                | "choco"
+                | "scoop"
+                | "omne-fs"
+                | "omne-fs-cli"
+        )
     }
 
     let path = Path::new(program);
-    path.to_str().is_some_and(matches_opaque_command_name)
+    path.to_str().is_some_and(matches_known_host_mutating_program)
         || path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(matches_opaque_command_name)
+            .is_some_and(matches_known_host_mutating_program)
 }
 
 fn canonicalize_workspace_root(path: &Path) -> ExecResult<PathBuf> {
@@ -1327,6 +1394,76 @@ mod tests {
     }
 
     #[test]
+    fn denies_known_mutating_program_without_allowlist_when_declared_non_mutating() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "git",
+            vec!["status"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("known_mutating_program_requires_declared_mutation")
+        );
+    }
+
+    #[test]
+    fn denies_known_mutating_program_path_without_allowlist_when_declared_non_mutating() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let program = known_mutating_program_path(&workspace);
+        fs::write(&program, "placeholder").expect("write program placeholder");
+        let request = ExecRequest::new(
+            &program,
+            vec!["status"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("known_mutating_program_requires_declared_mutation")
+        );
+    }
+
+    #[test]
+    fn allows_allowlisted_known_mutating_program_path_when_declared_mutating() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = known_mutating_program_path(&workspace);
+        fs::write(&program, "placeholder").expect("write program placeholder");
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &program,
+            vec!["status"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
+    }
+
+    #[test]
     fn allows_opaque_command_launcher_when_explicitly_allowlisted() {
         #[cfg(windows)]
         let program = r"C:\Windows\System32\cmd.exe";
@@ -1877,6 +2014,16 @@ mod tests {
     #[cfg(not(windows))]
     fn non_allowlisted_program_path(workspace: &tempfile::TempDir) -> PathBuf {
         workspace.path().join("other")
+    }
+
+    #[cfg(windows)]
+    fn known_mutating_program_path(workspace: &tempfile::TempDir) -> PathBuf {
+        workspace.path().join("git.exe")
+    }
+
+    #[cfg(not(windows))]
+    fn known_mutating_program_path(workspace: &tempfile::TempDir) -> PathBuf {
+        workspace.path().join("git")
     }
 
     #[cfg(windows)]

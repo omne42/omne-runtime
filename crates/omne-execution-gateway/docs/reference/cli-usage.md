@@ -47,6 +47,9 @@ authorized while it still points at the same executable file.
 Shell-like opaque launchers such as `sh`, `cmd`, `powershell`, and `pwsh` are denied unless
 their full executable paths are explicitly allowlisted. The gateway does not parse `omne-fs` subcommands to infer
 mutation intent.
+Known mutating tool families such as `git`, `make`, package managers, and core file-mutating
+utilities are also denied unless their full executable paths are explicitly allowlisted, so
+callers cannot relabel obvious host-mutating tools as read-only.
 
 ## Output Schema
 

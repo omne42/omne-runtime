@@ -44,6 +44,9 @@ intentionally delegating isolation selection to `GatewayPolicy::default_isolatio
 When `GatewayPolicy::enforce_allowlisted_program_for_mutation` remains enabled, callers must still
 finish request construction with `.with_declared_mutation(true/false)` before evaluation or
 execution; otherwise the gateway denies the request with `MutationDeclarationRequired`.
+The gateway also denies obvious built-in host mutators such as `git`, `make`, package managers,
+and core file-mutating utilities when they claim `declared_mutation = false`; those requests must
+declare mutation and use an allowlisted explicit path.
 
 ## RequestResolution
 
