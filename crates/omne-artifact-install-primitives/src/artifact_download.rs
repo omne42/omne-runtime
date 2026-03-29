@@ -125,10 +125,10 @@ pub(crate) fn failed_candidates_error(
     let canonical_url = redact_url_for_error(canonical_url);
     match kind {
         ArtifactInstallErrorKind::Download => ArtifactInstallError::download(format!(
-            "all download candidates failed for {canonical_url}: {details}"
+            "all artifact download candidates failed for {canonical_url}: {details}"
         )),
         ArtifactInstallErrorKind::Install => ArtifactInstallError::install(format!(
-            "all download candidates failed for {canonical_url}: {details}"
+            "all artifact candidates failed for {canonical_url}; at least one candidate reached install phase: {details}"
         )),
     }
 }
@@ -178,6 +178,11 @@ mod tests {
         );
 
         assert_eq!(err.kind(), ArtifactInstallErrorKind::Download);
+        assert!(
+            err.to_string()
+                .contains("all artifact download candidates failed"),
+            "unexpected message: {err}"
+        );
     }
 
     #[test]
@@ -196,6 +201,44 @@ mod tests {
         );
 
         assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
+        assert!(
+            err.to_string()
+                .contains("at least one candidate reached install phase"),
+            "unexpected message: {err}"
+        );
+        assert!(err.to_string().contains("archive extraction failed"));
+    }
+
+    #[test]
+    fn install_phase_failure_message_does_not_claim_everything_failed_in_download_phase() {
+        let download_candidate = ArtifactDownloadCandidate {
+            url: "https://example.invalid/demo.zip".to_string(),
+            kind: ArtifactDownloadCandidateKind::Canonical,
+        };
+        let install_candidate = ArtifactDownloadCandidate {
+            url: "https://mirror.example.invalid/demo.zip".to_string(),
+            kind: ArtifactDownloadCandidateKind::Mirror,
+        };
+
+        let err = failed_candidates_error(
+            "https://example.invalid/demo.zip",
+            vec![
+                candidate_failure_message(
+                    &download_candidate,
+                    &ArtifactInstallError::download("HTTP 404"),
+                ),
+                candidate_failure_message(
+                    &install_candidate,
+                    &ArtifactInstallError::install("archive extraction failed"),
+                ),
+            ],
+        );
+
+        assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
+        assert!(
+            !err.to_string().contains("all download candidates failed"),
+            "unexpected message: {err}"
+        );
         assert!(err.to_string().contains("archive extraction failed"));
     }
 
