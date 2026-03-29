@@ -23,6 +23,7 @@ use crate::artifact_download::{
 
 pub const DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_ARCHIVE_TREE_ENTRIES: u64 = 65_536;
+const MAX_ZIP_SYMLINK_TARGET_BYTES: usize = 16 * 1024;
 const ARCHIVE_TREE_INSTALL_LOCK_PREFIX: &str = ".archive-tree-install-";
 const ARCHIVE_TREE_INSTALL_LOCK_SUFFIX: &str = ".lock";
 
@@ -524,13 +525,25 @@ fn remove_existing_regular_file_leaf(
 
 #[cfg(unix)]
 fn read_zip_symlink_target(
-    _entry_path: &Path,
+    entry_path: &Path,
     entry: &mut zip::read::ZipFile<'_>,
 ) -> Result<PathBuf, ArtifactInstallError> {
     let mut target = Vec::new();
     entry
+        .take(
+            u64::try_from(MAX_ZIP_SYMLINK_TARGET_BYTES)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        )
         .read_to_end(&mut target)
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    if target.len() > MAX_ZIP_SYMLINK_TARGET_BYTES {
+        return Err(ArtifactInstallError::install(format!(
+            "zip symlink target for {} exceeds limit of {} bytes",
+            entry_path.display(),
+            MAX_ZIP_SYMLINK_TARGET_BYTES
+        )));
+    }
     Ok(PathBuf::from(std::ffi::OsString::from_vec(target)))
 }
 
@@ -813,8 +826,9 @@ mod tests {
     use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
 
     use super::{
-        ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
-        download_and_install_archive_tree, install_archive_tree_from_reader_with_limits,
+        ArchiveExtractionLimits, ArchiveTreeInstallRequest, MAX_ZIP_SYMLINK_TARGET_BYTES,
+        archive_tree_install_lock_file_name, download_and_install_archive_tree,
+        install_archive_tree_from_reader_with_limits,
     };
     #[cfg(unix)]
     use super::{extract_tar_tree, extract_zip_tree};
@@ -1076,6 +1090,29 @@ mod tests {
             .expect("install should complete after lock release")?;
         handle.join().expect("install thread join");
         assert_eq!(fs::read(destination.join("bin/demo"))?, b"demo");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_symlink_targets_respect_length_limit() -> Result<(), Box<dyn Error>> {
+        let oversized_target = "a".repeat(MAX_ZIP_SYMLINK_TARGET_BYTES + 1);
+        let archive = make_zip_archive(&[("alias", oversized_target.as_bytes(), 0o120777)])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        fs::create_dir_all(&destination)?;
+
+        let err = extract_zip_tree(
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits::default(),
+        )
+        .expect_err("oversized zip symlink target should be rejected");
+
+        assert!(
+            err.to_string().contains("zip symlink target"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 
