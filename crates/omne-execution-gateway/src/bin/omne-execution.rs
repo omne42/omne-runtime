@@ -1,14 +1,19 @@
 #![forbid(unsafe_code)]
 
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Read;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus};
+use std::str;
 
 use omne_execution_gateway::{
     ExecEvent, ExecGateway, ExecRequest, ExecResult, GatewayPolicy, RequestResolution,
 };
 use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
+
+const MAX_REQUEST_JSON_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,10 +123,83 @@ fn build_exec_request(
 }
 
 fn load_request(path: &PathBuf) -> Result<ExecRequestWire, String> {
-    let content = fs::read_to_string(path)
+    let content = read_utf8_regular_file_nofollow(path, MAX_REQUEST_JSON_BYTES)
         .map_err(|e| format!("failed to read request {}: {e}", path.display()))?;
     serde_json::from_str(&content)
         .map_err(|e| format!("invalid request json {}: {e}", path.display()))
+}
+
+fn read_utf8_regular_file_nofollow(path: &Path, max_bytes: usize) -> std::io::Result<String> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("path is not a regular file: {}", path.display()),
+        ));
+    }
+    let file = open_regular_readonly_nofollow(path)?;
+    let mut bytes = Vec::new();
+    let limit = u64::try_from(max_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut limited = file.take(limit);
+    limited.read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "request file exceeds size limit ({} > {} bytes)",
+                bytes.len(),
+                max_bytes
+            ),
+        ));
+    }
+    str::from_utf8(&bytes)
+        .map(str::to_owned)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))
+}
+
+#[cfg(unix)]
+fn open_regular_readonly_nofollow(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let file = options.open(path)?;
+    ensure_regular_file(path, file)
+}
+
+#[cfg(windows)]
+fn open_regular_readonly_nofollow(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = options.open(path)?;
+    ensure_regular_file(path, file)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn open_regular_readonly_nofollow(path: &Path) -> std::io::Result<File> {
+    let file = OpenOptions::new().read(true).open(path)?;
+    ensure_regular_file(path, file)
+}
+
+fn ensure_regular_file(path: &Path, file: File) -> std::io::Result<File> {
+    let metadata = file.metadata()?;
+    if metadata.is_file() {
+        return Ok(file);
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("path is not a regular file: {}", path.display()),
+    ))
 }
 
 fn exec_output_from_result(
@@ -165,6 +243,11 @@ mod tests {
     use super::*;
     use omne_execution_gateway::{ExecDecision, RequestedIsolationSource, requested_policy_meta};
     use policy_meta::SpecVersion;
+    use tempfile::tempdir;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener;
 
     fn sample_workspace() -> std::path::PathBuf {
         std::env::current_dir().expect("current_dir")
@@ -415,6 +498,48 @@ mod tests {
         .expect_err("unknown request fields should fail closed");
 
         assert!(wire.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn load_request_rejects_oversized_input() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("request.json");
+        let oversized = format!(
+            "{{\"program\":\"{}\",\"args\":[],\"cwd\":\".\",\"workspace_root\":\".\",\"declared_mutation\":false}}",
+            "x".repeat(MAX_REQUEST_JSON_BYTES)
+        );
+        fs::write(&path, oversized).expect("write oversized request");
+
+        let err = load_request(&path).expect_err("oversized request should fail closed");
+        assert!(err.contains("exceeds size limit"), "unexpected error: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_request_rejects_symlink_input() {
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("request-real.json");
+        fs::write(
+            &target,
+            r#"{"program":"echo","args":[],"cwd":".","workspace_root":".","declared_mutation":false}"#,
+        )
+        .expect("write request");
+        let link = dir.path().join("request-link.json");
+        symlink(&target, &link).expect("create request symlink");
+
+        let err = load_request(&link).expect_err("symlink request should fail closed");
+        assert!(err.contains("path is not a regular file"), "unexpected error: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_request_rejects_special_file_input() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("request.sock");
+        let _listener = UnixListener::bind(&path).expect("bind socket");
+
+        let err = load_request(&path).expect_err("special-file request should fail closed");
+        assert!(err.contains("path is not a regular file"), "unexpected error: {err}");
     }
 
     #[cfg(windows)]
