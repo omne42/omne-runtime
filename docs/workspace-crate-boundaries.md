@@ -152,7 +152,7 @@ crate，不是新的兜底桶。
 
 - 识别受支持的二进制归档格式，例如 `.tar.gz`、`.tar.xz`、`.zip`
 - 遍历归档条目并统一归一化条目路径
-- 按精确 `archive_binary` hint 或约定布局查找目标条目；`tool_name` 只用于少数已知 archive 布局特例
+- 按精确 `archive_binary` hint 或约定布局查找目标条目；非常规 archive 布局必须由调用方提供精确 hint，primitive 不内置产品特例
 - 读取并返回匹配到的目标二进制字节
 
 这些职责可以从下面这些文件直接看到：
