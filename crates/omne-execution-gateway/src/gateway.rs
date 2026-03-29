@@ -187,7 +187,7 @@ impl ExecGateway {
         };
         let result = if let Some(audit) = &self.audit {
             let audit_result = audit.write_execution_record(&event, &result);
-            promote_success_result_with_audit_write(result, audit_result)
+            combine_result_with_audit_write(result, audit_result)
         } else {
             result
         };
@@ -237,7 +237,7 @@ impl ExecGateway {
         };
         let result = if let Some(audit) = &self.audit {
             let audit_result = audit.write_prepare_record(&event, &result);
-            promote_success_result_with_audit_write(result, audit_result)
+            combine_result_with_audit_write(result, audit_result)
         } else {
             result
         };
@@ -304,6 +304,15 @@ impl ExecGateway {
                     "opaque_command_requires_allowlisted_program",
                     ExecError::PolicyDenied(
                         "opaque command launchers must use an allowlisted program".to_string(),
+                    ),
+                ));
+            }
+            if uses_known_mutating_program(&request.program) && !request.declared_mutation {
+                return Err(self.deny_preflight(
+                    event,
+                    "known_mutating_program_requires_declared_mutation",
+                    ExecError::PolicyDenied(
+                        "known mutating tools must declare mutation".to_string(),
                     ),
                 ));
             }
@@ -445,6 +454,56 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(matches_opaque_command_name)
+}
+
+fn uses_known_mutating_program(program: &OsStr) -> bool {
+    let program_name = Path::new(program)
+        .file_name()
+        .unwrap_or(program)
+        .to_string_lossy();
+    let normalized = program_name
+        .strip_suffix(".exe")
+        .unwrap_or(&program_name)
+        .to_ascii_lowercase();
+
+    matches!(
+        normalized.as_str(),
+        "git"
+            | "make"
+            | "gmake"
+            | "cargo"
+            | "go"
+            | "npm"
+            | "npx"
+            | "pnpm"
+            | "yarn"
+            | "bun"
+            | "pip"
+            | "pip3"
+            | "uv"
+            | "apt"
+            | "apt-get"
+            | "dnf"
+            | "yum"
+            | "pacman"
+            | "zypper"
+            | "apk"
+            | "brew"
+            | "winget"
+            | "choco"
+            | "scoop"
+            | "rm"
+            | "mv"
+            | "cp"
+            | "install"
+            | "mkdir"
+            | "rmdir"
+            | "touch"
+            | "chmod"
+            | "chown"
+            | "chgrp"
+            | "ln"
+    )
 }
 
 fn canonicalize_workspace_root(path: &Path) -> ExecResult<PathBuf> {
@@ -766,12 +825,20 @@ fn explicit_program_paths_match(actual: &Path, requested: &Path) -> bool {
     same_file::is_same_file(actual, requested).unwrap_or(false) || path_equals(actual, requested)
 }
 
-fn promote_success_result_with_audit_write<T>(
+fn combine_result_with_audit_write<T>(
     result: ExecResult<T>,
     audit_result: ExecResult<()>,
 ) -> ExecResult<T> {
     match (result, audit_result) {
         (Ok(_), Err(err)) => Err(err),
+        (Err(result_err), Err(ExecError::AuditLogWriteFailed { path, detail })) => {
+            Err(ExecError::AuditLogWriteFailedAfterExecutionError {
+                path,
+                detail,
+                execution_error: result_err.to_string(),
+            })
+        }
+        (Err(_), Err(err)) => Err(err),
         (result, _) => result,
     }
 }
@@ -1304,6 +1371,101 @@ mod tests {
             event.reason.as_deref(),
             Some("opaque_command_requires_allowlisted_program")
         );
+    }
+
+    #[test]
+    fn denies_known_mutating_bare_program_without_declared_mutation() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "git",
+            vec!["status"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("known_mutating_program_requires_declared_mutation")
+        );
+        assert!(matches!(result, Err(ExecError::PolicyDenied(_))));
+    }
+
+    #[test]
+    fn denies_known_mutating_explicit_program_without_declared_mutation() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("git");
+        fs::write(&program, "placeholder").expect("write program placeholder");
+        let request = ExecRequest::new(
+            &program,
+            vec!["status"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("known_mutating_program_requires_declared_mutation")
+        );
+    }
+
+    #[test]
+    fn allows_known_mutating_program_when_declared_and_allowlisted() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("git");
+        fs::write(&program, "placeholder").expect("write program placeholder");
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &program,
+            vec!["status"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
+    }
+
+    #[test]
+    fn audit_write_failure_after_execution_error_still_surfaces_audit_failure() {
+        let result: ExecResult<()> = Err(ExecError::PolicyDenied("spawn denied".to_string()));
+        let audit_result: ExecResult<()> = Err(ExecError::AuditLogWriteFailed {
+            path: PathBuf::from("audit.jsonl"),
+            detail: "disk full".to_string(),
+        });
+
+        let combined = combine_result_with_audit_write(result, audit_result);
+
+        match combined {
+            Err(ExecError::AuditLogWriteFailedAfterExecutionError {
+                path,
+                detail,
+                execution_error,
+            }) => {
+                assert_eq!(path, PathBuf::from("audit.jsonl"));
+                assert_eq!(detail, "disk full");
+                assert_eq!(execution_error, "policy denied request: spawn denied");
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
     }
 
     #[test]

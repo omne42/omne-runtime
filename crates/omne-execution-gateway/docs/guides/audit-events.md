@@ -27,6 +27,10 @@ The gateway exposes `ExecEvent` to describe decision outcomes.
 - `execute(&request).into_parts()` when tuple destructuring is preferred.
 - `prepare_command(&request, command)` for callers that need a spawn-only `PreparedCommand`; the gateway rejects the call if `command` program/args diverge from `request`, and `PreparedCommand::spawn()` revalidates bound `cwd` / `workspace_root` identities right before spawn.
 
+`execute()` is the only path that owns the full child lifecycle and therefore emits the final
+execution audit record plus runtime sandbox observation. `prepare_command()` only writes the
+preflight `prepared` / `prepare_error` audit record before returning control to the caller.
+
 ## JSONL Audit Sink
 
 When `audit_log_path` is set, the gateway appends JSONL records with:
@@ -48,3 +52,5 @@ enforcement state without changing the audit contract.
 
 The audit sink itself is fail-closed: the gateway rejects symlinked audit files, special files,
 and paths that traverse existing symlinked parent directories.
+If the final audit write fails after a command has already failed for another reason, the surfaced
+audit error includes the original execution error summary so callers do not lose that context.
