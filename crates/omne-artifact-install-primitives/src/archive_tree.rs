@@ -828,8 +828,7 @@ mod tests {
 
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
-        download_and_install_archive_tree,
-        install_archive_tree_from_reader_with_limits,
+        download_and_install_archive_tree, install_archive_tree_from_reader_with_limits,
     };
     #[cfg(unix)]
     use super::{MAX_ZIP_SYMLINK_TARGET_BYTES, extract_tar_tree, extract_zip_tree};
