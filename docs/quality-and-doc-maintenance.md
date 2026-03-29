@@ -41,6 +41,6 @@ workspace 根必须具备：
 
 ## 机械校验
 
-- 运行 `../scripts/check-docs-system.sh` 检查骨架、README 入口和 `AGENTS.md` 长度。
+- 运行 `../scripts/check-docs-system.sh` 检查骨架、README 入口、`AGENTS.md` 长度，以及文档系统范围内残留的 git conflict marker。
 - 文档变更至少运行一次该脚本。
 - 如涉及代码行为变化，再补对应 crate 的测试或 workspace 测试。
