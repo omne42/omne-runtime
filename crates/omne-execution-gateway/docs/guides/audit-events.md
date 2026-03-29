@@ -43,4 +43,5 @@ The field remains part of the event schema so future native backends can report 
 enforcement state without changing the audit contract.
 
 The audit sink itself is fail-closed: the gateway rejects symlinked audit files, special files,
-and paths that traverse existing symlinked parent directories.
+and any parent-directory chain that is symlinked or becomes non-directory while missing parents
+are being materialized.

@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- create missing audit-log parent directories component-by-component and reject symlinked replacements fail-closed instead of relying on `create_dir_all`
 - add regression coverage for `cwd_invalid` so missing working directories do not regress back into `cwd_outside_workspace`
 - reject symlinked, ancestor-symlinked, and special-file audit log destinations so audit logging fails closed on unsafe sinks
 - reject symlinked, special-file, and oversized `omne-execution` request JSON inputs fail-closed

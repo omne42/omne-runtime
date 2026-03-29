@@ -77,11 +77,7 @@ impl AuditLogger {
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()
         {
-            if let Some(existing_parent) = existing_ancestor(parent) {
-                ensure_existing_directory(existing_parent)?;
-            }
-            fs::create_dir_all(parent)?;
-            ensure_existing_directory(parent)?;
+            ensure_directory_chain(parent)?;
         }
         if self.path.exists() {
             ensure_existing_regular_file_path(&self.path)?;
@@ -104,6 +100,49 @@ fn ensure_existing_regular_file_path(path: &Path) -> Result<(), Box<dyn std::err
         return Err(format!("path is not a regular file: {}", path.display()).into());
     }
     Ok(())
+}
+
+fn ensure_directory_chain(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mut current = existing_ancestor(path)
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    if !current.as_os_str().is_empty() {
+        ensure_existing_directory(&current)?;
+    }
+    let remaining = if current.as_os_str().is_empty() {
+        path
+    } else {
+        path.strip_prefix(&current)?
+    };
+
+    for component in remaining.components() {
+        match component {
+            std::path::Component::CurDir | std::path::Component::ParentDir => {
+                current.push(component.as_os_str());
+                ensure_existing_directory(&current)?;
+            }
+            std::path::Component::Normal(part) => {
+                current.push(part);
+                match fs::create_dir(&current) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(err) => return Err(err.into()),
+                }
+                ensure_existing_directory(&current)?;
+            }
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                return Err(
+                    format!("unexpected absolute path component in {}", path.display()).into(),
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn existing_ancestor(path: &Path) -> Option<&Path> {
+    path.ancestors().find(|ancestor| ancestor.exists())
 }
 
 #[cfg(unix)]
@@ -155,10 +194,6 @@ fn ensure_regular_file(path: &Path, file: File) -> Result<File, Box<dyn std::err
     }
 
     Err(format!("path is not a regular file: {}", path.display()).into())
-}
-
-fn existing_ancestor(path: &Path) -> Option<&Path> {
-    path.ancestors().find(|ancestor| ancestor.exists())
 }
 
 #[derive(Debug, Serialize)]
@@ -466,6 +501,29 @@ mod tests {
         let err = logger
             .ensure_ready()
             .expect_err("audit path with symlink ancestor must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_ready_rejects_symlink_in_deep_parent_chain() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        fs::create_dir(&root).expect("create root");
+        let real_parent = dir.path().join("real-parent");
+        fs::create_dir(&real_parent).expect("create real parent");
+        let linked = root.join("linked");
+        symlink(&real_parent, &linked).expect("create linked component");
+        let audit_path = linked.join("nested").join("deeper").join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .ensure_ready()
+            .expect_err("audit path with deep symlink ancestor must fail");
 
         match err {
             ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),

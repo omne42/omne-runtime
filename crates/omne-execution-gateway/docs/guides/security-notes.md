@@ -25,5 +25,6 @@
 - run under least-privilege OS accounts,
 - keep workspace roots narrow,
 - enable audit logging in production,
+- keep audit log destinations on trusted directory trees so parent-directory materialization can stay fail-closed,
 - pair with dedicated filesystem safety tooling,
 - treat `none` isolation as exceptional.
