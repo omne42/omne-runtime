@@ -827,12 +827,12 @@ mod tests {
     use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
 
     use super::{
-        ArchiveExtractionLimits, ArchiveTreeInstallRequest, MAX_ZIP_SYMLINK_TARGET_BYTES,
-        archive_tree_install_lock_file_name, download_and_install_archive_tree,
+        ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
+        download_and_install_archive_tree,
         install_archive_tree_from_reader_with_limits,
     };
     #[cfg(unix)]
-    use super::{extract_tar_tree, extract_zip_tree};
+    use super::{MAX_ZIP_SYMLINK_TARGET_BYTES, extract_tar_tree, extract_zip_tree};
 
     fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut writer = Cursor::new(Vec::new());
