@@ -12,7 +12,7 @@
 - `src/binary_artifact.rs`
   - direct binary 原子安装与 binary-from-archive 安装。
 - `src/archive_tree.rs`
-  - archive tree 解包、budget/link 校验和目录树安装编排。
+  - archive tree 解包、budget/link 校验、同目标安装串行化和目录树安装编排。
 
 ## 布局规则
 
