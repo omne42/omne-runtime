@@ -8,8 +8,10 @@
 - isolation capability checks,
 - workspace boundary checks,
 - mutation declaration consistency for allowlisted mutating requests,
+- fail-closed rejection for obvious host-mutating tool families that try to claim `declared_mutation = false`,
 - non-interactive stdio detachment for gateway-managed spawns,
-- fail-closed denial for non-allowlisted opaque launchers.
+- fail-closed denial for non-allowlisted opaque launchers,
+- lossless JSON serialization of non-UTF-8 `program` / `args` values in audit-facing output.
 
 ## What It Does Not Enforce Alone
 

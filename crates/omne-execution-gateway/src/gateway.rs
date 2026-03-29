@@ -316,6 +316,15 @@ impl ExecGateway {
                     ),
                 ));
             }
+            if uses_known_mutating_program(&request.program) && !request.declared_mutation {
+                return Err(self.deny_preflight(
+                    event,
+                    "known_mutating_program_requires_declared_mutation",
+                    ExecError::PolicyDenied(
+                        "known mutating programs must declare mutation".to_string(),
+                    ),
+                ));
+            }
         }
 
         if request.required_isolation > self.supported_isolation {
@@ -411,13 +420,9 @@ impl ExecGateway {
 }
 
 fn uses_opaque_command_launcher(program: &OsStr) -> bool {
-    fn matches_opaque_command_name(candidate: &str) -> bool {
-        let normalized = candidate
-            .strip_suffix(".exe")
-            .unwrap_or(candidate)
-            .to_ascii_lowercase();
+    matches_program_name(program, |candidate| {
         matches!(
-            normalized.as_str(),
+            candidate,
             "sh" | "bash"
                 | "dash"
                 | "zsh"
@@ -437,14 +442,85 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
                 | "php"
                 | "lua"
         )
-    }
+    })
+}
 
+fn uses_known_mutating_program(program: &OsStr) -> bool {
+    matches_program_name(program, |candidate| {
+        matches!(
+            candidate,
+            "git"
+                | "make"
+                | "gmake"
+                | "cmake"
+                | "cargo"
+                | "rustup"
+                | "go"
+                | "npm"
+                | "pnpm"
+                | "yarn"
+                | "pip"
+                | "pip3"
+                | "poetry"
+                | "uv"
+                | "gem"
+                | "bundle"
+                | "composer"
+                | "apt"
+                | "apt-get"
+                | "aptitude"
+                | "dpkg"
+                | "dnf"
+                | "yum"
+                | "rpm"
+                | "zypper"
+                | "pacman"
+                | "apk"
+                | "brew"
+                | "port"
+                | "winget"
+                | "choco"
+                | "scoop"
+                | "rm"
+                | "mv"
+                | "cp"
+                | "install"
+                | "mkdir"
+                | "rmdir"
+                | "ln"
+                | "chmod"
+                | "chown"
+                | "touch"
+                | "dd"
+                | "mkfs"
+                | "mount"
+                | "umount"
+                | "tar"
+                | "unzip"
+                | "zip"
+        )
+    })
+}
+
+fn matches_program_name(program: &OsStr, predicate: impl Fn(&str) -> bool) -> bool {
     let path = Path::new(program);
-    path.to_str().is_some_and(matches_opaque_command_name)
-        || path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(matches_opaque_command_name)
+    path.to_str().is_some_and(|candidate| {
+        let normalized = normalize_program_name(candidate);
+        predicate(&normalized)
+    }) || path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|candidate| {
+            let normalized = normalize_program_name(candidate);
+            predicate(&normalized)
+        })
+}
+
+fn normalize_program_name(candidate: &str) -> String {
+    candidate
+        .strip_suffix(".exe")
+        .unwrap_or(candidate)
+        .to_ascii_lowercase()
 }
 
 fn canonicalize_workspace_root(path: &Path) -> ExecResult<PathBuf> {
@@ -1286,6 +1362,29 @@ mod tests {
     }
 
     #[test]
+    fn denies_known_mutating_program_without_declared_mutation() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join(program_name_with_optional_exe("git"));
+        fs::write(&program, "placeholder").expect("write program placeholder");
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("known_mutating_program_requires_declared_mutation")
+        );
+    }
+
+    #[test]
     fn denies_opaque_command_launcher_without_allowlist() {
         let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
@@ -1878,6 +1977,16 @@ mod tests {
     #[cfg(not(windows))]
     fn non_allowlisted_program_path(workspace: &tempfile::TempDir) -> PathBuf {
         workspace.path().join("other")
+    }
+
+    #[cfg(windows)]
+    fn program_name_with_optional_exe(name: &str) -> String {
+        format!("{name}.exe")
+    }
+
+    #[cfg(not(windows))]
+    fn program_name_with_optional_exe(name: &str) -> String {
+        name.to_string()
     }
 
     #[cfg(windows)]

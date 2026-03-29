@@ -36,6 +36,7 @@ agent plan
 | `cwd_invalid` | Fix missing, inaccessible, or non-directory working directory input before retrying. |
 | `cwd_outside_workspace` | Correct path under workspace root. |
 | `mutation_requires_allowlisted_program` | Route via a policy-allowlisted explicit executable path instead of a bare program name. |
+| `known_mutating_program_requires_declared_mutation` | Rebuild the request with `declared_mutation = true`, then route through an allowlisted explicit executable path. |
 | `opaque_command_requires_allowlisted_program` | Replace shell-style launcher usage with a direct executable or explicitly allowlist that launcher's full path. |
 | `isolation_none_forbidden` | Explicitly allow `none`, or defer execution until a supported native isolation backend exists. |
 

@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fail closed when known host-mutating tool families such as `git`, package managers, and core file-modifying utilities claim `declared_mutation = false`
 - include `event.args` plus exact `program_exact` / `args_exact` JSON encodings so audit logs and CLI output preserve non-UTF-8 argv without relying on lossy replacement characters
 - document the existing known-mutating tool-family gate so `git`/`make`/package-manager style commands are clearly described as fail-closed unless callers declare mutation and bind an allowlisted executable path
 - add regression coverage for `cwd_invalid` so missing working directories do not regress back into `cwd_outside_workspace`

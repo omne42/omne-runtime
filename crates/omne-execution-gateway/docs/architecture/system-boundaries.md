@@ -30,6 +30,7 @@
 - 缺失、不可访问或不是目录的 `cwd` 会被报告为 `cwd_invalid`，避免把普通输入/环境错误误记成 workspace 越界。
 - 配置了 `audit_log_path` 时，gateway 会在 preflight 阶段创建缺失父目录并验证日志可追加；如果审计日志不可用，请求必须 fail-closed 拒绝，而不是在无审计记录下继续执行。
 - 如果 preflight 之后的最终审计写入失败，gateway 会把结果显式返回给调用方，而不是只在 stderr 打印失败后继续返回成功。
+- `ExecEvent`、`RequestResolution` 和 CLI JSON 输出里的 `program` / `args` 会同时保留可读的 lossy 字段与 `program_exact` / `args_exact` 精确编码，避免非 UTF-8 请求身份在审计链路里被有损压平。
 
 ## 不负责什么
 
