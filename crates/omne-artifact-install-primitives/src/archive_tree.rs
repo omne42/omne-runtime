@@ -23,6 +23,7 @@ use crate::artifact_download::{
 
 pub const DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_ARCHIVE_TREE_ENTRIES: u64 = 65_536;
+#[cfg(unix)]
 const MAX_ZIP_SYMLINK_TARGET_BYTES: usize = 16 * 1024;
 const ARCHIVE_TREE_INSTALL_LOCK_PREFIX: &str = ".archive-tree-install-";
 const ARCHIVE_TREE_INSTALL_LOCK_SUFFIX: &str = ".lock";
