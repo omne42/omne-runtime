@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 - add regression coverage for `cwd_invalid` so missing working directories do not regress back into `cwd_outside_workspace`
-- reject symlinked and special-file audit log destinations so audit logging fails closed on unsafe sinks
+- reject symlinked, ancestor-symlinked, and special-file audit log destinations so audit logging fails closed on unsafe sinks
 - reject symlinked, special-file, and oversized `omne-execution` request JSON inputs fail-closed
 - require callers to declare mutation intent explicitly before gateway evaluation when mutation enforcement is enabled
 - deny shell-like and interpreter launchers such as `python`, `node`, and `perl` unless callers allowlist an explicit executable path

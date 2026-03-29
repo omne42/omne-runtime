@@ -77,8 +77,8 @@ impl AuditLogger {
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()
         {
+            ensure_existing_directory_chain(parent)?;
             fs::create_dir_all(parent)?;
-            ensure_existing_directory(parent)?;
         }
         if self.path.exists() {
             ensure_existing_regular_file_path(&self.path)?;
@@ -87,12 +87,26 @@ impl AuditLogger {
     }
 }
 
-fn ensure_existing_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(format!("path is not a directory: {}", path.display()).into());
+fn ensure_existing_directory_chain(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    for ancestor in existing_ancestors(path) {
+        let metadata = fs::symlink_metadata(&ancestor)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!("path is not a directory: {}", ancestor.display()).into());
+        }
     }
     Ok(())
+}
+
+fn existing_ancestors(path: &Path) -> Vec<PathBuf> {
+    let mut current = PathBuf::new();
+    let mut ancestors = Vec::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if current.exists() {
+            ancestors.push(current.clone());
+        }
+    }
+    ancestors
 }
 
 fn ensure_existing_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -438,6 +452,27 @@ mod tests {
         let err = logger
             .ensure_ready()
             .expect_err("special file sink must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_ready_rejects_symlink_parent_directory() {
+        let dir = tempdir().expect("tempdir");
+        let target_parent = dir.path().join("real-parent");
+        fs::create_dir(&target_parent).expect("create target parent");
+        let symlink_parent = dir.path().join("linked-parent");
+        symlink(&target_parent, &symlink_parent).expect("create parent symlink");
+        let audit_path = symlink_parent.join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .ensure_ready()
+            .expect_err("audit path with symlink parent must fail");
 
         match err {
             ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
