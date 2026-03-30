@@ -199,7 +199,14 @@ fn split_root(root: &Path, label: &str) -> io::Result<(PathBuf, Vec<OsString>)> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::io;
+    use std::path::PathBuf;
+
+    fn canonical_temp_root(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path()
+            .canonicalize()
+            .expect("canonicalize tempdir root")
+    }
 
     #[cfg(unix)]
     #[test]
@@ -207,14 +214,16 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let real = dir.path().join("real");
-        let alias = dir.path().join("alias");
+        let root = canonical_temp_root(&dir);
+        let real = root.join("real");
+        let alias = root.join("alias");
         std::fs::create_dir(&real).expect("real dir");
         std::fs::write(real.join("config.json"), "{}").expect("write config");
         symlink(&real, &alias).expect("symlink alias");
 
-        let err = read_utf8_regular_file_nofollow(&alias.join("config.json"), 64, "config file")
-            .expect_err("ancestor symlink must be rejected");
+        let err =
+            super::read_utf8_regular_file_nofollow(&alias.join("config.json"), 64, "config file")
+                .expect_err("ancestor symlink must be rejected");
         assert!(matches!(
             err.kind(),
             io::ErrorKind::Other | io::ErrorKind::NotADirectory
@@ -225,9 +234,10 @@ mod tests {
     #[test]
     fn open_appendable_regular_file_creates_missing_directories_without_following_symlinks() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("logs/nested/audit.jsonl");
+        let path = canonical_temp_root(&dir).join("logs/nested/audit.jsonl");
 
-        open_appendable_regular_file_nofollow(&path, "audit log").expect("open appendable");
+        super::open_appendable_regular_file_nofollow(&path, "audit log")
+            .expect("open appendable");
 
         assert!(path.exists());
     }

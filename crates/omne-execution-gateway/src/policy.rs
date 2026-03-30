@@ -132,6 +132,7 @@ mod tests {
     #[cfg(unix)]
     use std::ffi::OsString;
     use std::fs::{self, File};
+    use std::path::PathBuf;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
     #[cfg(unix)]
@@ -139,6 +140,12 @@ mod tests {
 
     use super::*;
     use tempfile::tempdir;
+
+    fn canonical_temp_root(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path()
+            .canonicalize()
+            .expect("canonicalize tempdir root")
+    }
 
     #[test]
     fn default_policy_denies_none_and_enforces_mutation_allowlist() {
@@ -235,7 +242,7 @@ mod tests {
     #[test]
     fn load_json_rejects_unknown_fields() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("policy.json");
+        let path = canonical_temp_root(&dir).join("policy.json");
         fs::write(
             &path,
             r#"{
@@ -259,14 +266,15 @@ mod tests {
     #[test]
     fn load_json_rejects_directory_input() {
         let dir = tempdir().expect("tempdir");
-        let err = GatewayPolicy::load_json(dir.path()).expect_err("directory should be rejected");
+        let root = canonical_temp_root(&dir);
+        let err = GatewayPolicy::load_json(&root).expect_err("directory should be rejected");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
     fn load_json_rejects_oversized_input() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("policy.json");
+        let path = canonical_temp_root(&dir).join("policy.json");
         let oversized_len = u64::try_from(MAX_POLICY_JSON_BYTES)
             .expect("policy size bound fits u64")
             .saturating_add(1);
@@ -288,8 +296,9 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let dir = tempdir().expect("tempdir");
-        let target = dir.path().join("policy.json");
-        let link = dir.path().join("policy-link.json");
+        let root = canonical_temp_root(&dir);
+        let target = root.join("policy.json");
+        let link = root.join("policy-link.json");
         fs::write(
             &target,
             r#"{
@@ -312,8 +321,9 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let dir = tempdir().expect("tempdir");
-        let real_dir = dir.path().join("real");
-        let alias_dir = dir.path().join("alias");
+        let root = canonical_temp_root(&dir);
+        let real_dir = root.join("real");
+        let alias_dir = root.join("alias");
         std::fs::create_dir(&real_dir).expect("create real dir");
         let policy_path = real_dir.join("policy.json");
         std::fs::write(
@@ -337,7 +347,7 @@ mod tests {
     #[test]
     fn load_json_rejects_special_file_input() {
         let dir = tempdir().expect("tempdir");
-        let socket_path = dir.path().join("policy.sock");
+        let socket_path = canonical_temp_root(&dir).join("policy.sock");
         let _listener = UnixListener::bind(&socket_path).expect("bind unix socket");
 
         let err = GatewayPolicy::load_json(&socket_path).expect_err("socket should be rejected");
