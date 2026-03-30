@@ -9,7 +9,7 @@
 - `ExecRequest`、`ExecEvent`、`ExecGateway`、`GatewayPolicy` 和能力报告模型。
 - `cwd`、`workspace_root`、隔离级别和 `policy_default` 来源一致性校验。
 - 请求里的 `program` 只能是 bare command name 或绝对路径；像 `./tool`、`bin/tool` 这类相对路径会 fail-closed 拒绝，避免执行语义依赖 gateway 进程自身的工作目录。
-- 对显式绝对 `program` 路径做 file identity 绑定，并在真正 spawn 前再次校验；mutating allowlist 也按最终可执行文件 identity 匹配，而不是按 basename 或原始路径字面量放行，避免 preflight 通过后被换文件或通过稳定别名漂移到别的可执行文件。
+- 对显式绝对 `program` 路径做 file identity 绑定，并在真正 spawn 前再次校验；bare command name 也会在 preflight 阶段解析成绝对可执行文件路径并绑定 identity，如果无法稳定解析就 fail-closed 拒绝。mutating allowlist 仍按最终可执行文件 identity 匹配，而不是按 basename 或原始路径字面量放行，避免 preflight 通过后被换文件或通过稳定别名漂移到别的可执行文件。
 - 对 `cwd` / `workspace_root` 做 canonical path + 目录 identity 绑定，并在真正 spawn 前重新校验。
 - 声明式变更命令门控，以及显式 mutation declaration、allowlisted mutator 和 opaque launcher 之间的一致性校验。
 - gateway 自己管理的 spawn 路径会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端。
@@ -22,6 +22,8 @@
 - Linux 原生 sandbox 暂时下线，直到能在不依赖 post-`fork` unsafe Rust 执行的前提下重新引入。
 - 当请求的隔离级别高于宿主报告能力时，gateway 必须 fail-closed 拒绝，而不是回退到未隔离执行。
 - mutating allowlist 只授权显式程序路径；bare program name 因为无法绑定稳定可执行文件而 fail-closed 拒绝。
+- 对 bare command 的普通执行路径，audit / `request_resolution` / `ExecEvent` 记录的是 gateway 解析并绑定后的绝对执行体路径，而不是原始 bare token。
+- `prepare_command()` 只接受与 gateway 已解析执行体一致的 `Command` 程序路径；如果调用方仍传 bare command name，会以 `prepared_command_mismatch` fail-closed 拒绝。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，所有请求都必须显式声明 `declared_mutation`；否则 gateway 会以 `mutation_declaration_required` fail-closed 拒绝。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，已知高风险 mutator/toolchain（例如 `git`、`make`、包管理器和核心文件变更命令）不能宣称 `declared_mutation=false`；调用方必须显式声明 mutation，并绑定到 allowlisted 显式程序路径，避免把明显 mutating 的工具伪装成只读命令。
 - Windows 上命令路径和 workspace 边界比较按平台语义做大小写不敏感处理，不要求调用方传入与文件系统完全同大小写的字面量。

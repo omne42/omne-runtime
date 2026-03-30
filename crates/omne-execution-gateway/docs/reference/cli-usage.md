@@ -42,6 +42,9 @@ When `program` matches `mutating_program_allowlist`, the gateway requires
 `declared_mutation = true`; declared mutations still must use an allowlisted explicit path.
 Bare program names are denied fail-closed for mutation authorization, even if a same-name string
 appears in `mutating_program_allowlist`.
+For ordinary execution, bare program names are resolved to an absolute executable path during
+preflight; if lookup cannot be bound to a concrete executable, the request fails closed instead of
+passing an unresolved name through to `spawn()`.
 Allowlisted explicit paths are compared by resolved executable identity, so a symlink alias is only
 authorized while it still points at the same executable file.
 Shell-like opaque launchers such as `sh`, `cmd`, `powershell`, and `pwsh` are denied unless
@@ -66,11 +69,11 @@ Example output fragment:
 ```json
 {
   "request_resolution": {
-    "program": "echo",
+    "program": "/usr/bin/echo",
     "args": ["hello-from-omne-execution"],
     "program_exact": {
       "encoding": "utf8",
-      "value": "echo"
+      "value": "/usr/bin/echo"
     },
     "args_exact": [
       {
@@ -97,11 +100,11 @@ Example output fragment:
       "execution_isolation": "none"
     },
     "supported_isolation": "none",
-    "program": "echo",
+    "program": "/usr/bin/echo",
     "args": ["hello-from-omne-execution"],
     "program_exact": {
       "encoding": "utf8",
-      "value": "echo"
+      "value": "/usr/bin/echo"
     },
     "args_exact": [
       {
@@ -125,7 +128,8 @@ defaulted isolation decisions explicit through `input_required_isolation`,
 `requested_isolation_source`, and `policy_default_isolation`.
 `event` is the canonical execution/audit shape and includes canonicalized `cwd`,
 canonicalized `workspace_root`, declared mutation intent, and the authoritative argv seen by the
-gateway.
+gateway. When the request used a bare command name, `program` reflects the resolved absolute
+executable path that the gateway bound during preflight.
 Both `request_resolution` and `event` keep readable lossy `program` / `args` fields and also emit
 `program_exact` / `args_exact` so non-UTF-8 OS strings remain reconstructable in machine-facing
 output.
