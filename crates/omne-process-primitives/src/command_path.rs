@@ -40,7 +40,7 @@ pub(crate) fn resolve_available_command_path_os(command: &OsStr) -> Option<PathB
     resolve_available_command_path_with_path_var(command, std::env::var_os("PATH"))
 }
 
-fn resolve_available_command_path_with_path_var(
+pub(crate) fn resolve_available_command_path_with_path_var(
     command: &OsStr,
     path_var: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {

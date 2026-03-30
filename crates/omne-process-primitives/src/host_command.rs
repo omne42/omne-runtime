@@ -7,8 +7,9 @@ use std::thread;
 
 use crate::command_path::{
     is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
-    resolve_available_command_path_os, resolve_command_path_or_standard_location_os,
-    resolve_command_path_os, resolve_command_path_os_with_path_var,
+    resolve_available_command_path_os, resolve_available_command_path_with_path_var,
+    resolve_command_path_or_standard_location_os, resolve_command_path_os,
+    resolve_command_path_os_with_path_var,
 };
 
 const MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024 * 1024;
@@ -241,6 +242,22 @@ pub fn command_available_os(command: &OsStr) -> bool {
     resolve_available_command_path_os(command).is_some()
 }
 
+pub fn command_exists_for_request(request: &HostCommandRequest<'_>) -> bool {
+    if is_explicit_command_path(request.program) {
+        return is_spawnable_command_path(&resolve_program_for_direct_spawn(request));
+    }
+    resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
+        .is_some()
+}
+
+pub fn command_available_for_request(request: &HostCommandRequest<'_>) -> bool {
+    if is_explicit_command_path(request.program) {
+        return is_regular_command_path(&resolve_program_for_direct_spawn(request));
+    }
+    resolve_available_command_path_with_path_var(request.program, effective_path_var(request.env))
+        .is_some()
+}
+
 pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoMode {
     let Some(program) = sudo_mode_program_name(program) else {
         return HostCommandSudoMode::Never;
@@ -255,13 +272,16 @@ pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoM
 }
 
 fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecution) -> Command {
-    let program = resolve_program_for_spawn(request);
     let mut cmd = match execution {
-        HostCommandExecution::Direct => Command::new(&program),
+        HostCommandExecution::Direct => Command::new(resolve_program_for_direct_spawn(request)),
         HostCommandExecution::Sudo => {
-            let mut cmd = Command::new(resolve_sudo_program(request.env));
+            let mut cmd = Command::new(resolve_sudo_program());
             cmd.arg("-n");
-            append_sudo_target_command(&mut cmd, &program, request);
+            append_sudo_target_command(
+                &mut cmd,
+                &resolve_program_for_sudo_target(request),
+                request,
+            );
             cmd
         }
     };
@@ -370,17 +390,8 @@ where
 {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 8192];
-    let mut reached_capture_limit = false;
+    let mut exceeded_capture_limit = false;
     loop {
-        if reached_capture_limit {
-            let read = reader.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            return Err(io::Error::other(format!(
-                "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
-            )));
-        }
         let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -389,13 +400,13 @@ where
         let to_copy = remaining.min(read);
         bytes.extend_from_slice(&buffer[..to_copy]);
         if to_copy < read {
-            return Err(io::Error::other(format!(
-                "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
-            )));
+            exceeded_capture_limit = true;
         }
-        if bytes.len() == MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM {
-            reached_capture_limit = true;
-        }
+    }
+    if exceeded_capture_limit {
+        return Err(io::Error::other(format!(
+            "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
+        )));
     }
     Ok(bytes)
 }
@@ -412,7 +423,7 @@ fn should_try_sudo_for_request_with_status(
         request.program,
         request.sudo_mode,
         process_is_non_root,
-        sudo_available(request.env),
+        sudo_available(),
     )
 }
 
@@ -503,8 +514,8 @@ fn is_path_env_name(name: &OsStr) -> bool {
     name == OsStr::new("PATH")
 }
 
-fn resolve_sudo_program(env: &[(OsString, OsString)]) -> PathBuf {
-    resolve_sudo_path(env).unwrap_or_else(|| PathBuf::from("sudo"))
+fn resolve_sudo_program() -> PathBuf {
+    resolve_sudo_path().unwrap_or_else(|| PathBuf::from("sudo"))
 }
 
 fn resolve_env_program() -> PathBuf {
@@ -512,12 +523,12 @@ fn resolve_env_program() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("env"))
 }
 
-fn sudo_available(env: &[(OsString, OsString)]) -> bool {
-    resolve_sudo_path(env).is_some()
+fn sudo_available() -> bool {
+    resolve_sudo_path().is_some()
 }
 
-fn resolve_sudo_path(env: &[(OsString, OsString)]) -> Option<PathBuf> {
-    resolve_command_path_os_with_path_var(OsStr::new("sudo"), effective_path_var(env))
+fn resolve_sudo_path() -> Option<PathBuf> {
+    resolve_command_path_or_standard_location_os(OsStr::new("sudo"))
 }
 
 fn effective_path_var(env: &[(OsString, OsString)]) -> Option<OsString> {
@@ -527,7 +538,7 @@ fn effective_path_var(env: &[(OsString, OsString)]) -> Option<OsString> {
         .or_else(|| std::env::var_os("PATH"))
 }
 
-fn resolve_program_for_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
+fn resolve_program_for_direct_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
     let program = Path::new(request.program);
     if program.is_absolute() {
         return program.to_path_buf();
@@ -535,10 +546,19 @@ fn resolve_program_for_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
     if !is_explicit_command_path(request.program) {
         return program.to_path_buf();
     }
-    if let Some(working_directory) = request.working_directory {
-        return working_directory.join(program);
+    if let Ok(current_directory) = std::env::current_dir() {
+        return current_directory.join(program);
     }
     program.to_path_buf()
+}
+
+fn resolve_program_for_sudo_target(request: &HostCommandRequest<'_>) -> PathBuf {
+    if is_explicit_command_path(request.program) {
+        return resolve_program_for_direct_spawn(request);
+    }
+
+    resolve_command_path_or_standard_location_os(request.program)
+        .unwrap_or_else(|| PathBuf::from(request.program))
 }
 
 fn ensure_sudo_target_is_available(
@@ -548,9 +568,7 @@ fn ensure_sudo_target_is_available(
         return Ok(());
     }
 
-    if resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
-        .is_some()
-    {
+    if resolve_command_path_or_standard_location_os(request.program).is_some() {
         return Ok(());
     }
 
@@ -600,16 +618,20 @@ mod tests {
 
     #[cfg(unix)]
     use super::command_available_os;
+    use super::command_exists_os;
     #[cfg(unix)]
     use super::ensure_sudo_target_is_available;
+    use super::env_assignment;
     use super::resolve_env_program;
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
     use super::{
         HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
-        HostRecipeError, HostRecipeRequest, build_command, command_available, command_exists,
-        command_path_exists, default_recipe_sudo_mode_for_program, run_host_command,
-        run_host_recipe, should_try_sudo_with_status,
+        HostRecipeError, HostRecipeRequest, build_command, command_available,
+        command_available_for_request, command_exists, command_exists_for_request,
+        command_path_exists, default_recipe_sudo_mode_for_program,
+        resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
+        should_try_sudo_with_status,
     };
 
     #[test]
@@ -684,7 +706,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_detection_uses_request_path_override() {
+    fn sudo_detection_ignores_request_path_override() {
         let temp = tempfile::tempdir().expect("tempdir");
         let sudo_path = write_test_command(temp.path(), "sudo");
         let env = vec![(
@@ -699,21 +721,21 @@ mod tests {
             sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
         };
 
-        assert!(should_try_sudo_for_request_with_status(&request, true));
-
         let command = build_command(&request, HostCommandExecution::Sudo);
-        assert_eq!(Path::new(command.get_program()), sudo_path.as_path());
+        assert_ne!(Path::new(command.get_program()), sudo_path.as_path());
+        assert!(should_try_sudo_for_request_with_status(&request, true) == super::sudo_available());
     }
 
     #[test]
     fn sudo_command_wraps_target_with_env_assignments() {
-        let args = vec![OsString::from("install"), OsString::from("curl")];
+        let explicit_program = std::env::current_exe().expect("current exe");
+        let args = vec![OsString::from("-c"), OsString::from("exit 0")];
         let env = vec![
             (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
             (OsString::from("OMNE_SECOND"), OsString::from("value")),
         ];
         let request = HostCommandRequest {
-            program: OsStr::new("apt-get"),
+            program: explicit_program.as_os_str(),
             args: &args,
             env: &env,
             working_directory: None,
@@ -725,19 +747,14 @@ mod tests {
             .get_args()
             .map(|arg: &OsStr| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert_eq!(
-            collected_args,
-            vec![
-                "-n".to_string(),
-                resolve_env_program().to_string_lossy().into_owned(),
-                "--".to_string(),
-                "OMNE_TEST_VALUE=world".to_string(),
-                "OMNE_SECOND=value".to_string(),
-                "apt-get".to_string(),
-                "install".to_string(),
-                "curl".to_string(),
-            ]
-        );
+        assert_eq!(collected_args[0], "-n");
+        assert_eq!(collected_args[1], resolve_env_program().to_string_lossy());
+        assert_eq!(collected_args[2], "--");
+        assert_eq!(collected_args[3], "OMNE_TEST_VALUE=world");
+        assert_eq!(collected_args[4], "OMNE_SECOND=value");
+        assert_eq!(Path::new(&collected_args[5]), explicit_program.as_path());
+        assert_eq!(collected_args[6], "-c");
+        assert_eq!(collected_args[7], "exit 0");
 
         let collected_env = command
             .get_envs()
@@ -792,7 +809,7 @@ mod tests {
             temp.path().as_os_str().to_os_string(),
         )];
         let request = HostCommandRequest {
-            program: OsStr::new("apt-get"),
+            program: OsStr::new("omne-process-primitives-missing-command"),
             args: &[],
             env: &env,
             working_directory: None,
@@ -920,6 +937,31 @@ mod tests {
     }
 
     #[test]
+    fn run_host_command_rejects_large_oversized_stdout_without_hanging() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_very_large_stdout_command(temp.path(), "very-loud");
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let err = run_host_command(&request).expect_err("oversized stdout should fail");
+        match err {
+            HostCommandError::SpawnFailed { source, .. } => {
+                assert!(
+                    source.to_string().contains("stdout exceeded capture limit"),
+                    "unexpected error: {source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
     fn run_host_command_allows_stdout_exactly_at_capture_limit() {
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = write_exact_limit_stdout_command(temp.path(), "exact-limit");
@@ -966,25 +1008,105 @@ mod tests {
     }
 
     #[test]
-    fn run_host_command_resolves_relative_program_against_working_directory() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let working_directory = temp.path().join("cwd");
-        std::fs::create_dir_all(&working_directory).expect("create working directory");
-        write_pwd_command(&working_directory, "pwd");
-        let relative_program = relative_command_path("pwd");
+    fn run_host_command_resolves_relative_program_against_caller_cwd() {
+        let current_directory = std::env::current_dir().expect("current dir");
+        let temp = tempfile::Builder::new()
+            .prefix("omne-process-primitives-relative-program-")
+            .tempdir_in(&current_directory)
+            .expect("tempdir in current dir");
+        let working_directory = tempfile::tempdir().expect("working directory tempdir");
+        let command_path = write_pwd_command(temp.path(), "pwd");
+        let relative_program = command_path
+            .strip_prefix(&current_directory)
+            .expect("relative command path")
+            .to_path_buf();
         let args = Vec::new();
         let request = HostCommandRequest {
-            program: OsStr::new(relative_program.as_str()),
+            program: relative_program.as_os_str(),
             args: &args,
             env: &[],
-            working_directory: Some(&working_directory),
+            working_directory: Some(working_directory.path()),
             sudo_mode: HostCommandSudoMode::Never,
         };
+
+        assert!(command_exists_os(relative_program.as_os_str()));
+        assert_eq!(
+            resolve_program_for_direct_spawn(&request),
+            current_directory.join(&relative_program)
+        );
 
         let output = run_host_command(&request).expect("run host command");
         assert!(output.output.status.success());
         let stdout = String::from_utf8_lossy(&output.output.stdout);
-        assert!(stdout.contains(&working_directory.display().to_string()));
+        assert!(stdout.contains(&working_directory.path().display().to_string()));
+    }
+
+    #[test]
+    fn request_scoped_probe_keeps_relative_program_on_caller_cwd() {
+        let current_directory = std::env::current_dir().expect("current dir");
+        let temp = tempfile::Builder::new()
+            .prefix("omne-process-primitives-request-probe-")
+            .tempdir_in(&current_directory)
+            .expect("tempdir in current dir");
+        let working_directory = tempfile::tempdir().expect("working directory tempdir");
+        let command_path = write_pwd_command(temp.path(), "pwd");
+        let relative_program = command_path
+            .strip_prefix(&current_directory)
+            .expect("relative command path")
+            .to_path_buf();
+        let request = HostCommandRequest {
+            program: relative_program.as_os_str(),
+            args: &[],
+            env: &[],
+            working_directory: Some(working_directory.path()),
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        assert!(command_exists_for_request(&request));
+        assert!(command_available_for_request(&request));
+        assert_eq!(
+            resolve_program_for_direct_spawn(&request),
+            current_directory.join(&relative_program)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sudo_command_resolves_bare_target_before_request_path_assignments() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let shadowed_program = write_test_command(temp.path(), "sh");
+        let args = vec![OsString::from("-c"), OsString::from("exit 0")];
+        let env = vec![
+            (
+                OsString::from("PATH"),
+                temp.path().as_os_str().to_os_string(),
+            ),
+            (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
+        ];
+        let request = HostCommandRequest {
+            program: OsStr::new("sh"),
+            args: &args,
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let command = build_command(&request, HostCommandExecution::Sudo);
+        let collected_args = command
+            .get_args()
+            .map(OsStr::to_os_string)
+            .collect::<Vec<_>>();
+
+        assert_eq!(collected_args[0], OsString::from("-n"));
+        assert_eq!(collected_args[1], resolve_env_program().into_os_string());
+        assert_eq!(collected_args[2], OsString::from("--"));
+        assert_eq!(
+            collected_args[3],
+            env_assignment(OsStr::new("PATH"), temp.path().as_os_str())
+        );
+        assert_eq!(collected_args[4], OsString::from("OMNE_TEST_VALUE=world"));
+        assert!(Path::new(&collected_args[5]).is_absolute());
+        assert_ne!(Path::new(&collected_args[5]), shadowed_program.as_path());
     }
 
     #[test]
@@ -1089,8 +1211,9 @@ mod tests {
     fn sudo_keeps_non_utf8_environment_values_in_target_assignments() {
         let non_utf8_value = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
         let env = vec![(OsString::from("OMNE_TEST_VALUE"), non_utf8_value)];
+        let explicit_program = std::env::current_exe().expect("current exe");
         let request = HostCommandRequest {
-            program: OsStr::new("apt-get"),
+            program: explicit_program.as_os_str(),
             args: &[],
             env: &env,
             working_directory: None,
@@ -1113,7 +1236,7 @@ mod tests {
                 0x45, 0x3d, 0x66, 0x6f, 0x80,
             ])
         );
-        assert_eq!(collected_args[4], OsString::from("apt-get"));
+        assert_eq!(collected_args[4], explicit_program.into_os_string());
     }
 
     #[cfg(unix)]
@@ -1197,6 +1320,15 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn write_very_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (32 * 1024 * 1024))\nPY\n",
+        )
+    }
+
+    #[cfg(unix)]
     fn write_exact_limit_stdout_command(dir: &Path, name: &str) -> PathBuf {
         write_unix_executable(
             dir,
@@ -1228,11 +1360,6 @@ mod tests {
         std::fs::set_permissions(&temp_path, perms).expect("chmod unix command");
         std::fs::rename(&temp_path, &path).expect("rename unix command");
         path
-    }
-
-    #[cfg(unix)]
-    fn relative_command_path(name: &str) -> String {
-        format!("./{name}")
     }
 
     #[cfg(windows)]
@@ -1284,6 +1411,17 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn write_very_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.cmd"));
+        std::fs::write(
+            &path,
+            "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * 32MB; [Console]::Out.Write($s)\"\r\n",
+        )
+        .expect("write windows very loud command");
+        path
+    }
+
+    #[cfg(windows)]
     fn write_exact_limit_stdout_command(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(format!("{name}.cmd"));
         std::fs::write(
@@ -1303,10 +1441,5 @@ mod tests {
         )
         .expect("write windows loud stderr command");
         path
-    }
-
-    #[cfg(windows)]
-    fn relative_command_path(name: &str) -> String {
-        format!(".\\{name}.cmd")
     }
 }

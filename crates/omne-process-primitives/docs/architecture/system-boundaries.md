@@ -8,10 +8,12 @@
 
 - 探测命令是否存在和是否可执行。
 - 对宿主命令 request/recipe 维持 `OsStr` / `OsString` 边界，不把 argv/env 先强制收窄成 UTF-8 `String`。
-- 运行宿主机命令并捕获输出。
+- 运行宿主机命令并捕获输出；当 stdout/stderr 超过上限时，仍继续把 pipe drain 到 EOF，再返回超限错误，避免有界捕获把调用方卡死在满管道上。
+- 对显式相对程序路径保持调用方 cwd 语义，不会因为 request 同时设置了 `working_directory` 就把同一个程序路径重新解释到另一个目录。
+- `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，但对显式相对程序路径仍保持与执行路径相同的调用方 cwd 语义。
 - 当命中 `sudo` 路径时，把调用方显式提供的环境变量改写成 `env -- KEY=VALUE ...` 形式并放到提权后的目标命令边界内，避免只把变量注入到 `sudo` 自身进程环境，或把语义外包给宿主 `sudoers` 配置。
-- `sudo` 可用性判定和 `sudo` 可执行路径选择遵循同一份有效 `PATH`（优先采用调用方在请求里显式覆盖的 `PATH`）。
-- 对需要走 `sudo` 的 bare command，如果目标命令在有效 `PATH` 中不存在，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
+- `sudo` 可用性判定、`sudo` 可执行路径选择以及提权后的 bare target 解析都只信任宿主机自己的 `PATH` / 标准系统位置，不使用 request 里显式覆盖的 `PATH` 来决定提权边界。
+- 对需要走 `sudo` 的 bare command，如果目标命令在可信宿主 `PATH` / 标准系统位置中不存在，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
 - 对 `/usr/bin/apt-get` 这类显式系统路径，仍保留 `IfNonRootSystemCommand` 语义；相对路径或工作目录下的同名命令不会被误判成系统命令。
 - 运行 host recipe，并把非零退出统一建模成结构化错误。
 - `HostRecipeError::Display` 只输出退出状态和捕获字节数，不把完整 stdout/stderr 直接拼进错误字符串；需要原始输出的调用方仍可从结构化 `Output` 读取。
