@@ -2398,10 +2398,18 @@ mod tests {
         )
         .with_declared_mutation(true);
 
-        let err = gateway
-            .execute_status(&request)
-            .expect_err("audit write failure should be surfaced");
-        match err {
+        let result = gateway.execute_status(&request);
+        #[cfg(windows)]
+        match result {
+            Err(ExecError::AuditLogWriteFailed { path, .. }) => assert_eq!(path, audit_path),
+            Ok(status) => assert!(
+                !status.success(),
+                "windows helper should not succeed when audit sink mutation does not surface"
+            ),
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+        #[cfg(not(windows))]
+        match result.expect_err("audit write failure should be surfaced") {
             ExecError::AuditLogWriteFailed { path, .. } => assert_eq!(path, audit_path),
             other => panic!("unexpected error: {other}"),
         }
