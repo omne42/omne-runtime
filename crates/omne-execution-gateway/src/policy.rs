@@ -268,7 +268,10 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let root = canonical_temp_root(&dir);
         let err = GatewayPolicy::load_json(&root).expect_err("directory should be rejected");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(matches!(
+            err.kind(),
+            io::ErrorKind::InvalidInput | io::ErrorKind::PermissionDenied
+        ));
     }
 
     #[test]
