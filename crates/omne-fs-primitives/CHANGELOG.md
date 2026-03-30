@@ -2,4 +2,4 @@
 
 ## [Unreleased]
 
-- reject symlink ancestors while materializing parent directories for staged atomic file/directory writes, so atomic staging no longer follows ambient path redirects outside the intended root
+- reject non-root symlink ancestors while materializing parent directories for staged atomic file/directory writes, while normalizing platform root aliases such as macOS `/var`
