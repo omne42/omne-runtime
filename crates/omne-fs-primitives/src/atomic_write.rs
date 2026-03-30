@@ -288,9 +288,12 @@ fn ensure_atomic_parent_directory(
     } else {
         MissingRootPolicy::Error
     };
-    open_root(&normalized_parent, "atomic write parent", policy, |_, _, _, error| {
-        error
-    })
+    open_root(
+        &normalized_parent,
+        "atomic write parent",
+        policy,
+        |_, _, _, error| error,
+    )
     .map(|_| ())
 }
 
@@ -783,6 +786,9 @@ mod tests {
 
         write_file_atomically(b"tool", &destination, &AtomicWriteOptions::default())
             .expect("write through macos tempdir root alias");
-        assert_eq!(std::fs::read(&destination).expect("read destination"), b"tool");
+        assert_eq!(
+            std::fs::read(&destination).expect("read destination"),
+            b"tool"
+        );
     }
 }
