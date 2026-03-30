@@ -528,6 +528,11 @@ fn trusted_system_command_directories() -> Vec<PathBuf> {
         .collect()
 }
 
+#[cfg(not(unix))]
+fn trusted_system_command_directories() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 #[cfg(windows)]
 fn is_path_env_name(name: &OsStr) -> bool {
     name.to_string_lossy().eq_ignore_ascii_case("PATH")
