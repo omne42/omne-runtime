@@ -1,9 +1,12 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io::{self, Read};
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::thread;
+
+use omne_system_package_primitives::SystemPackageManager;
+use tempfile::tempfile;
 
 use crate::command_path::{
     is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
@@ -259,16 +262,11 @@ pub fn command_available_for_request(request: &HostCommandRequest<'_>) -> bool {
 }
 
 pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoMode {
-    let Some(program) = sudo_mode_program_name(program) else {
-        return HostCommandSudoMode::Never;
-    };
-    match program {
-        "brew" => HostCommandSudoMode::Never,
-        "apt-get" | "dnf" | "yum" | "apk" | "pacman" | "zypper" => {
+    sudo_mode_system_package_manager(program)
+        .filter(|manager| manager.requires_privileged_install())
+        .map_or(HostCommandSudoMode::Never, |_| {
             HostCommandSudoMode::IfNonRootSystemCommand
-        }
-        _ => HostCommandSudoMode::Never,
-    }
+        })
 }
 
 fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecution) -> Command {
@@ -296,9 +294,7 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
     if let Some(working_directory) = request.working_directory {
         cmd.current_dir(working_directory);
     }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdin(Stdio::null());
     cmd
 }
 
@@ -307,12 +303,17 @@ fn append_sudo_target_command(
     program: &Path,
     request: &HostCommandRequest<'_>,
 ) {
-    if request.env.is_empty() {
+    let forwarded_env = request
+        .env
+        .iter()
+        .filter(|(name, _)| !is_path_env_name(name))
+        .collect::<Vec<_>>();
+    if forwarded_env.is_empty() {
         command.arg(program);
     } else {
         command.arg(resolve_env_program());
         command.arg("--");
-        for (name, value) in request.env {
+        for (name, value) in forwarded_env {
             command.arg(env_assignment(name, value));
         }
         command.arg(program);
@@ -359,29 +360,29 @@ fn spawn_and_capture_output(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
 ) -> io::Result<Output> {
-    let mut child = build_command(request, execution).spawn()?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("stdout pipe missing"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| io::Error::other("stderr pipe missing"))?;
-    let stdout_handle = thread::spawn(move || read_stream_limited(stdout, "stdout"));
-    let stderr_handle = thread::spawn(move || read_stream_limited(stderr, "stderr"));
+    let (stdout_capture, stdout_writer) = create_output_capture_file()?;
+    let (stderr_capture, stderr_writer) = create_output_capture_file()?;
+    let mut command = build_command(request, execution);
+    command.stdout(Stdio::from(stdout_writer));
+    command.stderr(Stdio::from(stderr_writer));
+    let mut child = command.spawn()?;
     let status = child.wait()?;
     Ok(Output {
         status,
-        stdout: join_capture_thread(stdout_handle)?,
-        stderr: join_capture_thread(stderr_handle)?,
+        stdout: read_captured_output(stdout_capture, "stdout")?,
+        stderr: read_captured_output(stderr_capture, "stderr")?,
     })
 }
 
-fn join_capture_thread(handle: thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
-    handle
-        .join()
-        .map_err(|_| io::Error::other("output capture thread panicked"))?
+fn create_output_capture_file() -> io::Result<(File, File)> {
+    let capture = tempfile()?;
+    let writer = capture.try_clone()?;
+    Ok((capture, writer))
+}
+
+fn read_captured_output(mut capture: File, stream_name: &'static str) -> io::Result<Vec<u8>> {
+    capture.seek(SeekFrom::Start(0))?;
+    read_stream_limited(&mut capture, stream_name)
 }
 
 fn read_stream_limited<R>(mut reader: R, stream_name: &'static str) -> io::Result<Vec<u8>>
@@ -460,10 +461,15 @@ fn has_path_separator(command: &OsStr) -> bool {
 }
 
 fn sudo_eligible_program(program: &OsStr) -> bool {
+    let Some(manager) = sudo_mode_system_package_manager(program) else {
+        return false;
+    };
+    if !manager.requires_privileged_install() {
+        return false;
+    }
     if !is_explicit_command_path(program) {
         return true;
     }
-
     explicit_system_command_path(Path::new(program))
 }
 
@@ -476,6 +482,10 @@ fn sudo_mode_program_name(program: &OsStr) -> Option<&str> {
     explicit_system_command_path(path)
         .then_some(path.file_name()?.to_str())
         .flatten()
+}
+
+fn sudo_mode_system_package_manager(program: &OsStr) -> Option<SystemPackageManager> {
+    sudo_mode_program_name(program).and_then(SystemPackageManager::parse)
 }
 
 fn explicit_system_command_path(path: &Path) -> bool {
@@ -512,18 +522,10 @@ fn explicit_system_command_path_with_trusted_dirs(path: &Path, trusted_dirs: &[P
 
 #[cfg(unix)]
 fn trusted_system_command_directories() -> Vec<PathBuf> {
-    [
-        "/usr/bin",
-        "/usr/sbin",
-        "/bin",
-        "/sbin",
-        "/usr/local/bin",
-        "/opt/homebrew/bin",
-        "/opt/local/bin",
-    ]
-    .iter()
-    .filter_map(|dir| std::fs::canonicalize(dir).ok())
-    .collect()
+    ["/usr/bin", "/usr/sbin", "/bin", "/sbin"]
+        .iter()
+        .filter_map(|dir| std::fs::canonicalize(dir).ok())
+        .collect()
 }
 
 #[cfg(windows)]
@@ -579,8 +581,26 @@ fn resolve_program_for_sudo_target(request: &HostCommandRequest<'_>) -> PathBuf 
         return resolve_program_for_direct_spawn(request);
     }
 
-    resolve_command_path_or_standard_location_os(request.program)
+    resolve_trusted_system_command_path(request.program)
         .unwrap_or_else(|| PathBuf::from(request.program))
+}
+
+fn resolve_trusted_system_command_path(program: &OsStr) -> Option<PathBuf> {
+    resolve_trusted_system_command_path_with_dirs(program, &trusted_system_command_directories())
+}
+
+fn resolve_trusted_system_command_path_with_dirs(
+    program: &OsStr,
+    trusted_dirs: &[PathBuf],
+) -> Option<PathBuf> {
+    if is_explicit_command_path(program) {
+        return None;
+    }
+
+    trusted_dirs.iter().find_map(|dir| {
+        let candidate = dir.join(program);
+        is_spawnable_command_path(&candidate).then_some(candidate)
+    })
 }
 
 fn ensure_sudo_target_is_available(
@@ -590,7 +610,7 @@ fn ensure_sudo_target_is_available(
         return Ok(());
     }
 
-    if resolve_command_path_or_standard_location_os(request.program).is_some() {
+    if resolve_trusted_system_command_path(request.program).is_some() {
         return Ok(());
     }
 
@@ -646,10 +666,10 @@ mod tests {
     #[cfg(unix)]
     use super::ensure_sudo_target_is_available;
     #[cfg(unix)]
-    use super::env_assignment;
-    #[cfg(unix)]
     use super::explicit_system_command_path_with_trusted_dirs;
     use super::resolve_env_program;
+    #[cfg(unix)]
+    use super::resolve_trusted_system_command_path_with_dirs;
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
     use super::{
@@ -712,6 +732,18 @@ mod tests {
             true,
         ));
         assert!(!should_try_sudo_with_status(
+            OsStr::new("sh"),
+            HostCommandSudoMode::IfNonRootSystemCommand,
+            true,
+            true,
+        ));
+        assert!(!should_try_sudo_with_status(
+            OsStr::new("brew"),
+            HostCommandSudoMode::IfNonRootSystemCommand,
+            true,
+            true,
+        ));
+        assert!(!should_try_sudo_with_status(
             OsStr::new("./apt-get"),
             HostCommandSudoMode::IfNonRootSystemCommand,
             true,
@@ -758,6 +790,10 @@ mod tests {
         let explicit_program = std::env::current_exe().expect("current exe");
         let args = vec![OsString::from("-c"), OsString::from("exit 0")];
         let env = vec![
+            (
+                OsString::from("PATH"),
+                OsString::from("/tmp/not-trusted:/usr/bin"),
+            ),
             (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
             (OsString::from("OMNE_SECOND"), OsString::from("value")),
         ];
@@ -782,6 +818,10 @@ mod tests {
         assert_eq!(Path::new(&collected_args[5]), explicit_program.as_path());
         assert_eq!(collected_args[6], "-c");
         assert_eq!(collected_args[7], "exit 0");
+        assert!(
+            collected_args.iter().all(|arg| !arg.starts_with("PATH=")),
+            "sudo target env must not inherit request PATH: {collected_args:?}"
+        );
 
         let collected_env = command
             .get_envs()
@@ -1099,41 +1139,17 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_command_resolves_bare_target_before_request_path_assignments() {
+    fn trusted_sudo_target_resolution_ignores_request_path_assignments() {
         let temp = tempfile::tempdir().expect("tempdir");
         let shadowed_program = write_test_command(temp.path(), "sh");
-        let args = vec![OsString::from("-c"), OsString::from("exit 0")];
-        let env = vec![
-            (
-                OsString::from("PATH"),
-                temp.path().as_os_str().to_os_string(),
-            ),
-            (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
-        ];
-        let request = HostCommandRequest {
-            program: OsStr::new("sh"),
-            args: &args,
-            env: &env,
-            working_directory: None,
-            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
-        };
 
-        let command = build_command(&request, HostCommandExecution::Sudo);
-        let collected_args = command
-            .get_args()
-            .map(OsStr::to_os_string)
-            .collect::<Vec<_>>();
+        let resolved = resolve_trusted_system_command_path_with_dirs(
+            OsStr::new("sh"),
+            &[PathBuf::from("/bin"), PathBuf::from("/usr/bin")],
+        )
+        .expect("resolve trusted shell path");
 
-        assert_eq!(collected_args[0], OsString::from("-n"));
-        assert_eq!(collected_args[1], resolve_env_program().into_os_string());
-        assert_eq!(collected_args[2], OsString::from("--"));
-        assert_eq!(
-            collected_args[3],
-            env_assignment(OsStr::new("PATH"), temp.path().as_os_str())
-        );
-        assert_eq!(collected_args[4], OsString::from("OMNE_TEST_VALUE=world"));
-        assert!(Path::new(&collected_args[5]).is_absolute());
-        assert_ne!(Path::new(&collected_args[5]), shadowed_program.as_path());
+        assert_ne!(resolved, shadowed_program);
     }
 
     #[test]
@@ -1178,6 +1194,31 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_host_command_returns_after_direct_child_exit_even_when_background_keeps_stdout_open() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_background_writer_command(temp.path(), "daemonize");
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let started = std::time::Instant::now();
+        let output = run_host_command(&request).expect("run host command");
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "background descendants must not keep run_host_command blocked"
+        );
+        assert!(output.output.status.success());
+        let stdout = String::from_utf8_lossy(&output.output.stdout);
+        assert!(stdout.contains("parent-ready"));
     }
 
     #[cfg(unix)]
@@ -1345,6 +1386,17 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn sudo_eligibility_rejects_user_local_prefixes() {
+        assert!(!super::explicit_system_command_path(Path::new(
+            "/usr/local/bin/apt-get"
+        )));
+        assert!(!super::explicit_system_command_path(Path::new(
+            "/opt/homebrew/bin/apt-get"
+        )));
+    }
+
+    #[cfg(unix)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
         write_unix_executable(
             dir,
@@ -1382,6 +1434,15 @@ mod tests {
             dir,
             name,
             "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (8 * 1024 * 1024 + 1))\nPY\n",
+        )
+    }
+
+    #[cfg(unix)]
+    fn write_background_writer_command(dir: &Path, name: &str) -> PathBuf {
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\n(sleep 2; printf 'late-child\\n') &\nprintf 'parent-ready\\n'\n",
         )
     }
 

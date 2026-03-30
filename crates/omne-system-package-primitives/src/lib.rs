@@ -161,6 +161,10 @@ impl SystemPackageManager {
         }
     }
 
+    pub const fn requires_privileged_install(self) -> bool {
+        !matches!(self, Self::Brew)
+    }
+
     pub fn try_install_recipe(
         self,
         package: &str,
