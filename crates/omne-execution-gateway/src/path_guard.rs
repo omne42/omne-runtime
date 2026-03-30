@@ -47,6 +47,7 @@ pub(crate) fn open_regular_readonly_nofollow(
     ensure_regular_file(file.into_std(), &normalized, label)
 }
 
+#[allow(dead_code)]
 pub(crate) fn open_appendable_regular_file_nofollow(
     path: &Path,
     label: &str,

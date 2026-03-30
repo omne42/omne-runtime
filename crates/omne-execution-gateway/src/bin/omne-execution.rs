@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 
-use std::fs::{self, File};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus};
@@ -189,6 +188,7 @@ mod tests {
     use super::*;
     use omne_execution_gateway::{ExecDecision, RequestedIsolationSource, requested_policy_meta};
     use policy_meta::SpecVersion;
+    use std::fs::{self, File};
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
     #[cfg(unix)]

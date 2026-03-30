@@ -328,7 +328,7 @@ mod tests {
         .expect("write policy");
         symlink(&real_dir, &alias_dir).expect("symlink ancestor");
 
-        let err = GatewayPolicy::load_json(&alias_dir.join("policy.json"))
+        let err = GatewayPolicy::load_json(alias_dir.join("policy.json"))
             .expect_err("ancestor symlink should be rejected");
         assert_ne!(err.kind(), io::ErrorKind::InvalidData);
     }
