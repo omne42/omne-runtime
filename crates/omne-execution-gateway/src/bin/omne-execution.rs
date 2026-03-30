@@ -1,11 +1,9 @@
 #![forbid(unsafe_code)]
 
-use std::fs::{self, File, OpenOptions};
-use std::io::Read;
+use std::fs::{self, File};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus};
-use std::str;
 
 use omne_execution_gateway::{
     ExecEvent, ExecGateway, ExecRequest, ExecResult, GatewayPolicy, RequestResolution,
@@ -15,17 +13,29 @@ use serde::{Deserialize, Serialize};
 
 const MAX_REQUEST_JSON_BYTES: usize = 1024 * 1024;
 
+#[path = "../path_guard.rs"]
+mod path_guard;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecRequestWire {
     program: String,
     #[serde(default)]
     args: Vec<String>,
+    #[serde(default)]
+    env: Vec<ExecEnvVarWire>,
     cwd: PathBuf,
     workspace_root: PathBuf,
     #[serde(default)]
     required_isolation: Option<ExecutionIsolation>,
     declared_mutation: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecEnvVarWire {
+    name: String,
+    value: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -102,104 +112,40 @@ fn build_exec_request(
     policy: &GatewayPolicy,
     request_wire: ExecRequestWire,
 ) -> Result<ExecRequest, String> {
-    let request = match request_wire.required_isolation {
-        Some(required_isolation) => ExecRequest::new(
-            request_wire.program,
-            request_wire.args,
-            request_wire.cwd,
-            required_isolation,
-            request_wire.workspace_root,
-        ),
+    let ExecRequestWire {
+        program,
+        args,
+        env,
+        cwd,
+        workspace_root,
+        required_isolation,
+        declared_mutation,
+    } = request_wire;
+
+    let request = match required_isolation {
+        Some(required_isolation) => {
+            ExecRequest::new(program, args, cwd, required_isolation, workspace_root)
+        }
         None => ExecRequest::with_policy_default_isolation(
-            request_wire.program,
-            request_wire.args,
-            request_wire.cwd,
+            program,
+            args,
+            cwd,
             policy.default_isolation,
-            request_wire.workspace_root,
+            workspace_root,
         ),
     };
 
-    Ok(request.with_declared_mutation(request_wire.declared_mutation))
+    Ok(request
+        .with_declared_mutation(declared_mutation)
+        .with_env(env.into_iter().map(|entry| (entry.name, entry.value))))
 }
 
 fn load_request(path: &Path) -> Result<ExecRequestWire, String> {
-    let content = read_utf8_regular_file_nofollow(path, MAX_REQUEST_JSON_BYTES)
-        .map_err(|e| format!("failed to read request {}: {e}", path.display()))?;
+    let content =
+        path_guard::read_utf8_regular_file_nofollow(path, MAX_REQUEST_JSON_BYTES, "request file")
+            .map_err(|e| format!("failed to read request {}: {e}", path.display()))?;
     serde_json::from_str(&content)
         .map_err(|e| format!("invalid request json {}: {e}", path.display()))
-}
-
-fn read_utf8_regular_file_nofollow(path: &Path, max_bytes: usize) -> std::io::Result<String> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("path is not a regular file: {}", path.display()),
-        ));
-    }
-    let file = open_regular_readonly_nofollow(path)?;
-    let mut bytes = Vec::new();
-    let limit = u64::try_from(max_bytes)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let mut limited = file.take(limit);
-    limited.read_to_end(&mut bytes)?;
-    if bytes.len() > max_bytes {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "request file exceeds size limit ({} > {} bytes)",
-                bytes.len(),
-                max_bytes
-            ),
-        ));
-    }
-    str::from_utf8(&bytes)
-        .map(str::to_owned)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))
-}
-
-#[cfg(unix)]
-fn open_regular_readonly_nofollow(path: &Path) -> std::io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(windows)]
-fn open_regular_readonly_nofollow(path: &Path) -> std::io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn open_regular_readonly_nofollow(path: &Path) -> std::io::Result<File> {
-    let file = OpenOptions::new().read(true).open(path)?;
-    ensure_regular_file(path, file)
-}
-
-fn ensure_regular_file(path: &Path, file: File) -> std::io::Result<File> {
-    let metadata = file.metadata()?;
-    if metadata.is_file() {
-        return Ok(file);
-    }
-
-    Err(std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
-        format!("path is not a regular file: {}", path.display()),
-    ))
 }
 
 fn exec_output_from_result(
@@ -262,6 +208,7 @@ mod tests {
             supported_isolation: ExecutionIsolation::BestEffort,
             program: "echo".into(),
             args: vec!["hello".into()],
+            env: Vec::new(),
             cwd: workspace.clone(),
             workspace_root: workspace,
             declared_mutation: false,
@@ -344,6 +291,8 @@ mod tests {
                     "encoding": "utf8",
                     "value": "hello"
                 }],
+                "env": [],
+                "env_exact": [],
                 "cwd": output.request_resolution.cwd,
                 "workspace_root": output.request_resolution.workspace_root,
                 "declared_mutation": false,
@@ -377,6 +326,8 @@ mod tests {
                     "encoding": "utf8",
                     "value": "hello"
                 }],
+                "env": [],
+                "env_exact": [],
                 "cwd": output.event.cwd,
                 "workspace_root": output.event.workspace_root,
                 "declared_mutation": false,
@@ -473,6 +424,10 @@ mod tests {
             ExecRequestWire {
                 program: "echo".to_string(),
                 args: vec!["hello".to_string()],
+                env: vec![ExecEnvVarWire {
+                    name: "PATH".to_string(),
+                    value: "/usr/bin".to_string(),
+                }],
                 cwd: ".".into(),
                 workspace_root: ".".into(),
                 required_isolation: None,
@@ -482,6 +437,13 @@ mod tests {
         .expect("build request");
 
         assert!(request.declared_mutation);
+        assert_eq!(
+            request.env,
+            vec![(
+                std::ffi::OsString::from("PATH"),
+                std::ffi::OsString::from("/usr/bin")
+            )]
+        );
         assert_eq!(
             request.requested_isolation_source,
             RequestedIsolationSource::PolicyDefault
@@ -557,7 +519,33 @@ mod tests {
 
         let err = load_request(&link).expect_err("symlink request should fail closed");
         assert!(
-            err.contains("path is not a regular file"),
+            err.contains("Too many levels of symbolic links")
+                || err.contains("path is not a regular file"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_request_rejects_ancestor_symlink_input() {
+        let dir = tempdir().expect("tempdir");
+        let real_dir = dir.path().join("real");
+        let alias_dir = dir.path().join("alias");
+        fs::create_dir(&real_dir).expect("create real dir");
+        fs::write(
+            real_dir.join("request.json"),
+            r#"{"program":"echo","args":[],"cwd":".","workspace_root":".","declared_mutation":false}"#,
+        )
+        .expect("write request");
+        symlink(&real_dir, &alias_dir).expect("symlink ancestor dir");
+
+        let err = load_request(&alias_dir.join("request.json"))
+            .expect_err("ancestor symlink should fail closed");
+        assert!(
+            err.contains("Not a directory")
+                || err.contains("failed to open file")
+                || err.contains("No such file")
+                || err.contains("path is not a regular file"),
             "unexpected error: {err}"
         );
     }
@@ -571,7 +559,7 @@ mod tests {
 
         let err = load_request(&path).expect_err("special-file request should fail closed");
         assert!(
-            err.contains("path is not a regular file"),
+            err.contains("No such device or address") || err.contains("path is not a regular file"),
             "unexpected error: {err}"
         );
     }

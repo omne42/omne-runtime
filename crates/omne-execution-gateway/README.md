@@ -22,7 +22,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed denial for shell-like or interpreter launchers such as `sh`, `cmd`, `pwsh`, `python`, and `node` unless they are explicitly allowlisted
 - fail-closed denial for known mutating tool families such as `git`, `make`, `cargo`, `go`, package managers, and core file-mutating utilities unless they declare mutation and use an explicitly allowlisted path
 - gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
-- structured decision events for audit/logging, including lossy display fields plus exact JSON encodings for `program` / `args` when OS strings are not valid UTF-8
+- structured decision events for audit/logging, including lossy display fields plus exact JSON encodings for `program` / `args` / explicit environment entries when OS strings are not valid UTF-8
 - mutation allowlist, opaque-launcher, and known-mutator gates evaluate native `OsStr` / `Path` inputs directly instead of relying on lossy UTF-8 coercion
 
 ## Important Scope Notes
@@ -41,9 +41,11 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `prepare_command()` now requires the caller-supplied `Command` to already point at the same resolved executable path that the gateway bound during preflight; handing it an unresolved bare command name is rejected fail-closed as a prepared-command mismatch.
 - allowlist matching binds explicit paths to executable identity; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
 - JSON surfaces keep readable lossy `program` / `args` fields and also emit `program_exact` / `args_exact`, so audit consumers can reconstruct non-UTF-8 argv exactly instead of guessing from replacement characters.
-- `GatewayPolicy::load_json()` only accepts no-follow regular files, so symlinks and other special files cannot silently stand in for trusted policy input.
+- `GatewayPolicy::load_json()` only accepts no-follow regular files and fail-closed ancestor directory walks, so symlinks/reparse points cannot silently stand in for trusted policy input.
+- `ExecRequest` now carries explicit environment entries; `execute()` and `prepare_command()` clear inherited process state and apply only that audited environment before spawn.
 - the CLI request adapter also rejects unknown JSON fields fail-closed, so misspelled request keys cannot silently degrade execution boundaries.
-- if `audit_log_path` is configured, preflight creates missing parent directories one component at a time with symlink checks and rejects requests fail-closed when the audit log cannot be opened for append.
+- if `audit_log_path` is configured, preflight creates missing parent directories through a descriptor-backed no-follow walk and rejects requests fail-closed when any ancestor symlink/reparse point or non-directory blocks the audit sink.
+- allowlisted mutating programs bind both file identity and a preflight content fingerprint, and spawn revalidation rejects in-place executable rewrites before launch.
 - if audit append succeeds during preflight but the final record write later fails, the execution result is surfaced as an explicit audit-log write failure instead of silently degrading to stderr-only reporting. When the command had already failed for another reason, the returned audit error now also includes that original execution error summary.
 - `prepare_command` returns a spawn-only `PreparedCommand` wrapper instead of handing a mutable validated `Command` back to callers.
 - `prepare_command` only emits the preflight `prepared`/`prepare_error` audit record. Final exit-status auditing and runtime sandbox observation remain part of `execute()`, because handing back a spawn-only wrapper transfers child-lifecycle ownership to the caller.
