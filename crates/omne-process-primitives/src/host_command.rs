@@ -637,7 +637,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
     #[cfg(unix)]
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
 
     #[cfg(unix)]
@@ -653,11 +653,12 @@ mod tests {
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
     use super::{
-        build_command, command_available, command_available_for_request, command_exists,
-        command_exists_for_request, command_path_exists, default_recipe_sudo_mode_for_program,
+        HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
+        HostRecipeError, HostRecipeRequest, build_command, command_available,
+        command_available_for_request, command_exists, command_exists_for_request,
+        command_path_exists, default_recipe_sudo_mode_for_program,
         resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
-        should_try_sudo_with_status, HostCommandError, HostCommandExecution, HostCommandRequest,
-        HostCommandSudoMode, HostRecipeError, HostRecipeRequest,
+        should_try_sudo_with_status,
     };
 
     #[test]
