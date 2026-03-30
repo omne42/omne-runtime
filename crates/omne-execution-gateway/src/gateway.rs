@@ -281,8 +281,9 @@ impl ExecGateway {
                     ExecError::MutationDeclarationRequired,
                 ));
             }
-            let program = request.program.to_string_lossy();
-            let program_is_allowlisted = self.policy.is_mutating_program_allowlisted(&program);
+            let program_is_allowlisted = self
+                .policy
+                .is_mutating_program_allowlisted_path(Path::new(&request.program));
             if request.declared_mutation && !program_is_allowlisted {
                 return Err(self.deny_preflight(
                     event,
@@ -413,11 +414,7 @@ impl ExecGateway {
 }
 
 fn uses_opaque_command_launcher(program: &OsStr) -> bool {
-    fn matches_opaque_command_name(candidate: &str) -> bool {
-        let normalized = candidate
-            .strip_suffix(".exe")
-            .unwrap_or(candidate)
-            .to_ascii_lowercase();
+    program_basename_ascii(program).is_some_and(|normalized| {
         matches!(
             normalized.as_str(),
             "sh" | "bash"
@@ -439,64 +436,101 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
                 | "php"
                 | "lua"
         )
-    }
-
-    let path = Path::new(program);
-    path.to_str().is_some_and(matches_opaque_command_name)
-        || path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(matches_opaque_command_name)
+    })
 }
 
 fn uses_known_mutating_program(program: &OsStr) -> bool {
-    let program_name = Path::new(program)
-        .file_name()
-        .unwrap_or(program)
-        .to_string_lossy();
-    let normalized = program_name
-        .strip_suffix(".exe")
-        .unwrap_or(&program_name)
-        .to_ascii_lowercase();
+    program_basename_ascii(program).is_some_and(|normalized| {
+        matches!(
+            normalized.as_str(),
+            "git"
+                | "make"
+                | "gmake"
+                | "cargo"
+                | "go"
+                | "npm"
+                | "npx"
+                | "pnpm"
+                | "yarn"
+                | "bun"
+                | "pip"
+                | "pip3"
+                | "uv"
+                | "apt"
+                | "apt-get"
+                | "dnf"
+                | "yum"
+                | "pacman"
+                | "zypper"
+                | "apk"
+                | "brew"
+                | "winget"
+                | "choco"
+                | "scoop"
+                | "rm"
+                | "mv"
+                | "cp"
+                | "install"
+                | "mkdir"
+                | "rmdir"
+                | "touch"
+                | "chmod"
+                | "chown"
+                | "chgrp"
+                | "ln"
+        )
+    })
+}
 
-    matches!(
-        normalized.as_str(),
-        "git"
-            | "make"
-            | "gmake"
-            | "cargo"
-            | "go"
-            | "npm"
-            | "npx"
-            | "pnpm"
-            | "yarn"
-            | "bun"
-            | "pip"
-            | "pip3"
-            | "uv"
-            | "apt"
-            | "apt-get"
-            | "dnf"
-            | "yum"
-            | "pacman"
-            | "zypper"
-            | "apk"
-            | "brew"
-            | "winget"
-            | "choco"
-            | "scoop"
-            | "rm"
-            | "mv"
-            | "cp"
-            | "install"
-            | "mkdir"
-            | "rmdir"
-            | "touch"
-            | "chmod"
-            | "chown"
-            | "chgrp"
-            | "ln"
-    )
+fn program_basename_ascii(program: &OsStr) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+
+        let basename = Path::new(program).file_name().unwrap_or(program).as_bytes();
+        ascii_program_name_from_bytes(basename)
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+
+        let basename = Path::new(program).file_name().unwrap_or(program);
+        let mut ascii = String::new();
+        for unit in basename.encode_wide() {
+            let byte = u8::try_from(unit).ok()?;
+            if !byte.is_ascii() {
+                return None;
+            }
+            ascii.push(char::from(byte.to_ascii_lowercase()));
+        }
+        Some(strip_windows_exe_suffix_owned(ascii))
+    }
+
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        Path::new(program)
+            .file_name()
+            .unwrap_or(program)
+            .to_str()
+            .map(|value| strip_windows_exe_suffix_owned(value.to_ascii_lowercase()))
+    }
+}
+
+#[cfg(unix)]
+fn ascii_program_name_from_bytes(bytes: &[u8]) -> Option<String> {
+    if !bytes.is_ascii() {
+        return None;
+    }
+    let normalized = bytes
+        .iter()
+        .map(|byte| char::from(byte.to_ascii_lowercase()))
+        .collect::<String>();
+    Some(strip_windows_exe_suffix_owned(normalized))
+}
+
+fn strip_windows_exe_suffix_owned(value: String) -> String {
+    value.strip_suffix(".exe").unwrap_or(&value).to_string()
 }
 
 fn canonicalize_workspace_root(path: &Path) -> ExecResult<PathBuf> {
@@ -951,6 +985,8 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
+    #[cfg(unix)]
     use std::process::Stdio;
     #[cfg(unix)]
     use std::time::{Duration, Instant};
@@ -959,6 +995,20 @@ mod tests {
 
     use super::*;
     use crate::policy::GatewayPolicy;
+
+    #[cfg(unix)]
+    #[test]
+    fn known_mutating_detection_rejects_non_utf8_basename() {
+        let program = OsString::from_vec(vec![0x67, 0x69, 0x74, 0x80]);
+        assert!(!uses_known_mutating_program(program.as_os_str()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opaque_launcher_detection_rejects_non_utf8_basename() {
+        let program = OsString::from_vec(vec![0x70, 0x79, 0x74, 0x68, 0x6f, 0x6e, 0x80]);
+        assert!(!uses_opaque_command_launcher(program.as_os_str()));
+    }
 
     #[test]
     fn fail_closed_when_required_isolation_exceeds_supported() {

@@ -4,6 +4,7 @@
 
 - resolve bare command names to absolute executable identities before execution, fail closed when lookup cannot be bound, and require `prepare_command()` callers to pass the same resolved executable path instead of an unresolved bare `Command`
 - include `event.args` plus exact `program_exact` / `args_exact` JSON encodings so audit logs and CLI output preserve non-UTF-8 argv without relying on lossy replacement characters
+- harden audit-log parent creation so missing intermediate directories are created one component at a time with symlink checks instead of ambient `create_dir_all`
 - deny known-mutating tool families such as `git`, `make`, package managers, and core file-mutating utilities when callers label them `declared_mutation = false`; those tools must now declare mutation and bind an allowlisted explicit path
 - add regression coverage for `cwd_invalid` so missing working directories do not regress back into `cwd_outside_workspace`
 - reject symlinked, ancestor-symlinked, and special-file audit log destinations so audit logging fails closed on unsafe sinks
@@ -15,3 +16,4 @@
 - make `resolve_request()` and CLI `request_resolution` reuse the gateway's validated canonical path view
 - reject unknown `omne-execution` request JSON fields fail-closed
 - stabilize oversized JSON fixture coverage so request/policy size-limit tests do not depend on free disk space
+- keep mutation allowlist, opaque-launcher, and known-mutator gates on native `OsStr` / `Path` inputs so non-UTF-8 program paths fail closed without lossy string coercion

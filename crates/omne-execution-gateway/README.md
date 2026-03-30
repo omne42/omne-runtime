@@ -15,7 +15,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed if requested isolation exceeds host support
 - fail-closed if a request marked as `policy_default` no longer matches the gateway's current policy default
 - fail-closed if `program` is neither a bare command name nor an absolute path
-- explicit absolute `program` paths are bound as file identities and revalidated immediately before spawn
+- explicit absolute `program` paths are bound as file identities and revalidated immediately before spawn; this narrows but cannot eliminate the final OS-level race between the last check and `exec`
 - bare command names are resolved to an absolute executable path during preflight, rebound as an executable identity, and rejected fail-closed if lookup cannot be bound
 - workspace boundary enforcement (`cwd` must stay inside `workspace_root`, and execution binds canonicalized directory identities before spawn)
 - explicit mutation declaration for every request when mutation enforcement is enabled
@@ -23,6 +23,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed denial for known mutating tool families such as `git`, `make`, `cargo`, `go`, package managers, and core file-mutating utilities unless they declare mutation and use an explicitly allowlisted path
 - gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
 - structured decision events for audit/logging, including lossy display fields plus exact JSON encodings for `program` / `args` when OS strings are not valid UTF-8
+- mutation allowlist, opaque-launcher, and known-mutator gates evaluate native `OsStr` / `Path` inputs directly instead of relying on lossy UTF-8 coercion
 
 ## Important Scope Notes
 
@@ -36,13 +37,13 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - mutation authorization now requires explicit program paths in both the request and policy allowlist. Bare program names are denied fail-closed because they do not bind to a stable executable, and allowlist checks resolve by executable identity rather than basename text.
 - relative executable paths such as `./tool` or `bin/tool` are denied fail-closed because their spawn semantics can drift with the gateway process context; callers must use a bare command name or absolute path.
 - bare command names remain allowed for `execute()`, but the gateway immediately resolves them to a concrete executable path and audits that resolved path instead of the original bare token.
-- explicit program paths are revalidated as file identities before spawn, so even stable aliases such as symlinks cannot silently drift to a different executable after preflight succeeds.
+- explicit program paths are revalidated as file identities before the spawn call, which narrows alias drift and preflight/path-swap bugs but does not eliminate the final OS-level race between that check and process creation.
 - `prepare_command()` now requires the caller-supplied `Command` to already point at the same resolved executable path that the gateway bound during preflight; handing it an unresolved bare command name is rejected fail-closed as a prepared-command mismatch.
 - allowlist matching binds explicit paths to executable identity; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
 - JSON surfaces keep readable lossy `program` / `args` fields and also emit `program_exact` / `args_exact`, so audit consumers can reconstruct non-UTF-8 argv exactly instead of guessing from replacement characters.
 - `GatewayPolicy::load_json()` only accepts no-follow regular files, so symlinks and other special files cannot silently stand in for trusted policy input.
 - the CLI request adapter also rejects unknown JSON fields fail-closed, so misspelled request keys cannot silently degrade execution boundaries.
-- if `audit_log_path` is configured, preflight creates missing parent directories and rejects requests fail-closed when the audit log cannot be opened for append.
+- if `audit_log_path` is configured, preflight creates missing parent directories one component at a time with symlink checks and rejects requests fail-closed when the audit log cannot be opened for append.
 - if audit append succeeds during preflight but the final record write later fails, the execution result is surfaced as an explicit audit-log write failure instead of silently degrading to stderr-only reporting. When the command had already failed for another reason, the returned audit error now also includes that original execution error summary.
 - `prepare_command` returns a spawn-only `PreparedCommand` wrapper instead of handing a mutable validated `Command` back to callers.
 - `prepare_command` only emits the preflight `prepared`/`prepare_error` audit record. Final exit-status auditing and runtime sandbox observation remain part of `execute()`, because handing back a spawn-only wrapper transfers child-lifecycle ownership to the caller.
