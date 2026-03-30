@@ -35,6 +35,10 @@ impl Default for GatewayPolicy {
 
 impl GatewayPolicy {
     pub fn is_mutating_program_allowlisted(&self, program: &str) -> bool {
+        self.is_mutating_program_allowlisted_path(Path::new(program))
+    }
+
+    pub fn is_mutating_program_allowlisted_path(&self, program: &Path) -> bool {
         if !is_explicit_program_path(program) {
             return false;
         }
@@ -124,23 +128,29 @@ fn ensure_regular_file(path: &Path, file: File) -> io::Result<File> {
     ))
 }
 
-fn is_explicit_program_path(program: &str) -> bool {
-    Path::new(program).is_absolute() || program.chars().any(|ch| ch == '/' || ch == '\\')
+fn is_explicit_program_path(program: impl AsRef<Path>) -> bool {
+    let program = program.as_ref();
+    program.is_absolute()
+        || program
+            .to_string_lossy()
+            .chars()
+            .any(|ch| ch == '/' || ch == '\\')
 }
 
 #[cfg(windows)]
-fn program_path_matches(expected: &str, actual: &str) -> bool {
+fn program_path_matches(expected: &str, actual: &Path) -> bool {
     if same_file::is_same_file(expected, actual).unwrap_or(false) {
         return true;
     }
 
-    if normalize_windows_path_text(expected) == normalize_windows_path_text(actual) {
+    if normalize_windows_path_text(expected)
+        == normalize_windows_path_text(actual.to_string_lossy().as_ref())
+    {
         return true;
     }
 
     let expected_path = Path::new(expected);
-    let actual_path = Path::new(actual);
-    match (expected_path.parent(), actual_path.parent()) {
+    match (expected_path.parent(), actual.parent()) {
         (Some(expected_parent), Some(actual_parent))
             if normalize_windows_path_text(&expected_parent.to_string_lossy())
                 == normalize_windows_path_text(&actual_parent.to_string_lossy()) =>
@@ -148,7 +158,7 @@ fn program_path_matches(expected: &str, actual: &str) -> bool {
             expected_path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .zip(actual_path.file_name().and_then(|name| name.to_str()))
+                .zip(actual.file_name().and_then(|name| name.to_str()))
                 .is_some_and(|(expected_name, actual_name)| {
                     program_name_matches(expected_name, actual_name)
                 })
@@ -158,8 +168,8 @@ fn program_path_matches(expected: &str, actual: &str) -> bool {
 }
 
 #[cfg(not(windows))]
-fn program_path_matches(expected: &str, actual: &str) -> bool {
-    same_file::is_same_file(expected, actual).unwrap_or(false) || expected == actual
+fn program_path_matches(expected: &str, actual: &Path) -> bool {
+    same_file::is_same_file(expected, actual).unwrap_or(false) || Path::new(expected) == actual
 }
 
 #[cfg(windows)]
@@ -190,7 +200,11 @@ fn executable_stem(name: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::ffi::OsString;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
 
@@ -251,6 +265,21 @@ mod tests {
         };
 
         assert!(policy.is_mutating_program_allowlisted(&alias.display().to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_explicit_path_is_not_allowlisted_via_lossy_text() {
+        let dir = tempdir().expect("tempdir");
+        let program = dir.path().join(OsString::from_vec(vec![0x66, 0x6f, 0x80]));
+        fs::write(&program, b"#!/bin/sh\nexit 0\n").expect("write tool");
+
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec![dir.path().join("fo�").display().to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(!policy.is_mutating_program_allowlisted_path(&program));
     }
 
     #[cfg(windows)]
