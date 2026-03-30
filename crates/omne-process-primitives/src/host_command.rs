@@ -621,6 +621,8 @@ mod tests {
     use super::command_exists_os;
     #[cfg(unix)]
     use super::ensure_sudo_target_is_available;
+    #[cfg(unix)]
+    #[cfg(unix)]
     use super::env_assignment;
     use super::resolve_env_program;
     #[cfg(unix)]
