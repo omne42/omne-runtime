@@ -25,6 +25,9 @@ workspace 根必须具备：
 - `docs/architecture/source-layout.md`
 - `docs/architecture/system-boundaries.md`
 
+嵌套在某个 crate 边界里的 workspace package 继续复用父 crate 的文档系统；只有当它被提升为
+新的 sibling capability crate 时，才补自己的顶层文档骨架。
+
 ## AGENTS 规则
 
 - `AGENTS.md` 是地图，不是百科全书。
@@ -37,6 +40,7 @@ workspace 根必须具备：
 - crate 行为边界变化：更新该 crate 的 `system-boundaries.md`。
 - crate 模块或文件职责变化：更新该 crate 的 `source-layout.md`。
 - workspace 新增 crate 或 crate 归属变化：更新 `workspace-crate-boundaries.md` 和 `source-layout.md`。
+- workspace 新增嵌套 package 但未形成新边界：更新对应父边界的 workspace 文档，不机械复制新的 crate docs skeleton。
 - README 不再指向文档入口：在同一改动中修正。
 
 ## 机械校验

@@ -7,6 +7,7 @@ Umbrella repository and Cargo workspace for Omne host/runtime crates.
 - `crates/omne-artifact-install-primitives`: reusable artifact download, verification, and install pipeline primitives
 - `crates/omne-archive-primitives`: low-level archive/compression primitives for binary extraction
 - `crates/omne-fs`: policy-bounded filesystem runtime APIs and CLI
+- `crates/omne-fs/cli`: nested `omne-fs-cli` workspace package that exposes the `omne-fs` binary while staying inside the `omne-fs` boundary
 - `crates/omne-fs-primitives`: low-level filesystem primitives shared across adapters
 - `crates/omne-host-info-primitives`: low-level host/platform identity and target-triple primitives
 - `crates/omne-integrity-primitives`: low-level digest parsing and integrity verification primitives
@@ -34,6 +35,8 @@ Each crate under `crates/` owns the same minimum documentation skeleton:
 - `docs/architecture/source-layout.md`
 
 Run `./scripts/check-docs-system.sh` to verify the workspace and crate documentation skeletons.
+The nested workspace package `crates/omne-fs/cli` stays documented through `crates/omne-fs/*`; it
+is a package inside the `omne-fs` boundary, not a tenth top-level capability crate.
 
 Naming follows `omne-<capability>` so each crate name carries both product scope and boundary role at
 a glance. Public crate names avoid redundant prefixes and unclear jargon; established abbreviations

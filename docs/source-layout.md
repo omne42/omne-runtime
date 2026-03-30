@@ -25,6 +25,8 @@
   - 命令执行边界、隔离语义、审计和 sandbox 编排。
 - `crates/omne-fs`
   - 文件系统策略层、高层操作和 CLI。
+- `crates/omne-fs/cli`
+  - 嵌套 workspace package，承载 `omne-fs-cli` 二进制入口；它属于 `omne-fs` 边界，不是新的 sibling capability crate。
 - `crates/omne-fs-primitives`
   - 低层文件系统原语，如 no-follow open、bounded read、atomic file/directory replace。
 - `crates/omne-host-info-primitives`
