@@ -195,7 +195,14 @@ mod tests {
     use std::os::unix::fs::symlink;
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
     use tempfile::tempdir;
+
+    fn canonical_temp_root(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path()
+            .canonicalize()
+            .expect("canonicalize tempdir root")
+    }
 
     fn sample_workspace() -> std::path::PathBuf {
         std::env::current_dir().expect("current_dir")
@@ -491,7 +498,7 @@ mod tests {
     #[test]
     fn load_request_rejects_oversized_input() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("request.json");
+        let path = canonical_temp_root(&dir).join("request.json");
         let oversized_len = u64::try_from(MAX_REQUEST_JSON_BYTES)
             .expect("request size bound fits u64")
             .saturating_add(1);
@@ -510,13 +517,14 @@ mod tests {
     #[test]
     fn load_request_rejects_symlink_input() {
         let dir = tempdir().expect("tempdir");
-        let target = dir.path().join("request-real.json");
+        let root = canonical_temp_root(&dir);
+        let target = root.join("request-real.json");
         fs::write(
             &target,
             r#"{"program":"echo","args":[],"cwd":".","workspace_root":".","declared_mutation":false}"#,
         )
         .expect("write request");
-        let link = dir.path().join("request-link.json");
+        let link = root.join("request-link.json");
         symlink(&target, &link).expect("create request symlink");
 
         let err = load_request(&link).expect_err("symlink request should fail closed");
@@ -531,8 +539,9 @@ mod tests {
     #[test]
     fn load_request_rejects_ancestor_symlink_input() {
         let dir = tempdir().expect("tempdir");
-        let real_dir = dir.path().join("real");
-        let alias_dir = dir.path().join("alias");
+        let root = canonical_temp_root(&dir);
+        let real_dir = root.join("real");
+        let alias_dir = root.join("alias");
         fs::create_dir(&real_dir).expect("create real dir");
         fs::write(
             real_dir.join("request.json"),
@@ -556,7 +565,7 @@ mod tests {
     #[test]
     fn load_request_rejects_special_file_input() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("request.sock");
+        let path = canonical_temp_root(&dir).join("request.sock");
         let _listener = UnixListener::bind(&path).expect("bind socket");
 
         let err = load_request(&path).expect_err("special-file request should fail closed");

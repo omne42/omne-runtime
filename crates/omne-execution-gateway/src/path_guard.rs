@@ -199,9 +199,12 @@ fn split_root(root: &Path, label: &str) -> io::Result<(PathBuf, Vec<OsString>)> 
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::io;
+    #[cfg(unix)]
     use std::path::PathBuf;
 
+    #[cfg(unix)]
     fn canonical_temp_root(dir: &tempfile::TempDir) -> PathBuf {
         dir.path()
             .canonicalize()
