@@ -570,7 +570,9 @@ mod tests {
 
         let err = load_request(&path).expect_err("special-file request should fail closed");
         assert!(
-            err.contains("No such device or address") || err.contains("path is not a regular file"),
+            err.contains("No such device or address")
+                || err.contains("Operation not supported on socket")
+                || err.contains("path is not a regular file"),
             "unexpected error: {err}"
         );
     }
