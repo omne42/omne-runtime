@@ -333,6 +333,7 @@ mod tests {
     use std::os::unix::fs::symlink;
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
     use std::process::Command;
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -344,10 +345,16 @@ mod tests {
     use crate::audit::{ExecDecision, ExecEvent};
     use policy_meta::ExecutionIsolation;
 
+    fn canonical_test_root(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path()
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().to_path_buf())
+    }
+
     #[test]
     fn writes_jsonl_record() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("audit.jsonl");
+        let path = canonical_test_root(&dir).join("audit.jsonl");
         let logger = AuditLogger::new(&path);
 
         let event = sample_event("echo");
@@ -374,7 +381,7 @@ mod tests {
     #[test]
     fn writes_execution_record_with_exit_metadata() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("audit.jsonl");
+        let path = canonical_test_root(&dir).join("audit.jsonl");
         let logger = AuditLogger::new(&path);
 
         let event = sample_event("false");
@@ -401,7 +408,7 @@ mod tests {
     #[test]
     fn concurrent_prepare_writes_preserve_jsonl_lines() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("audit.jsonl");
+        let path = canonical_test_root(&dir).join("audit.jsonl");
         let logger = Arc::new(AuditLogger::new(&path));
         let thread_count = 8;
         let writes_per_thread = 25;
@@ -439,7 +446,10 @@ mod tests {
     #[test]
     fn ensure_ready_creates_missing_parent_directories() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("nested").join("audit").join("audit.jsonl");
+        let path = canonical_test_root(&dir)
+            .join("nested")
+            .join("audit")
+            .join("audit.jsonl");
         let logger = AuditLogger::new(&path);
 
         logger
@@ -456,7 +466,7 @@ mod tests {
     #[test]
     fn ensure_ready_rejects_non_directory_parent() {
         let dir = tempdir().expect("tempdir");
-        let parent_file = dir.path().join("not-a-dir");
+        let parent_file = canonical_test_root(&dir).join("not-a-dir");
         fs::write(&parent_file, "blocker").expect("write parent file");
         let audit_path = parent_file.join("audit.jsonl");
         let logger = AuditLogger::new(&audit_path);
@@ -475,9 +485,10 @@ mod tests {
     #[test]
     fn ensure_ready_rejects_symlink_audit_sink() {
         let dir = tempdir().expect("tempdir");
-        let target = dir.path().join("real-audit.jsonl");
+        let root = canonical_test_root(&dir);
+        let target = root.join("real-audit.jsonl");
         fs::write(&target, "target").expect("write target");
-        let audit_path = dir.path().join("audit.jsonl");
+        let audit_path = root.join("audit.jsonl");
         symlink(&target, &audit_path).expect("create audit symlink");
         let logger = AuditLogger::new(&audit_path);
 
@@ -495,7 +506,7 @@ mod tests {
     #[test]
     fn ensure_ready_rejects_special_file_sink() {
         let dir = tempdir().expect("tempdir");
-        let audit_path = dir.path().join("audit.sock");
+        let audit_path = canonical_test_root(&dir).join("audit.sock");
         let _listener = UnixListener::bind(&audit_path).expect("bind socket");
         let logger = AuditLogger::new(&audit_path);
 
@@ -513,9 +524,10 @@ mod tests {
     #[test]
     fn ensure_ready_rejects_symlink_parent_directory() {
         let dir = tempdir().expect("tempdir");
-        let target_parent = dir.path().join("real-parent");
+        let root = canonical_test_root(&dir);
+        let target_parent = root.join("real-parent");
         fs::create_dir(&target_parent).expect("create target parent");
-        let symlink_parent = dir.path().join("linked-parent");
+        let symlink_parent = root.join("linked-parent");
         symlink(&target_parent, &symlink_parent).expect("create parent symlink");
         let audit_path = symlink_parent.join("nested").join("audit.jsonl");
         let logger = AuditLogger::new(&audit_path);
@@ -533,7 +545,7 @@ mod tests {
     #[test]
     fn write_prepare_record_surfaces_post_ready_write_failure() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("audit.jsonl");
+        let path = canonical_test_root(&dir).join("audit.jsonl");
         let logger = AuditLogger::new(&path);
         let event = sample_event("echo");
 
