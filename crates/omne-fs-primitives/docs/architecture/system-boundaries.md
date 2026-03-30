@@ -11,7 +11,7 @@
 - symlink/reparse point 错误分类。
 - bounded read helper。
 - staged atomic file/directory replace 与 advisory lock。
-- atomic staging 需要创建父目录时，按 no-follow 目录遍历/创建处理整条父目录链，不会把缺失层级或已有祖先里的 symlink 当成可信目录继续跟随。
+- atomic staging 需要创建父目录时，按 no-follow 目录遍历/创建处理父目录链，不会把缺失层级或已有的非 root-alias 祖先 symlink 当成可信目录继续跟随；平台级 root alias（例如 macOS `/var -> /private/var`）会先归一化后再进入这条链路。
 
 ## 不负责什么
 

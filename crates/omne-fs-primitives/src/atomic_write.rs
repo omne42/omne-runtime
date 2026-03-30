@@ -281,16 +281,51 @@ fn ensure_atomic_parent_directory(
     if parent.as_os_str().is_empty() {
         return Ok(());
     }
+    let normalized_parent = normalize_platform_root_alias(parent)?;
 
     let policy = if create_parent_directories {
         MissingRootPolicy::Create
     } else {
         MissingRootPolicy::Error
     };
-    open_root(parent, "atomic write parent", policy, |_, _, _, error| {
+    open_root(&normalized_parent, "atomic write parent", policy, |_, _, _, error| {
         error
     })
     .map(|_| ())
+}
+
+fn normalize_platform_root_alias(path: &Path) -> io::Result<PathBuf> {
+    if !path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+
+    let mut visited = PathBuf::new();
+    let mut normal_index = 0usize;
+    let mut components = path.components().peekable();
+
+    while let Some(component) = components.next() {
+        visited.push(component.as_os_str());
+        if !matches!(component, std::path::Component::Normal(_)) {
+            continue;
+        }
+
+        match fs::symlink_metadata(&visited) {
+            Ok(metadata) if metadata.file_type().is_symlink() && normal_index == 0 => {
+                let mut canonical = fs::canonicalize(&visited)?;
+                for remainder in components {
+                    canonical.push(remainder.as_os_str());
+                }
+                return Ok(canonical);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path.to_path_buf()),
+            Err(error) => return Err(error),
+        }
+
+        normal_index += 1;
+    }
+
+    Ok(path.to_path_buf())
 }
 
 impl StagedAtomicFile {
@@ -738,5 +773,16 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn atomic_write_allows_macos_tempdir_root_alias() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tool");
+
+        write_file_atomically(b"tool", &destination, &AtomicWriteOptions::default())
+            .expect("write through macos tempdir root alias");
+        assert_eq!(std::fs::read(&destination).expect("read destination"), b"tool");
     }
 }
