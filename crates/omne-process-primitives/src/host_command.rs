@@ -655,9 +655,11 @@ mod tests {
         HostRecipeError, HostRecipeRequest, build_command, command_available,
         command_available_for_request, command_exists, command_exists_for_request,
         command_path_exists, default_recipe_sudo_mode_for_program,
-        explicit_system_command_path_with_trusted_dirs, resolve_program_for_direct_spawn,
-        run_host_command, run_host_recipe, should_try_sudo_with_status,
+        resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
+        should_try_sudo_with_status,
     };
+    #[cfg(unix)]
+    use super::explicit_system_command_path_with_trusted_dirs;
 
     #[test]
     fn command_probe_reports_missing_command_as_absent() {
@@ -702,7 +704,7 @@ mod tests {
             true,
             true,
         ));
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         assert!(should_try_sudo_with_status(
             OsStr::new("/usr/bin/apt-get"),
             HostCommandSudoMode::IfNonRootSystemCommand,
@@ -852,7 +854,7 @@ mod tests {
             default_recipe_sudo_mode_for_program(OsStr::new("apt-get")),
             HostCommandSudoMode::IfNonRootSystemCommand
         );
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         assert_eq!(
             default_recipe_sudo_mode_for_program(OsStr::new("/usr/bin/apt-get")),
             HostCommandSudoMode::IfNonRootSystemCommand
