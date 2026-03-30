@@ -390,6 +390,7 @@ where
 {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 8192];
+    let mut exceeded_capture_limit = false;
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {
@@ -399,10 +400,13 @@ where
         let to_copy = remaining.min(read);
         bytes.extend_from_slice(&buffer[..to_copy]);
         if to_copy < read {
-            return Err(io::Error::other(format!(
-                "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
-            )));
+            exceeded_capture_limit = true;
         }
+    }
+    if exceeded_capture_limit {
+        return Err(io::Error::other(format!(
+            "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
+        )));
     }
     Ok(bytes)
 }
