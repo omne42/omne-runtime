@@ -816,7 +816,6 @@ mod tests {
     use std::fs;
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
-    #[cfg(unix)]
     use std::path::PathBuf;
     use std::sync::mpsc;
     use std::thread;
@@ -832,6 +831,12 @@ mod tests {
     };
     #[cfg(unix)]
     use super::{MAX_ZIP_SYMLINK_TARGET_BYTES, extract_tar_tree, extract_zip_tree};
+
+    fn canonical_test_root(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path()
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().to_path_buf())
+    }
 
     fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut writer = Cursor::new(Vec::new());
@@ -958,7 +963,7 @@ mod tests {
         let handle = spawn_mock_http_server(listener, routes, 2);
 
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
         fs::create_dir_all(&destination)?;
         fs::write(destination.join("old.txt"), "stale")?;
 
@@ -998,7 +1003,7 @@ mod tests {
     fn archive_tree_extract_rejects_extracted_byte_budget_overflow() -> Result<(), Box<dyn Error>> {
         let archive = make_zip_archive(&[("bin/demo", b"0123456789abcdef".as_slice(), 0o755)])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
 
         let err = install_archive_tree_from_reader_with_limits(
             "demo.zip",
@@ -1030,7 +1035,7 @@ mod tests {
             ("LICENSE", b"license".as_slice(), 0o644),
         ])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
 
         let err = install_archive_tree_from_reader_with_limits(
             "demo.zip",
@@ -1055,7 +1060,7 @@ mod tests {
     fn archive_tree_install_serializes_same_destination() -> Result<(), Box<dyn Error>> {
         let archive = make_zip_archive(&[("bin/demo", b"demo".as_slice(), 0o755)])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
         let lock_root = destination.parent().expect("destination parent");
         let lock_file = archive_tree_install_lock_file_name(&destination);
         let guard = lock_advisory_file_in_ambient_root(
@@ -1099,7 +1104,7 @@ mod tests {
         let oversized_target = "a".repeat(MAX_ZIP_SYMLINK_TARGET_BYTES + 1);
         let archive = make_zip_archive(&[("alias", oversized_target.as_bytes(), 0o120777)])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
         fs::create_dir_all(&destination)?;
 
         let err = extract_zip_tree(
@@ -1125,7 +1130,7 @@ mod tests {
             TarEntry::Symlink("alias/nested", "safe/target"),
         ])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
         fs::create_dir_all(&destination)?;
 
         let err = extract_tar_tree(
@@ -1151,7 +1156,7 @@ mod tests {
             TarEntry::File("alias/escaped.txt", b"escape".as_slice(), 0o644),
         ])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
         fs::create_dir_all(&destination)?;
 
         let err = extract_tar_tree(
@@ -1179,7 +1184,7 @@ mod tests {
             TarEntry::HardLink("alias/file-copy.txt", "safe/file.txt"),
         ])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
         fs::create_dir_all(&destination)?;
 
         let err = extract_tar_tree(
@@ -1207,7 +1212,7 @@ mod tests {
             TarEntry::File("bin/demo", b"demo".as_slice(), 0o755),
         ])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
         fs::create_dir_all(&destination)?;
 
         extract_tar_tree(
@@ -1237,7 +1242,7 @@ mod tests {
             assert_eq!(alias_entry.unix_mode(), Some(0o120777));
         }
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
         fs::create_dir_all(&destination)?;
 
         extract_zip_tree(
@@ -1260,7 +1265,7 @@ mod tests {
 
         let archive = make_tar_archive(&[TarEntry::File("bin/demo", b"demo".as_slice(), 0o6755)])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
         fs::create_dir_all(&destination)?;
 
         extract_tar_tree(
@@ -1286,7 +1291,7 @@ mod tests {
             ("alias/escaped.txt", b"escape".as_slice(), 0o644),
         ])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
         fs::create_dir_all(&destination)?;
 
         let err = extract_zip_tree(
