@@ -8,16 +8,16 @@
 
 - 探测命令是否存在和是否可执行。
 - 对宿主命令 request/recipe 维持 `OsStr` / `OsString` 边界，不把 argv/env 先强制收窄成 UTF-8 `String`。
-- 运行宿主机命令并捕获输出；当 stdout/stderr 超过上限时，仍继续把 pipe drain 到 EOF，再返回超限错误，避免有界捕获把调用方卡死在满管道上。
+- 运行宿主机命令并捕获输出；捕获实现以临时文件为边界，因此 direct child 退出后不会再被继续持有 stdout/stderr 的后台后代进程永久卡住；当 stdout/stderr 超过上限时，仍在读取完整捕获后返回超限错误。
 - 对显式相对程序路径保持调用方 cwd 语义，不会因为 request 同时设置了 `working_directory` 就把同一个程序路径重新解释到另一个目录。
 - `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，但对显式相对程序路径仍保持与执行路径相同的调用方 cwd 语义。
-- 当命中 `sudo` 路径时，把调用方显式提供的环境变量改写成 `env -- KEY=VALUE ...` 形式并放到提权后的目标命令边界内，避免只把变量注入到 `sudo` 自身进程环境，或把语义外包给宿主 `sudoers` 配置。
-- `sudo` 可用性判定、`sudo` 可执行路径选择以及提权后的 bare target 解析都只信任宿主机自己的 `PATH` / 标准系统位置，不使用 request 里显式覆盖的 `PATH` 来决定提权边界。
-- 对需要走 `sudo` 的 bare command，如果目标命令在可信宿主 `PATH` / 标准系统位置中不存在，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
-- 对 `/usr/bin/apt-get` 这类显式系统路径，仍保留 `IfNonRootSystemCommand` 语义；相对路径、词法逃逸路径，或指向系统目录外真实目标的 symlink 别名都不会被误判成系统命令。
+- 当命中 `sudo` 路径时，把调用方显式提供的环境变量改写成 `env -- KEY=VALUE ...` 形式并放到提权后的目标命令边界内，但 request `PATH` override 会在 sudo 边界被丢弃，避免在 root 目标命令上重新引入调用方的搜索路径。
+- `sudo` 可用性判定、`sudo` 可执行路径选择以及提权后的 bare target 解析都不使用 request 里显式覆盖的 `PATH` 来决定提权边界；auto-sudo 只允许 canonical system package manager 命令，并且 bare target 只能从可信系统目录解析。
+- 对需要走 `sudo` 的 bare command，如果目标命令在可信系统目录中不存在，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
+- 对 `/usr/bin/apt-get` 这类显式系统路径，仍保留 `IfNonRootSystemCommand` 语义；相对路径、词法逃逸路径、`/usr/local/bin` 这类非可信前缀，或指向系统目录外真实目标的 symlink 别名都不会被误判成系统命令。
 - 运行 host recipe，并把非零退出统一建模成结构化错误。
 - `HostRecipeError::Display` 只输出退出状态和捕获字节数，不把完整 stdout/stderr 直接拼进错误字符串；需要原始输出的调用方仍可从结构化 `Output` 读取。
-- 为常见系统包命令提供默认 `sudo` 模式选择。
+- 基于 `omne-system-package-primitives` 的 canonical manager 目录为系统包命令提供默认 `sudo` 模式选择，避免并行维护两份 manager 名称表。
 - Unix 下对 bare system command 做 `sudo -n` 试探。
 - 配置子进程以支持进程树清理；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
 - 捕获进程树清理标识并执行 best-effort 终止。

@@ -13,14 +13,14 @@ Low-level host-command and process-tree primitives shared across callers.
 
 - host command discovery, including `OsStr`-friendly probe/resolve helpers
 - request-scoped command probes that honor request `PATH` overrides for bare direct commands without changing caller-cwd semantics for explicit relative program paths
-- host command execution with captured output that still drains oversized streams to EOF before failing on the capture limit
+- host command execution with captured output that returns after the direct child exits even if daemonized descendants keep inherited stdout/stderr open
 - host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
 - non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
 - explicit relative program paths that keep caller-cwd semantics even when the child process runs under a different `working_directory`
-- sudo-style escalation that applies explicit request env inside the elevated target command via `env -- KEY=VALUE ...`, instead of depending on host `sudoers` env propagation
-- fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved in the trusted host `PATH` or standard system locations
-- sudo resolution that ignores request-scoped `PATH` overrides when choosing the `sudo` binary or the elevated bare-command target
-- default sudo-mode selection for common system-package commands
+- sudo-style escalation that applies explicit request env inside the elevated target command via `env -- KEY=VALUE ...`, except for request `PATH` overrides that are dropped at the sudo boundary instead of being reintroduced under root
+- fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved in trusted system command directories
+- sudo resolution that ignores request-scoped `PATH` overrides when choosing the `sudo` binary or the elevated bare-command target, and that only auto-escalates canonical system package manager commands
+- default sudo-mode selection driven by the canonical `omne-system-package-primitives` manager catalog
 - optional `sudo -n` probing on Unix
 - process-tree cleanup setup and best-effort termination
 - fail-closed process-tree capture on Unix unless the child was spawned into its own dedicated process group via `configure_command_for_process_tree`
