@@ -96,6 +96,12 @@ mod tests {
 
     use super::*;
 
+    fn canonical_temp_root(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path()
+            .canonicalize()
+            .expect("canonicalize tempdir root")
+    }
+
     #[test]
     fn parse_args_accepts_json_flag() {
         assert_eq!(
@@ -152,7 +158,7 @@ mod tests {
     #[test]
     fn load_gateway_uses_policy_file_defaults() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("policy.json");
+        let path = canonical_temp_root(&dir).join("policy.json");
         fs::write(
             &path,
             r#"{
