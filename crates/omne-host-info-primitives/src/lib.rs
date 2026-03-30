@@ -167,7 +167,7 @@ fn host_platform_from_parts(
         os,
         arch,
         linux_libc: match os {
-            HostOperatingSystem::Linux => Some(linux_libc.unwrap_or(HostLinuxLibc::Gnu)),
+            HostOperatingSystem::Linux => Some(linux_libc?),
             HostOperatingSystem::Macos | HostOperatingSystem::Windows => None,
         },
     })
@@ -273,7 +273,8 @@ mod tests {
 
     #[test]
     fn host_platform_from_parts_maps_supported_pairs() {
-        let linux = host_platform_from_parts("linux", "x86_64", None).expect("linux platform");
+        let linux = host_platform_from_parts("linux", "x86_64", Some(HostLinuxLibc::Gnu))
+            .expect("linux platform");
         assert_eq!(linux.operating_system(), HostOperatingSystem::Linux);
         assert_eq!(linux.architecture(), HostArchitecture::X86_64);
         assert_eq!(linux.linux_libc(), Some(HostLinuxLibc::Gnu));
@@ -294,6 +295,7 @@ mod tests {
     fn host_platform_from_parts_rejects_unknown_pairs() {
         assert!(host_platform_from_parts("freebsd", "x86_64", None).is_none());
         assert!(host_platform_from_parts("linux", "riscv64", None).is_none());
+        assert!(host_platform_from_parts("linux", "x86_64", None).is_none());
     }
 
     #[test]
