@@ -442,8 +442,11 @@ mod tests {
             omne_execution_gateway::requested_policy_meta(ExecutionIsolation::BestEffort)
         );
         assert!(!resolution.declared_mutation);
-        assert_eq!(resolution.cwd, workspace);
-        assert_eq!(resolution.workspace_root, sample_workspace());
+        let canonical_workspace = workspace
+            .canonicalize()
+            .expect("canonicalize sample workspace");
+        assert_eq!(resolution.cwd, canonical_workspace);
+        assert_eq!(resolution.workspace_root, canonical_workspace);
     }
 
     #[test]
