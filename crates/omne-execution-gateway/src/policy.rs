@@ -132,11 +132,11 @@ mod tests {
     #[cfg(unix)]
     use std::ffi::OsString;
     use std::fs::{self, File};
-    use std::path::PathBuf;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
 
     use super::*;
     use tempfile::tempdir;

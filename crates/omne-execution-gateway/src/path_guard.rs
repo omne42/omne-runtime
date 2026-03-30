@@ -236,8 +236,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = canonical_temp_root(&dir).join("logs/nested/audit.jsonl");
 
-        super::open_appendable_regular_file_nofollow(&path, "audit log")
-            .expect("open appendable");
+        super::open_appendable_regular_file_nofollow(&path, "audit log").expect("open appendable");
 
         assert!(path.exists());
     }
