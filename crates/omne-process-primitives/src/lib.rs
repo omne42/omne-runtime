@@ -33,7 +33,8 @@ pub use command_path::{
 pub use host_command::{
     HostCommandError, HostCommandExecution, HostCommandOutput, HostCommandRequest,
     HostCommandSudoMode, HostRecipeError, HostRecipeRequest, command_available,
-    command_available_os, command_exists, command_exists_os, command_path_exists,
+    command_available_for_request, command_available_os, command_exists,
+    command_exists_for_request, command_exists_os, command_path_exists,
     default_recipe_sudo_mode_for_program, run_host_command, run_host_recipe,
 };
 

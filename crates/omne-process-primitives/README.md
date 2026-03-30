@@ -12,11 +12,14 @@ Low-level host-command and process-tree primitives shared across callers.
 ## Scope
 
 - host command discovery, including `OsStr`-friendly probe/resolve helpers
-- host command execution with captured output
+- request-scoped command probes that honor request `PATH` overrides for bare direct commands without changing caller-cwd semantics for explicit relative program paths
+- host command execution with captured output that still drains oversized streams to EOF before failing on the capture limit
 - host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
 - non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
+- explicit relative program paths that keep caller-cwd semantics even when the child process runs under a different `working_directory`
 - sudo-style escalation that applies explicit request env inside the elevated target command via `env -- KEY=VALUE ...`, instead of depending on host `sudoers` env propagation
-- fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved in the effective `PATH`
+- fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved in the trusted host `PATH` or standard system locations
+- sudo resolution that ignores request-scoped `PATH` overrides when choosing the `sudo` binary or the elevated bare-command target
 - default sudo-mode selection for common system-package commands
 - optional `sudo -n` probing on Unix
 - process-tree cleanup setup and best-effort termination
