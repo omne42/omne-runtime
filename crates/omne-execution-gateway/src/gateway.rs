@@ -986,6 +986,7 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
+    use std::path::PathBuf;
     #[cfg(unix)]
     use std::process::Stdio;
     #[cfg(unix)]
@@ -995,6 +996,12 @@ mod tests {
 
     use super::*;
     use crate::policy::GatewayPolicy;
+
+    fn canonical_test_root(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path()
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().to_path_buf())
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1283,8 +1290,7 @@ mod tests {
     #[test]
     fn preflight_creates_missing_audit_log_parent_directories() {
         let workspace = tempdir().expect("create temp workspace");
-        let audit_path = workspace
-            .path()
+        let audit_path = canonical_test_root(&workspace)
             .join("logs")
             .join("audit")
             .join("gateway.jsonl");
@@ -2073,7 +2079,7 @@ mod tests {
     #[test]
     fn execute_status_audit_records_nonzero_exit() {
         let workspace = tempdir().expect("create temp workspace");
-        let audit_path = workspace.path().join("audit.jsonl");
+        let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             audit_log_path: Some(audit_path.clone()),
@@ -2137,7 +2143,7 @@ mod tests {
     #[test]
     fn execute_status_audit_records_spawn_failure() {
         let workspace = tempdir().expect("create temp workspace");
-        let audit_path = workspace.path().join("audit.jsonl");
+        let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             audit_log_path: Some(audit_path.clone()),
@@ -2168,7 +2174,7 @@ mod tests {
     #[test]
     fn execute_status_fails_when_audit_write_breaks_after_preflight() {
         let workspace = tempdir().expect("create temp workspace");
-        let audit_path = workspace.path().join("audit.jsonl");
+        let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             audit_log_path: Some(audit_path.clone()),

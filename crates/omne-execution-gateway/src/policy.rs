@@ -272,7 +272,6 @@ mod tests {
     fn non_utf8_explicit_path_is_not_allowlisted_via_lossy_text() {
         let dir = tempdir().expect("tempdir");
         let program = dir.path().join(OsString::from_vec(vec![0x66, 0x6f, 0x80]));
-        fs::write(&program, b"#!/bin/sh\nexit 0\n").expect("write tool");
 
         let policy = GatewayPolicy {
             mutating_program_allowlist: vec![dir.path().join("fo�").display().to_string()],
