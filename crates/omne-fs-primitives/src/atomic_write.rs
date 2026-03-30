@@ -3,6 +3,8 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::{MissingRootPolicy, open_root};
+
 #[derive(Debug, Clone)]
 pub struct AtomicWriteOptions {
     pub overwrite_existing: bool,
@@ -204,11 +206,9 @@ pub fn stage_file_atomically_with_name(
     options: &AtomicWriteOptions,
     staged_file_name: Option<&str>,
 ) -> Result<StagedAtomicFile, AtomicWriteError> {
-    if let Some(parent) = destination.parent()
-        && options.create_parent_directories
-    {
-        fs::create_dir_all(parent)
-            .map_err(|err| AtomicWriteError::io_path("create_dir_all", parent, err))?;
+    if let Some(parent) = destination.parent() {
+        ensure_atomic_parent_directory(parent, options.create_parent_directories)
+            .map_err(|err| AtomicWriteError::io_path("prepare_parent", parent, err))?;
     }
 
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
@@ -238,11 +238,9 @@ pub fn stage_directory_atomically(
     destination: &Path,
     options: &AtomicDirectoryOptions,
 ) -> Result<StagedAtomicDirectory, AtomicDirectoryError> {
-    if let Some(parent) = destination.parent()
-        && options.create_parent_directories
-    {
-        fs::create_dir_all(parent)
-            .map_err(|err| AtomicDirectoryError::io_path("create_dir_all", parent, err))?;
+    if let Some(parent) = destination.parent() {
+        ensure_atomic_parent_directory(parent, options.create_parent_directories)
+            .map_err(|err| AtomicDirectoryError::io_path("prepare_parent", parent, err))?;
     }
 
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
@@ -274,6 +272,25 @@ fn normalize_staged_file_name(raw: &str) -> Option<String> {
     } else {
         Some(normalized)
     }
+}
+
+fn ensure_atomic_parent_directory(
+    parent: &Path,
+    create_parent_directories: bool,
+) -> io::Result<()> {
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+
+    let policy = if create_parent_directories {
+        MissingRootPolicy::Create
+    } else {
+        MissingRootPolicy::Error
+    };
+    open_root(parent, "atomic write parent", policy, |_, _, _, error| {
+        error
+    })
+    .map(|_| ())
 }
 
 impl StagedAtomicFile {
@@ -651,5 +668,75 @@ mod tests {
             .commit()
             .expect_err("non-directory destination must fail");
         assert!(matches!(err, super::AtomicDirectoryError::Validation(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_file_rejects_existing_symlink_ancestor_in_parent_chain() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let real_parent = temp.path().join("real-parent");
+        std::fs::create_dir_all(&real_parent).expect("mkdir real parent");
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(&real_parent, &linked_parent).expect("create parent symlink");
+        let destination = linked_parent.join("nested").join("tool");
+
+        let err = stage_file_atomically(&destination, &AtomicWriteOptions::default())
+            .expect_err("symlink ancestor must fail");
+        assert!(matches!(
+            err,
+            AtomicWriteError::IoPath {
+                op: "prepare_parent",
+                ..
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_file_rejects_missing_suffix_redirected_by_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let trusted_parent = temp.path().join("trusted");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&trusted_parent).expect("mkdir trusted parent");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        symlink(&outside, trusted_parent.join("logs")).expect("create target symlink");
+        let destination = trusted_parent.join("logs").join("tool");
+
+        let err = stage_file_atomically(&destination, &AtomicWriteOptions::default())
+            .expect_err("symlinked missing suffix must fail");
+        assert!(matches!(
+            err,
+            AtomicWriteError::IoPath {
+                op: "prepare_parent",
+                ..
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_directory_rejects_existing_symlink_ancestor_in_parent_chain() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let real_parent = temp.path().join("real-parent");
+        std::fs::create_dir_all(&real_parent).expect("mkdir real parent");
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(&real_parent, &linked_parent).expect("create parent symlink");
+        let destination = linked_parent.join("nested").join("tree");
+
+        let err = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+            .expect_err("symlink ancestor must fail");
+        assert!(matches!(
+            err,
+            super::AtomicDirectoryError::IoPath {
+                op: "prepare_parent",
+                ..
+            }
+        ));
     }
 }
