@@ -235,6 +235,7 @@ mod tests {
     use std::error::Error;
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use std::thread;
 
     use omne_integrity_primitives::hash_sha256;
@@ -245,6 +246,12 @@ mod tests {
         BinaryArchiveInstallRequest, DownloadBinaryRequest,
         download_and_install_binary_from_archive, download_binary_to_destination,
     };
+
+    fn canonical_test_root(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path()
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().to_path_buf())
+    }
 
     fn spawn_mock_http_server(
         listener: TcpListener,
@@ -317,7 +324,7 @@ mod tests {
         let handle = spawn_mock_http_server(listener, routes, 2);
 
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join(&asset_name);
+        let destination = canonical_test_root(&temp).join(&asset_name);
         let client = reqwest::Client::builder().build()?;
         let selected = download_binary_to_destination(
             &client,
@@ -367,7 +374,7 @@ mod tests {
         let handle = spawn_mock_http_server(listener, routes, 2);
 
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join(&binary_name);
+        let destination = canonical_test_root(&temp).join(&binary_name);
         let client = reqwest::Client::builder().build()?;
         let installed = download_and_install_binary_from_archive(
             &client,
