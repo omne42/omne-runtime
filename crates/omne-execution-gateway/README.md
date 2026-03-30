@@ -16,6 +16,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed if a request marked as `policy_default` no longer matches the gateway's current policy default
 - fail-closed if `program` is neither a bare command name nor an absolute path
 - explicit absolute `program` paths are bound as file identities and revalidated immediately before spawn
+- bare command names are resolved to an absolute executable path during preflight, rebound as an executable identity, and rejected fail-closed if lookup cannot be bound
 - workspace boundary enforcement (`cwd` must stay inside `workspace_root`, and execution binds canonicalized directory identities before spawn)
 - explicit mutation declaration for every request when mutation enforcement is enabled
 - fail-closed denial for shell-like or interpreter launchers such as `sh`, `cmd`, `pwsh`, `python`, and `node` unless they are explicitly allowlisted
@@ -34,7 +35,9 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - known mutating tool families such as `git`, `make`, `cargo`, `go`, package managers, and core file-mutating utilities are also denied by default when callers label them `declared_mutation = false`; the built-in guardrail currently covers commands like `npm`, `pip`, `apt`, `dnf`, `yum`, `pacman`, `brew`, `rm`, `mkdir`, `touch`, `chmod`, and `ln`. To run them, callers must declare mutation and use an explicitly allowlisted path.
 - mutation authorization now requires explicit program paths in both the request and policy allowlist. Bare program names are denied fail-closed because they do not bind to a stable executable, and allowlist checks resolve by executable identity rather than basename text.
 - relative executable paths such as `./tool` or `bin/tool` are denied fail-closed because their spawn semantics can drift with the gateway process context; callers must use a bare command name or absolute path.
+- bare command names remain allowed for `execute()`, but the gateway immediately resolves them to a concrete executable path and audits that resolved path instead of the original bare token.
 - explicit program paths are revalidated as file identities before spawn, so even stable aliases such as symlinks cannot silently drift to a different executable after preflight succeeds.
+- `prepare_command()` now requires the caller-supplied `Command` to already point at the same resolved executable path that the gateway bound during preflight; handing it an unresolved bare command name is rejected fail-closed as a prepared-command mismatch.
 - allowlist matching binds explicit paths to executable identity; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
 - JSON surfaces keep readable lossy `program` / `args` fields and also emit `program_exact` / `args_exact`, so audit consumers can reconstruct non-UTF-8 argv exactly instead of guessing from replacement characters.
 - `GatewayPolicy::load_json()` only accepts no-follow regular files, so symlinks and other special files cannot silently stand in for trusted policy input.

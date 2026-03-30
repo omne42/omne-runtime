@@ -302,10 +302,11 @@ mod tests {
     #[test]
     fn exec_output_keeps_nonzero_exit_code() {
         let status = nonzero_exit_status();
-        let output =
-            exec_output_from_result(sample_request_resolution(), sample_event(), Ok(status));
-        assert_eq!(output.event.program.to_string_lossy(), "echo");
-        assert_eq!(output.request_resolution.program, "echo");
+        let request_resolution = sample_request_resolution();
+        let mut event = sample_event();
+        event.program = request_resolution.program.clone();
+        let output = exec_output_from_result(request_resolution, event, Ok(status));
+        assert_eq!(output.event.program, output.request_resolution.program);
         assert_eq!(output.request_resolution.args, vec!["hello"]);
         assert_eq!(output.exit_code, Some(1));
         assert_eq!(
@@ -333,11 +334,11 @@ mod tests {
         assert_eq!(
             value["request_resolution"],
             serde_json::json!({
-                "program": "echo",
+                "program": output.request_resolution.program.to_string_lossy(),
                 "args": ["hello"],
                 "program_exact": {
                     "encoding": "utf8",
-                    "value": "echo"
+                    "value": output.request_resolution.program.to_string_lossy()
                 },
                 "args_exact": [{
                     "encoding": "utf8",
@@ -366,11 +367,11 @@ mod tests {
                     "execution_isolation": "best_effort"
                 },
                 "supported_isolation": "best_effort",
-                "program": "echo",
+                "program": output.event.program.to_string_lossy(),
                 "args": ["hello"],
                 "program_exact": {
                     "encoding": "utf8",
-                    "value": "echo"
+                    "value": output.event.program.to_string_lossy()
                 },
                 "args_exact": [{
                     "encoding": "utf8",
@@ -389,7 +390,9 @@ mod tests {
     fn exec_output_reports_signal_termination() {
         let status = signal_terminated_status();
         let request_resolution = sample_policy_default_request_resolution();
-        let output = exec_output_from_result(request_resolution, sample_event(), Ok(status));
+        let mut event = sample_event();
+        event.program = request_resolution.program.clone();
+        let output = exec_output_from_result(request_resolution, event, Ok(status));
         assert_eq!(output.exit_code, None);
         assert_eq!(output.signal, Some(15));
         assert_eq!(
@@ -404,27 +407,27 @@ mod tests {
 
     #[test]
     fn shared_request_resolution_tracks_raw_and_effective_isolation() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
         let workspace = sample_workspace();
         let request = ExecRequest::with_policy_default_isolation(
-            "sh",
-            vec!["-lc", "echo hi"],
+            "whoami",
+            Vec::<String>::new(),
             &workspace,
             ExecutionIsolation::BestEffort,
             &workspace,
         )
-        .with_declared_mutation(true);
+        .with_declared_mutation(false);
 
         let resolution = gateway.resolve_request(&request);
 
-        assert_eq!(resolution.program.to_string_lossy(), "sh");
-        assert_eq!(
-            resolution.args,
-            vec![
-                std::ffi::OsString::from("-lc"),
-                std::ffi::OsString::from("echo hi")
-            ]
-        );
+        assert!(std::path::Path::new(&resolution.program).is_absolute());
+        assert!(resolution.args.is_empty());
         assert_eq!(resolution.input_required_isolation, None);
         assert_eq!(
             resolution.requested_isolation,
@@ -438,7 +441,7 @@ mod tests {
             resolution.requested_policy_meta,
             omne_execution_gateway::requested_policy_meta(ExecutionIsolation::BestEffort)
         );
-        assert!(resolution.declared_mutation);
+        assert!(!resolution.declared_mutation);
         assert_eq!(resolution.cwd, workspace);
         assert_eq!(resolution.workspace_root, sample_workspace());
     }
