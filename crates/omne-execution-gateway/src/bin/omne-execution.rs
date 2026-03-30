@@ -188,9 +188,9 @@ mod tests {
     use super::*;
     use omne_execution_gateway::{ExecDecision, RequestedIsolationSource, requested_policy_meta};
     use policy_meta::SpecVersion;
-    use std::fs::File;
     #[cfg(unix)]
     use std::fs;
+    use std::fs::File;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
     #[cfg(unix)]
