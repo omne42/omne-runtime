@@ -11,6 +11,7 @@
 - symlink/reparse point 错误分类。
 - bounded read helper。
 - staged atomic file/directory replace 与 advisory lock。
+- atomic staging 需要创建父目录时，按 no-follow 目录遍历/创建处理整条父目录链，不会把缺失层级或已有祖先里的 symlink 当成可信目录继续跟随。
 
 ## 不负责什么
 
