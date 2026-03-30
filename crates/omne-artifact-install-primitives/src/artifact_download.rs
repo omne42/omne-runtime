@@ -1,29 +1,23 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::io::Write;
 
 use http_kit::write_response_body_limited;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArtifactDownloadCandidateKind {
-    Gateway,
-    Canonical,
-    Mirror,
-}
-
-impl ArtifactDownloadCandidateKind {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Gateway => "gateway",
-            Self::Canonical => "canonical",
-            Self::Mirror => "mirror",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactDownloadCandidate {
     pub url: String,
-    pub kind: ArtifactDownloadCandidateKind,
+    pub source_label: String,
+}
+
+impl ArtifactDownloadCandidate {
+    fn display_source_label(&self) -> Cow<'_, str> {
+        if self.source_label.trim().is_empty() {
+            Cow::Borrowed("candidate")
+        } else {
+            Cow::Borrowed(self.source_label.as_str())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +100,7 @@ pub(crate) fn candidate_failure_message(
         kind: err.kind(),
         message: format!(
             "{}:{} -> {err}",
-            candidate.kind.label(),
+            candidate.display_source_label(),
             redact_url_for_error(&candidate.url)
         ),
     }
@@ -158,15 +152,15 @@ fn aggregate_failure_kind(errors: &[CandidateFailure]) -> ArtifactInstallErrorKi
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactInstallError,
-        ArtifactInstallErrorKind, candidate_failure_message, failed_candidates_error,
+        ArtifactDownloadCandidate, ArtifactInstallError, ArtifactInstallErrorKind,
+        candidate_failure_message, failed_candidates_error,
     };
 
     #[test]
     fn failed_candidates_error_stays_download_when_all_candidates_failed_to_download() {
         let candidate = ArtifactDownloadCandidate {
             url: "https://example.invalid/demo.zip".to_string(),
-            kind: ArtifactDownloadCandidateKind::Canonical,
+            source_label: "canonical".to_string(),
         };
 
         let err = failed_candidates_error(
@@ -189,7 +183,7 @@ mod tests {
     fn failed_candidates_error_reports_install_when_any_candidate_reached_install_phase() {
         let candidate = ArtifactDownloadCandidate {
             url: "https://example.invalid/demo.zip".to_string(),
-            kind: ArtifactDownloadCandidateKind::Mirror,
+            source_label: "mirror".to_string(),
         };
 
         let err = failed_candidates_error(
@@ -213,11 +207,11 @@ mod tests {
     fn install_phase_failure_message_does_not_claim_everything_failed_in_download_phase() {
         let download_candidate = ArtifactDownloadCandidate {
             url: "https://example.invalid/demo.zip".to_string(),
-            kind: ArtifactDownloadCandidateKind::Canonical,
+            source_label: "canonical".to_string(),
         };
         let install_candidate = ArtifactDownloadCandidate {
             url: "https://mirror.example.invalid/demo.zip".to_string(),
-            kind: ArtifactDownloadCandidateKind::Mirror,
+            source_label: "mirror".to_string(),
         };
 
         let err = failed_candidates_error(
@@ -246,7 +240,7 @@ mod tests {
     fn failed_candidate_messages_redact_url_credentials_and_query() {
         let candidate = ArtifactDownloadCandidate {
             url: "https://token@example.invalid/demo.zip?sig=secret#frag".to_string(),
-            kind: ArtifactDownloadCandidateKind::Canonical,
+            source_label: "canonical".to_string(),
         };
 
         let failure =
@@ -256,5 +250,21 @@ mod tests {
         assert!(!failure.message.contains("token@"));
         assert!(!failure.message.contains("sig=secret"));
         assert!(!failure.message.contains("#frag"));
+    }
+
+    #[test]
+    fn failed_candidate_messages_fallback_when_source_label_is_blank() {
+        let candidate = ArtifactDownloadCandidate {
+            url: "https://example.invalid/demo.zip".to_string(),
+            source_label: "   ".to_string(),
+        };
+
+        let failure =
+            candidate_failure_message(&candidate, &ArtifactInstallError::download("HTTP 404"));
+        assert!(
+            failure
+                .message
+                .starts_with("candidate:https://example.invalid/demo.zip")
+        );
     }
 }

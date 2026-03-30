@@ -13,6 +13,7 @@
 mod archive_tree;
 mod artifact_download;
 mod binary_artifact;
+mod install_lock;
 
 pub use archive_tree::{
     ArchiveTreeInstallRequest, DEFAULT_MAX_ARCHIVE_TREE_ENTRIES,
@@ -20,8 +21,7 @@ pub use archive_tree::{
     install_archive_tree_from_bytes, is_archive_tree_asset_name,
 };
 pub use artifact_download::{
-    ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactInstallError,
-    ArtifactInstallErrorKind,
+    ArtifactDownloadCandidate, ArtifactInstallError, ArtifactInstallErrorKind,
 };
 pub use binary_artifact::{
     BinaryArchiveInstallRequest, DownloadBinaryRequest, InstalledArchiveBinary,

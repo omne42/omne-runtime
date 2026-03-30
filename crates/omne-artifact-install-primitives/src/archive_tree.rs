@@ -8,8 +8,8 @@ use std::path::{Component, Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use omne_fs_primitives::{
-    AtomicDirectoryOptions, AtomicWriteOptions, lock_advisory_file_in_ambient_root,
-    stage_directory_atomically, stage_file_atomically_with_name,
+    AtomicDirectoryOptions, AtomicWriteOptions, stage_directory_atomically,
+    stage_file_atomically_with_name,
 };
 use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 use tar::Archive as TarArchive;
@@ -20,13 +20,13 @@ use crate::artifact_download::{
     ArtifactDownloadCandidate, ArtifactInstallError, candidate_failure_message,
     download_candidate_to_writer_with_options, failed_candidates_error,
 };
+use crate::install_lock::lock_install_destination;
 
 pub const DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_ARCHIVE_TREE_ENTRIES: u64 = 65_536;
 #[cfg(unix)]
 const MAX_ZIP_SYMLINK_TARGET_BYTES: usize = 16 * 1024;
 const ARCHIVE_TREE_INSTALL_LOCK_PREFIX: &str = ".archive-tree-install-";
-const ARCHIVE_TREE_INSTALL_LOCK_SUFFIX: &str = ".lock";
 
 #[derive(Debug, Clone, Copy)]
 pub struct ArchiveTreeInstallRequest<'a> {
@@ -169,41 +169,16 @@ where
 fn lock_archive_tree_destination(
     destination: &Path,
 ) -> Result<omne_fs_primitives::AdvisoryLockGuard, ArtifactInstallError> {
-    let lock_root = destination.parent().unwrap_or_else(|| Path::new("."));
-    let lock_file = archive_tree_install_lock_file_name(destination);
-    lock_advisory_file_in_ambient_root(
-        lock_root,
+    lock_install_destination(
+        destination,
+        ARCHIVE_TREE_INSTALL_LOCK_PREFIX,
         "archive tree install lock root",
-        &lock_file,
-        "archive tree install lock file",
     )
-    .map_err(|err| {
-        ArtifactInstallError::install(format!(
-            "failed to lock archive tree destination `{}`: {err}",
-            destination.display()
-        ))
-    })
 }
 
+#[cfg(test)]
 fn archive_tree_install_lock_file_name(destination: &Path) -> PathBuf {
-    let label = destination
-        .file_name()
-        .map(|name| sanitize_lock_component(&name.to_string_lossy()))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "tree".to_string());
-    PathBuf::from(format!(
-        "{ARCHIVE_TREE_INSTALL_LOCK_PREFIX}{label}{ARCHIVE_TREE_INSTALL_LOCK_SUFFIX}"
-    ))
-}
-
-fn sanitize_lock_component(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => ch,
-            _ => '_',
-        })
-        .collect()
+    crate::install_lock::install_lock_file_name(destination, ARCHIVE_TREE_INSTALL_LOCK_PREFIX)
 }
 
 fn extract_zip_tree<R>(
@@ -827,7 +802,7 @@ mod tests {
 
     use omne_fs_primitives::lock_advisory_file_in_ambient_root;
 
-    use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
+    use crate::artifact_download::ArtifactDownloadCandidate;
 
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
@@ -977,11 +952,11 @@ mod tests {
             &[
                 ArtifactDownloadCandidate {
                     url: canonical_url.clone(),
-                    kind: ArtifactDownloadCandidateKind::Canonical,
+                    source_label: "canonical".to_string(),
                 },
                 ArtifactDownloadCandidate {
                     url: mirror_url,
-                    kind: ArtifactDownloadCandidateKind::Mirror,
+                    source_label: "mirror".to_string(),
                 },
             ],
             &ArchiveTreeInstallRequest {
@@ -994,7 +969,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(selected.kind, ArtifactDownloadCandidateKind::Mirror);
+        assert_eq!(selected.source_label, "mirror");
         assert!(!destination.join("old.txt").exists());
         assert!(destination.join("bin/demo.exe").exists());
         assert!(destination.join("LICENSE").exists());

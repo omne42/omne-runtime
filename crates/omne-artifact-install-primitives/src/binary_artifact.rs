@@ -13,6 +13,9 @@ use crate::artifact_download::{
     ArtifactDownloadCandidate, ArtifactInstallError, candidate_failure_message,
     download_candidate_to_writer_with_options, failed_candidates_error,
 };
+use crate::install_lock::lock_install_destination;
+
+const BINARY_INSTALL_LOCK_PREFIX: &str = ".binary-install-";
 
 #[derive(Debug, Clone, Copy)]
 pub struct DownloadBinaryRequest<'a> {
@@ -84,7 +87,9 @@ pub async fn download_binary_to_destination(
         }
 
         let expected_sha256 = request.expected_sha256.cloned();
+        let destination = request.destination.to_path_buf();
         let install_result = run_blocking_install(move || {
+            let _install_lock = lock_binary_install_destination(&destination)?;
             verify_downloaded_candidate(staged.file_mut(), expected_sha256.as_ref()).and_then(
                 |_| {
                     staged
@@ -182,6 +187,7 @@ where
 {
     let mut staged = stage_file_atomically(destination, &binary_write_options())
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    let _install_lock = lock_binary_install_destination(destination)?;
     let matched = extract_binary_from_archive_reader_to_writer(
         asset_name,
         reader,
@@ -196,6 +202,21 @@ where
         .commit()
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     Ok(matched)
+}
+
+fn lock_binary_install_destination(
+    destination: &Path,
+) -> Result<omne_fs_primitives::AdvisoryLockGuard, ArtifactInstallError> {
+    lock_install_destination(
+        destination,
+        BINARY_INSTALL_LOCK_PREFIX,
+        "binary install lock root",
+    )
+}
+
+#[cfg(test)]
+fn binary_install_lock_file_name(destination: &Path) -> std::path::PathBuf {
+    crate::install_lock::install_lock_file_name(destination, BINARY_INSTALL_LOCK_PREFIX)
 }
 
 fn verify_downloaded_candidate<R>(
@@ -250,14 +271,17 @@ mod tests {
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
+    use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
 
+    use omne_fs_primitives::lock_advisory_file_in_ambient_root;
     use omne_integrity_primitives::hash_sha256;
 
-    use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
+    use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactInstallError};
 
     use super::{
-        BinaryArchiveInstallRequest, DownloadBinaryRequest,
+        BinaryArchiveInstallRequest, DownloadBinaryRequest, binary_install_lock_file_name,
         download_and_install_binary_from_archive, download_binary_to_destination,
     };
 
@@ -345,11 +369,11 @@ mod tests {
             &[
                 ArtifactDownloadCandidate {
                     url: canonical_url.clone(),
-                    kind: ArtifactDownloadCandidateKind::Canonical,
+                    source_label: "canonical".to_string(),
                 },
                 ArtifactDownloadCandidate {
                     url: mirror_url,
-                    kind: ArtifactDownloadCandidateKind::Mirror,
+                    source_label: "mirror".to_string(),
                 },
             ],
             &DownloadBinaryRequest {
@@ -362,7 +386,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(selected.kind, ArtifactDownloadCandidateKind::Mirror);
+        assert_eq!(selected.source_label, "mirror");
         assert_eq!(std::fs::read(&destination)?, good_binary);
 
         handle.join().expect("mock server thread join");
@@ -395,11 +419,11 @@ mod tests {
             &[
                 ArtifactDownloadCandidate {
                     url: canonical_url.clone(),
-                    kind: ArtifactDownloadCandidateKind::Canonical,
+                    source_label: "canonical".to_string(),
                 },
                 ArtifactDownloadCandidate {
                     url: mirror_url,
-                    kind: ArtifactDownloadCandidateKind::Mirror,
+                    source_label: "mirror".to_string(),
                 },
             ],
             &BinaryArchiveInstallRequest {
@@ -414,8 +438,152 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(installed.source.kind, ArtifactDownloadCandidateKind::Mirror);
+        assert_eq!(installed.source.source_label, "mirror");
         assert_eq!(std::fs::read(&destination)?, b"good-binary");
+
+        handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_binary_install_serializes_same_destination() -> Result<(), Box<dyn Error>> {
+        let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let binary = b"demo-binary".to_vec();
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let canonical_url = format!("http://{addr}/{asset_name}");
+
+        let mut routes = HashMap::new();
+        routes.insert(format!("/{asset_name}"), binary.clone());
+        let handle = spawn_mock_http_server(listener, routes, 1);
+
+        let temp = tempfile::tempdir()?;
+        let destination = canonical_test_root(&temp).join(&asset_name);
+        let lock_root = destination.parent().expect("destination parent");
+        let lock_file = binary_install_lock_file_name(&destination);
+        let guard = lock_advisory_file_in_ambient_root(
+            lock_root,
+            "binary install lock root",
+            &lock_file,
+            "artifact install lock file",
+        )?;
+        let destination_for_thread = destination.clone();
+        let canonical_url_for_thread = canonical_url.clone();
+        let (tx, rx) = mpsc::channel();
+        let install_thread = thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let result = runtime.block_on(async move {
+                let client = reqwest::Client::builder()
+                    .build()
+                    .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+                download_binary_to_destination(
+                    &client,
+                    &[ArtifactDownloadCandidate {
+                        url: canonical_url_for_thread.clone(),
+                        source_label: "canonical".to_string(),
+                    }],
+                    &DownloadBinaryRequest {
+                        canonical_url: &canonical_url_for_thread,
+                        destination: &destination_for_thread,
+                        asset_name: &asset_name,
+                        expected_sha256: None,
+                        max_download_bytes: None,
+                    },
+                )
+                .await
+            });
+            tx.send(result).expect("send install result");
+        });
+
+        assert!(
+            matches!(
+                rx.recv_timeout(Duration::from_millis(200)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "same-destination binary install should wait for the advisory lock"
+        );
+
+        drop(guard);
+
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("install should complete after lock release")?;
+        install_thread.join().expect("install thread join");
+        assert_eq!(std::fs::read(&destination)?, binary);
+
+        handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn archive_binary_install_serializes_same_destination() -> Result<(), Box<dyn Error>> {
+        let asset_name = "demo.zip";
+        let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let archive_path = format!("demo/bin/{binary_name}");
+        let archive = make_zip_archive(&[(archive_path.as_str(), b"archive-binary", 0o755)])?;
+
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let canonical_url = format!("http://{addr}/{asset_name}");
+
+        let mut routes = HashMap::new();
+        routes.insert(format!("/{asset_name}"), archive);
+        let handle = spawn_mock_http_server(listener, routes, 1);
+
+        let temp = tempfile::tempdir()?;
+        let destination = canonical_test_root(&temp).join(&binary_name);
+        let lock_root = destination.parent().expect("destination parent");
+        let lock_file = binary_install_lock_file_name(&destination);
+        let guard = lock_advisory_file_in_ambient_root(
+            lock_root,
+            "binary install lock root",
+            &lock_file,
+            "artifact install lock file",
+        )?;
+        let destination_for_thread = destination.clone();
+        let canonical_url_for_thread = canonical_url.clone();
+        let binary_name_for_thread = binary_name.clone();
+        let (tx, rx) = mpsc::channel();
+        let install_thread = thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let result = runtime.block_on(async move {
+                let client = reqwest::Client::builder()
+                    .build()
+                    .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+                download_and_install_binary_from_archive(
+                    &client,
+                    &[ArtifactDownloadCandidate {
+                        url: canonical_url_for_thread.clone(),
+                        source_label: "canonical".to_string(),
+                    }],
+                    &BinaryArchiveInstallRequest {
+                        canonical_url: &canonical_url_for_thread,
+                        destination: &destination_for_thread,
+                        asset_name,
+                        binary_name: &binary_name_for_thread,
+                        archive_binary_hint: None,
+                        expected_sha256: None,
+                        max_download_bytes: None,
+                    },
+                )
+                .await
+            });
+            tx.send(result).expect("send install result");
+        });
+
+        assert!(
+            matches!(
+                rx.recv_timeout(Duration::from_millis(200)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "same-destination archive-binary install should wait for the advisory lock"
+        );
+
+        drop(guard);
+
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("install should complete after lock release")?;
+        install_thread.join().expect("install thread join");
+        assert_eq!(std::fs::read(&destination)?, b"archive-binary");
 
         handle.join().expect("mock server thread join");
         Ok(())
