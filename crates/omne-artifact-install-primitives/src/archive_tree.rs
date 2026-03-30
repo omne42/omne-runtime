@@ -89,32 +89,26 @@ pub async fn download_and_install_archive_tree(
             continue;
         }
 
-        if let Some(expected_sha256) = request.expected_sha256 {
-            let verify_result = staged
+        let expected_sha256 = request.expected_sha256.cloned();
+        let asset_name = request.asset_name.to_string();
+        let destination = request.destination.to_path_buf();
+        let install_result = run_blocking_install(move || {
+            if let Some(expected_sha256) = expected_sha256.as_ref() {
+                staged
+                    .file_mut()
+                    .seek(SeekFrom::Start(0))
+                    .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+                verify_sha256_reader(staged.file_mut(), expected_sha256)
+                    .map_err(|err| ArtifactInstallError::download(err.to_string()))?;
+            }
+
+            staged
                 .file_mut()
                 .seek(SeekFrom::Start(0))
-                .map_err(|err| ArtifactInstallError::install(err.to_string()))
-                .and_then(|_| {
-                    verify_sha256_reader(staged.file_mut(), expected_sha256)
-                        .map_err(|err| ArtifactInstallError::download(err.to_string()))
-                });
-            if let Err(err) = verify_result {
-                errors.push(candidate_failure_message(candidate, &err));
-                continue;
-            }
-        }
-
-        let install_result = staged
-            .file_mut()
-            .seek(SeekFrom::Start(0))
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))
-            .and_then(|_| {
-                install_archive_tree_from_reader(
-                    request.asset_name,
-                    staged.file_mut(),
-                    request.destination,
-                )
-            });
+                .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+            install_archive_tree_from_reader(&asset_name, staged.file_mut(), &destination)
+        })
+        .await;
         if let Err(err) = install_result {
             errors.push(candidate_failure_message(candidate, &err));
             continue;
@@ -740,6 +734,16 @@ fn archive_download_stage_options() -> AtomicWriteOptions {
         create_parent_directories: true,
         ..AtomicWriteOptions::default()
     }
+}
+
+async fn run_blocking_install<T, F>(work: F) -> Result<T, ArtifactInstallError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, ArtifactInstallError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|err| {
+        ArtifactInstallError::install(format!("blocking install task failed: {err}"))
+    })?
 }
 
 fn archive_tree_stage_options() -> AtomicDirectoryOptions {

@@ -11,6 +11,7 @@ omne-fs-primitives = { path = "../omne-fs-primitives" }
 omne-integrity-primitives = { path = "../omne-integrity-primitives" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tar = "0.4"
+tokio = { version = "1", features = ["rt"] }
 xz2 = "0.1"
 zip = "0.6"
 

@@ -29,7 +29,6 @@ pub struct BinaryArchiveInstallRequest<'a> {
     pub destination: &'a Path,
     pub asset_name: &'a str,
     pub binary_name: &'a str,
-    pub tool_name: &'a str,
     pub archive_binary_hint: Option<&'a str>,
     pub expected_sha256: Option<&'a Sha256Digest>,
     pub max_download_bytes: Option<u64>,
@@ -45,7 +44,6 @@ pub fn install_binary_from_archive(
     asset_name: &str,
     content: &[u8],
     binary_name: &str,
-    tool_name: &str,
     destination: &Path,
     archive_binary_hint: Option<&str>,
 ) -> Result<ArchiveBinaryMatch, ArtifactInstallError> {
@@ -54,7 +52,6 @@ pub fn install_binary_from_archive(
         asset_name,
         &mut reader,
         binary_name,
-        tool_name,
         destination,
         archive_binary_hint,
     )
@@ -86,14 +83,17 @@ pub async fn download_binary_to_destination(
             continue;
         }
 
-        let install_result =
-            verify_downloaded_candidate(staged.file_mut(), request.expected_sha256).and_then(
+        let expected_sha256 = request.expected_sha256.cloned();
+        let install_result = run_blocking_install(move || {
+            verify_downloaded_candidate(staged.file_mut(), expected_sha256.as_ref()).and_then(
                 |_| {
                     staged
                         .commit()
                         .map_err(|err| ArtifactInstallError::install(err.to_string()))
                 },
-            );
+            )
+        })
+        .await;
         if let Err(err) = install_result {
             errors.push(candidate_failure_message(candidate, &err));
             continue;
@@ -130,8 +130,13 @@ pub async fn download_and_install_binary_from_archive(
             continue;
         }
 
-        let install_result =
-            verify_downloaded_candidate(staged.file_mut(), request.expected_sha256)
+        let expected_sha256 = request.expected_sha256.cloned();
+        let asset_name = request.asset_name.to_string();
+        let binary_name = request.binary_name.to_string();
+        let destination = request.destination.to_path_buf();
+        let archive_binary_hint = request.archive_binary_hint.map(str::to_string);
+        let install_result = run_blocking_install(move || {
+            verify_downloaded_candidate(staged.file_mut(), expected_sha256.as_ref())
                 .and_then(|_| {
                     staged
                         .file_mut()
@@ -140,14 +145,15 @@ pub async fn download_and_install_binary_from_archive(
                 })
                 .and_then(|_| {
                     install_binary_from_archive_reader(
-                        request.asset_name,
+                        &asset_name,
                         staged.file_mut(),
-                        request.binary_name,
-                        request.tool_name,
-                        request.destination,
-                        request.archive_binary_hint,
+                        &binary_name,
+                        &destination,
+                        archive_binary_hint.as_deref(),
                     )
-                });
+                })
+        })
+        .await;
         let archive_match = match install_result {
             Ok(archive_match) => archive_match,
             Err(err) => {
@@ -168,7 +174,6 @@ fn install_binary_from_archive_reader<R>(
     asset_name: &str,
     reader: &mut R,
     binary_name: &str,
-    tool_name: &str,
     destination: &Path,
     archive_binary_hint: Option<&str>,
 ) -> Result<ArchiveBinaryMatch, ArtifactInstallError>
@@ -182,7 +187,6 @@ where
         reader,
         &BinaryArchiveRequest {
             binary_name,
-            tool_name,
             archive_binary_hint,
         },
         staged.file_mut(),
@@ -210,6 +214,16 @@ where
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     verify_sha256_reader(reader, expected_sha256)
         .map_err(|err| ArtifactInstallError::download(err.to_string()))
+}
+
+async fn run_blocking_install<T, F>(work: F) -> Result<T, ArtifactInstallError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, ArtifactInstallError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|err| {
+        ArtifactInstallError::install(format!("blocking install task failed: {err}"))
+    })?
 }
 
 fn archive_download_stage_options() -> AtomicWriteOptions {
@@ -393,7 +407,6 @@ mod tests {
                 destination: &destination,
                 asset_name,
                 binary_name: &binary_name,
-                tool_name: "demo",
                 archive_binary_hint: None,
                 expected_sha256: None,
                 max_download_bytes: None,

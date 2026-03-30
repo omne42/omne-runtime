@@ -18,6 +18,8 @@ Reusable artifact download and install primitives shared by higher-level callers
 - archive-tree installation via `omne-fs-primitives` staged directory replacement plus exported extracted-byte and entry-count budgets
 - archive-tree link extraction that fails closed if a parent directory chain contains symlink ancestors
 - Unix zip symlink materialization and tar forward hard-link resolution inside the staged tree
+- exact archive-relative `archive_binary_hint` selection for product-specific binary layouts; no separate tool-name fallback remains
+- heavy local install phases such as checksum verification, archive extraction, and staged commit run on Tokio blocking threads instead of the async worker pool
 
 ## Non-Goals
 
