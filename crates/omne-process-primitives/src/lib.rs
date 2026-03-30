@@ -136,21 +136,19 @@ fn capture_unix_process_group_identity(
         Err(error) => return Err(io::Error::from(error)),
     };
     ensure_unix_process_group_is_dedicated(leader_pid, process_group_id)?;
+    #[cfg(target_os = "linux")]
+    let leader_identity = match read_linux_process_identity(leader_pid) {
+        Ok(identity) => Some(identity),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
     Ok(Some(UnixProcessGroupIdentity {
         leader_pid,
         process_group_id,
         #[cfg(target_os = "linux")]
-        leader_start_ticks: match read_linux_process_identity(leader_pid) {
-            Ok(identity) => Some(identity.start_ticks),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error),
-        },
+        leader_start_ticks: leader_identity.map(|identity| identity.start_ticks),
         #[cfg(target_os = "linux")]
-        leader_session_id: match read_linux_process_identity(leader_pid) {
-            Ok(identity) => Some(identity.session_id),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error),
-        },
+        leader_session_id: leader_identity.map(|identity| identity.session_id),
     }))
 }
 

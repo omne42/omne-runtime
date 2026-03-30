@@ -14,7 +14,7 @@
 - 当命中 `sudo` 路径时，把调用方显式提供的环境变量改写成 `env -- KEY=VALUE ...` 形式并放到提权后的目标命令边界内，避免只把变量注入到 `sudo` 自身进程环境，或把语义外包给宿主 `sudoers` 配置。
 - `sudo` 可用性判定、`sudo` 可执行路径选择以及提权后的 bare target 解析都只信任宿主机自己的 `PATH` / 标准系统位置，不使用 request 里显式覆盖的 `PATH` 来决定提权边界。
 - 对需要走 `sudo` 的 bare command，如果目标命令在可信宿主 `PATH` / 标准系统位置中不存在，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
-- 对 `/usr/bin/apt-get` 这类显式系统路径，仍保留 `IfNonRootSystemCommand` 语义；相对路径或工作目录下的同名命令不会被误判成系统命令。
+- 对 `/usr/bin/apt-get` 这类显式系统路径，仍保留 `IfNonRootSystemCommand` 语义；相对路径、词法逃逸路径，或指向系统目录外真实目标的 symlink 别名都不会被误判成系统命令。
 - 运行 host recipe，并把非零退出统一建模成结构化错误。
 - `HostRecipeError::Display` 只输出退出状态和捕获字节数，不把完整 stdout/stderr 直接拼进错误字符串；需要原始输出的调用方仍可从结构化 `Output` 读取。
 - 为常见系统包命令提供默认 `sudo` 模式选择。
@@ -22,7 +22,7 @@
 - 配置子进程以支持进程树清理；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
 - 捕获进程树清理标识并执行 best-effort 终止。
 - Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 descendant sweep。
-- Unix 上一旦无法重新验证原始 leader 身份，默认停止继续对该 process-group 做 `killpg`；但 Linux 会在 `/proc` 中继续回扫同 session 的残留成员，因此即使 leader 在 cleanup capture 之后退出，仍能清理原 process-group 里的 orphan descendants，同时对“capture 时已丢失 leader 身份且 cleanup 时 leader PID 已被复用”的情况继续 fail closed。
+- Unix 上一旦无法重新验证原始 leader 身份，默认停止继续对该 process-group 做 `killpg`；但 Linux 会在 `/proc` 中继续回扫同 session 的残留成员，因此即使 leader 在 cleanup capture 之后退出，仍能清理原 process-group 里的 orphan descendants，同时对“capture 时已丢失 leader 身份且 cleanup 时 leader PID 已被复用”的情况继续 fail closed。leader 的 `start_ticks` 和 `session_id` 也必须来自同一次 `/proc/<pid>/stat` 读取，避免把不同进程生命周期的字段拼成伪身份。
 
 ## 不负责什么
 

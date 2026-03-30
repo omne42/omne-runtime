@@ -390,7 +390,6 @@ where
 {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 8192];
-    let mut exceeded_capture_limit = false;
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {
@@ -400,13 +399,10 @@ where
         let to_copy = remaining.min(read);
         bytes.extend_from_slice(&buffer[..to_copy]);
         if to_copy < read {
-            exceeded_capture_limit = true;
+            return Err(io::Error::other(format!(
+                "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
+            )));
         }
-    }
-    if exceeded_capture_limit {
-        return Err(io::Error::other(format!(
-            "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
-        )));
     }
     Ok(bytes)
 }
@@ -485,23 +481,45 @@ fn explicit_system_command_path(path: &Path) -> bool {
 
     #[cfg(unix)]
     {
-        [
-            "/usr/bin",
-            "/usr/sbin",
-            "/bin",
-            "/sbin",
-            "/usr/local/bin",
-            "/opt/homebrew/bin",
-            "/opt/local/bin",
-        ]
-        .iter()
-        .any(|prefix| path.starts_with(prefix))
+        explicit_system_command_path_with_trusted_dirs(path, &trusted_system_command_directories())
     }
 
     #[cfg(not(unix))]
     {
         false
     }
+}
+
+#[cfg(unix)]
+fn explicit_system_command_path_with_trusted_dirs(path: &Path, trusted_dirs: &[PathBuf]) -> bool {
+    if !is_spawnable_command_path(path) {
+        return false;
+    }
+
+    let Ok(canonical_path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let Some(parent) = canonical_path.parent() else {
+        return false;
+    };
+
+    trusted_dirs.iter().any(|dir| dir == parent)
+}
+
+#[cfg(unix)]
+fn trusted_system_command_directories() -> Vec<PathBuf> {
+    [
+        "/usr/bin",
+        "/usr/sbin",
+        "/bin",
+        "/sbin",
+        "/usr/local/bin",
+        "/opt/homebrew/bin",
+        "/opt/local/bin",
+    ]
+    .iter()
+    .filter_map(|dir| std::fs::canonicalize(dir).ok())
+    .collect()
 }
 
 #[cfg(windows)]
@@ -614,6 +632,8 @@ mod tests {
     use std::io;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
+    #[cfg(unix)]
+    use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
 
     #[cfg(unix)]
@@ -632,8 +652,8 @@ mod tests {
         HostRecipeError, HostRecipeRequest, build_command, command_available,
         command_available_for_request, command_exists, command_exists_for_request,
         command_path_exists, default_recipe_sudo_mode_for_program,
-        resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
-        should_try_sudo_with_status,
+        explicit_system_command_path_with_trusted_dirs, resolve_program_for_direct_spawn,
+        run_host_command, run_host_recipe, should_try_sudo_with_status,
     };
 
     #[test]
@@ -1244,8 +1264,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn non_executable_paths_are_available_but_not_spawnable() {
-        use std::os::unix::fs::PermissionsExt;
-
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = temp.path().join("plain-script");
         std::fs::write(&command_path, "#!/bin/sh\nexit 0\n").expect("write plain script");
@@ -1278,6 +1296,47 @@ mod tests {
                 assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sudo_eligibility_rejects_canonical_path_escape_from_trusted_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let trusted_dir = temp.path().join("usr/bin");
+        let escaped_dir = temp.path().join("tmp");
+        std::fs::create_dir_all(&trusted_dir).expect("create trusted dir");
+        std::fs::create_dir_all(&escaped_dir).expect("create escaped dir");
+
+        let escaped_program = write_test_command(&escaped_dir, "apt-get");
+        let trusted_dirs = vec![std::fs::canonicalize(&trusted_dir).expect("canonical trusted")];
+
+        assert!(!explicit_system_command_path_with_trusted_dirs(
+            &trusted_dir.join("../tmp/apt-get"),
+            &trusted_dirs,
+        ));
+        assert!(explicit_system_command_path_with_trusted_dirs(
+            &escaped_program,
+            &[std::fs::canonicalize(&escaped_dir).expect("canonical escaped")],
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sudo_eligibility_rejects_trusted_path_symlink_to_untrusted_target() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let trusted_dir = temp.path().join("usr/bin");
+        let untrusted_dir = temp.path().join("tmp");
+        std::fs::create_dir_all(&trusted_dir).expect("create trusted dir");
+        std::fs::create_dir_all(&untrusted_dir).expect("create untrusted dir");
+
+        let untrusted_program = write_test_command(&untrusted_dir, "apt-get");
+        let trusted_alias = trusted_dir.join("apt-get");
+        symlink(&untrusted_program, &trusted_alias).expect("symlink trusted alias");
+
+        assert!(!explicit_system_command_path_with_trusted_dirs(
+            &trusted_alias,
+            &[std::fs::canonicalize(&trusted_dir).expect("canonical trusted")],
+        ));
     }
 
     #[cfg(unix)]
