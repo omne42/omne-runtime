@@ -4,5 +4,5 @@
 
 ### Fixed
 
-- detect musl/Alpine Linux hosts before selecting the default target triple so callers do not
-  incorrectly fall back to `*-unknown-linux-gnu`
+- stop treating an unknown Linux libc as `gnu`; host platform detection now fails closed until
+  `gnu`/`musl` detection succeeds, so callers do not select the wrong target triple
