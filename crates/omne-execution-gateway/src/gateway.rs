@@ -1,4 +1,5 @@
 use std::ffi::{OsStr, OsString};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
@@ -11,6 +12,7 @@ use crate::types::{ExecRequest, RequestResolution, RequestedIsolationSource};
 use policy_meta::ExecutionIsolation;
 use same_file::Handle as SameFileHandle;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug)]
 struct BoundDirectory {
@@ -36,6 +38,7 @@ struct PreparedExecRequest {
 struct BoundProgram {
     path: PathBuf,
     identity: SameFileHandle,
+    content_fingerprint: Option<[u8; 32]>,
 }
 
 #[derive(Debug)]
@@ -163,6 +166,7 @@ impl ExecGateway {
             Ok(prepared) => {
                 let mut command = Command::new(&prepared.bound_program.path);
                 command.args(&request.args);
+                configure_request_environment(&prepared.event.env, &mut command);
                 configure_noninteractive_stdio(&mut command);
                 let result = apply_prepared_request(&prepared, &mut command).and_then(|monitor| {
                     let mut child = command.spawn().map_err(ExecError::Spawn)?;
@@ -213,6 +217,7 @@ impl ExecGateway {
                 ) {
                     Ok(()) => {
                         let mut command = command;
+                        configure_request_environment(&prepared.event.env, &mut command);
                         configure_noninteractive_stdio(&mut command);
                         command.current_dir(&prepared.resolved_paths.cwd.path);
                         let event = prepared.event.clone();
@@ -273,6 +278,7 @@ impl ExecGateway {
             ));
         }
 
+        let mut must_bind_program_contents = false;
         if self.policy.enforce_allowlisted_program_for_mutation {
             if !request.declared_mutation_is_explicit() {
                 return Err(self.deny_preflight(
@@ -320,6 +326,7 @@ impl ExecGateway {
                     ),
                 ));
             }
+            must_bind_program_contents = program_is_allowlisted;
         }
 
         if request.required_isolation > self.supported_isolation {
@@ -340,33 +347,35 @@ impl ExecGateway {
         }
 
         match resolve_request_paths(&request.cwd, &request.workspace_root) {
-            Ok(resolved_paths) => match bind_program_path(&request.program) {
-                Ok(bound_program) => {
-                    event.cwd = resolved_paths.cwd.path.clone();
-                    event.workspace_root = resolved_paths.workspace_root.path.clone();
-                    event.program = bound_program.path.clone().into();
-                    Ok(PreparedExecRequest {
-                        event,
-                        required_isolation: request.required_isolation,
-                        bound_program,
-                        resolved_paths,
-                    })
+            Ok(resolved_paths) => {
+                match bind_program_path(&request.program, must_bind_program_contents) {
+                    Ok(bound_program) => {
+                        event.cwd = resolved_paths.cwd.path.clone();
+                        event.workspace_root = resolved_paths.workspace_root.path.clone();
+                        event.program = bound_program.path.clone().into();
+                        Ok(PreparedExecRequest {
+                            event,
+                            required_isolation: request.required_isolation,
+                            bound_program,
+                            resolved_paths,
+                        })
+                    }
+                    Err(err @ ExecError::RelativeProgramPath { .. }) => {
+                        Err(self.deny_preflight(event, "relative_program_path_forbidden", err))
+                    }
+                    Err(
+                        err @ ExecError::ProgramPathInvalid { .. }
+                        | err @ ExecError::ProgramLookupFailed { .. },
+                    ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
+                    Err(
+                        err @ ExecError::PathIdentityUnavailable { .. }
+                        | err @ ExecError::RequestPathChanged { .. },
+                    ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
+                    Err(err) => {
+                        unreachable!("bind_explicit_program_path returned unexpected error: {err}")
+                    }
                 }
-                Err(err @ ExecError::RelativeProgramPath { .. }) => {
-                    Err(self.deny_preflight(event, "relative_program_path_forbidden", err))
-                }
-                Err(
-                    err @ ExecError::ProgramPathInvalid { .. }
-                    | err @ ExecError::ProgramLookupFailed { .. },
-                ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
-                Err(
-                    err @ ExecError::PathIdentityUnavailable { .. }
-                    | err @ ExecError::RequestPathChanged { .. },
-                ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
-                Err(err) => {
-                    unreachable!("bind_explicit_program_path returned unexpected error: {err}")
-                }
-            },
+            }
             Err(err @ ExecError::WorkspaceRootInvalid { .. }) => {
                 Err(self.deny_preflight(event, "workspace_root_invalid", err))
             }
@@ -390,6 +399,7 @@ impl ExecGateway {
             supported_isolation: self.supported_isolation,
             program: request.program.clone(),
             args: request.args.clone(),
+            env: request.env.clone(),
             cwd: request.cwd.clone(),
             workspace_root: request.workspace_root.clone(),
             declared_mutation: request.declared_mutation,
@@ -595,15 +605,15 @@ fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<Boun
     Ok(BoundDirectory { path, identity })
 }
 
-fn bind_program_path(program: &OsStr) -> ExecResult<BoundProgram> {
+fn bind_program_path(program: &OsStr, bind_contents: bool) -> ExecResult<BoundProgram> {
     if is_explicit_program_path(program) {
-        bind_explicit_program_path(program)
+        bind_explicit_program_path(program, bind_contents)
     } else {
-        bind_bare_program_path(program)
+        bind_bare_program_path(program, bind_contents)
     }
 }
 
-fn bind_explicit_program_path(program: &OsStr) -> ExecResult<BoundProgram> {
+fn bind_explicit_program_path(program: &OsStr, bind_contents: bool) -> ExecResult<BoundProgram> {
     let requested_path = Path::new(program);
     if !requested_path.is_absolute() {
         return Err(ExecError::RelativeProgramPath {
@@ -611,20 +621,23 @@ fn bind_explicit_program_path(program: &OsStr) -> ExecResult<BoundProgram> {
         });
     }
 
-    bind_absolute_program_path(requested_path)
+    bind_absolute_program_path(requested_path, bind_contents)
 }
 
-fn bind_bare_program_path(program: &OsStr) -> ExecResult<BoundProgram> {
+fn bind_bare_program_path(program: &OsStr, bind_contents: bool) -> ExecResult<BoundProgram> {
     let resolved_path =
         resolve_bare_program_path(program).ok_or_else(|| ExecError::ProgramLookupFailed {
             program: program.to_string_lossy().into_owned(),
             detail: "program not found in PATH or standard locations".to_string(),
         })?;
 
-    bind_absolute_program_path(&resolved_path)
+    bind_absolute_program_path(&resolved_path, bind_contents)
 }
 
-fn bind_absolute_program_path(requested_path: &Path) -> ExecResult<BoundProgram> {
+fn bind_absolute_program_path(
+    requested_path: &Path,
+    bind_contents: bool,
+) -> ExecResult<BoundProgram> {
     let metadata =
         std::fs::metadata(requested_path).map_err(|err| ExecError::ProgramPathInvalid {
             path: requested_path.to_path_buf(),
@@ -646,6 +659,9 @@ fn bind_absolute_program_path(requested_path: &Path) -> ExecResult<BoundProgram>
     Ok(BoundProgram {
         path: requested_path.to_path_buf(),
         identity,
+        content_fingerprint: bind_contents
+            .then(|| fingerprint_program_contents(requested_path))
+            .transpose()?,
     })
 }
 
@@ -687,6 +703,16 @@ fn revalidate_bound_program(program: &BoundProgram) -> ExecResult<()> {
             path: program.path.clone(),
             detail: "file identity changed".to_string(),
         });
+    }
+    if let Some(expected_fingerprint) = program.content_fingerprint {
+        let current_fingerprint = fingerprint_program_contents(&program.path)?;
+        if current_fingerprint != expected_fingerprint {
+            return Err(ExecError::RequestPathChanged {
+                kind: "program",
+                path: program.path.clone(),
+                detail: "file contents changed".to_string(),
+            });
+        }
     }
 
     Ok(())
@@ -739,6 +765,7 @@ fn apply_prepared_request(
 ) -> ExecResult<sandbox::SandboxMonitor> {
     revalidate_bound_program(&prepared.bound_program)?;
     revalidate_prepared_request_paths(&prepared.resolved_paths)?;
+    configure_request_environment(&prepared.event.env, command);
     command.current_dir(&prepared.resolved_paths.cwd.path);
     sandbox::apply_sandbox(
         command,
@@ -752,6 +779,35 @@ fn configure_noninteractive_stdio(command: &mut Command) {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+}
+
+fn configure_request_environment(env: &[(OsString, OsString)], command: &mut Command) {
+    command.env_clear();
+    for (name, value) in env {
+        command.env(name, value);
+    }
+}
+
+fn fingerprint_program_contents(path: &Path) -> ExecResult<[u8; 32]> {
+    let mut file = std::fs::File::open(path).map_err(|err| ExecError::ProgramPathInvalid {
+        path: path.to_path_buf(),
+        detail: err.to_string(),
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|err| ExecError::ProgramPathInvalid {
+                path: path.to_path_buf(),
+                detail: err.to_string(),
+            })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().into())
 }
 
 fn validate_prepared_command_matches_request(
@@ -1287,6 +1343,41 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn preflight_denies_when_audit_log_path_traverses_ancestor_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempdir().expect("create temp workspace");
+        let real_dir = workspace.path().join("real-audit");
+        let alias_dir = workspace.path().join("alias-audit");
+        fs::create_dir(&real_dir).expect("create real audit dir");
+        symlink(&real_dir, &alias_dir).expect("create audit dir symlink");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                audit_log_path: Some(alias_dir.join("nested").join("audit.jsonl")),
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        );
+
+        let err = gateway
+            .preflight(&request)
+            .expect_err("ancestor symlink should deny audit log path");
+        let (event, err) = err.into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("audit_log_unavailable"));
+        assert!(matches!(err, ExecError::AuditLogUnavailable { .. }));
+    }
+
     #[test]
     fn preflight_creates_missing_audit_log_parent_directories() {
         let workspace = tempdir().expect("create temp workspace");
@@ -1451,6 +1542,47 @@ mod tests {
             event.requested_policy_meta,
             crate::audit::requested_policy_meta(ExecutionIsolation::BestEffort)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_allowlisted_program_rejects_in_place_content_change() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("allowlisted.sh");
+        write_unix_executable(&program, "#!/bin/sh\nexit 0\n");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                mutating_program_allowlist: vec![program.display().to_string()],
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+        let command = Command::new(&program);
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let prepared = result.expect("prepare command");
+
+        write_unix_executable(&program, "#!/bin/sh\nexit 1\n");
+
+        let err = prepared
+            .spawn()
+            .expect_err("content drift should be rejected before spawn");
+        assert!(matches!(
+            err,
+            ExecError::RequestPathChanged {
+                kind: "program",
+                ref detail,
+                ..
+            } if detail == "file contents changed"
+        ));
     }
 
     #[test]
@@ -1781,6 +1913,78 @@ mod tests {
             .canonicalize()
             .expect("canonicalize workspace");
         assert_eq!(prepared.current_dir(), Some(expected_cwd.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_status_applies_audited_request_environment() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "/bin/sh",
+            vec![
+                "-c",
+                "test \"$OMNE_GATEWAY_REQUEST\" = expected && test -z \"$OMNE_GATEWAY_AMBIENT\"",
+            ],
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_env([("OMNE_GATEWAY_REQUEST", "expected")])
+        .with_declared_mutation(false);
+
+        let status = gateway
+            .execute_status(&request)
+            .expect("execute should apply request env");
+        assert!(status.success(), "unexpected status: {status}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_command_clears_preconfigured_environment() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "/bin/sh",
+            vec![
+                "-c",
+                "test \"$OMNE_GATEWAY_REQUEST\" = expected && test -z \"$OMNE_GATEWAY_AMBIENT\"",
+            ],
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_env([("OMNE_GATEWAY_REQUEST", "expected")])
+        .with_declared_mutation(false);
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "test \"$OMNE_GATEWAY_REQUEST\" = expected && test -z \"$OMNE_GATEWAY_AMBIENT\"",
+        ]);
+        command.env("OMNE_GATEWAY_AMBIENT", "leaked");
+
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let status = result
+            .expect("prepare command")
+            .spawn()
+            .expect("spawn prepared command")
+            .wait()
+            .expect("wait prepared command");
+        assert!(status.success(), "unexpected status: {status}");
     }
 
     #[test]
@@ -2337,6 +2541,16 @@ mod tests {
     #[cfg(not(windows))]
     fn interpreter_mutating_snippet() -> &'static str {
         "open('deleteme.txt','w').write('x')"
+    }
+
+    #[cfg(unix)]
+    fn write_unix_executable(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, body).expect("write executable");
+        let mut permissions = fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("set permissions");
     }
 
     fn host_supported_test_isolation() -> ExecutionIsolation {

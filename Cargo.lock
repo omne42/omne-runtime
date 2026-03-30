@@ -1231,12 +1231,15 @@ dependencies = [
 name = "omne-execution-gateway"
 version = "0.1.0"
 dependencies = [
+ "cap-fs-ext",
+ "cap-std",
  "fs2",
  "libc",
  "policy-meta",
  "same-file",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 1.0.69",
  "windows-sys 0.59.0",

@@ -7,7 +7,9 @@ use serde::Serializer;
 
 use policy_meta::ExecutionIsolation;
 
-use crate::os_serialization::{ExactOsStr, ExactOsStrings, LossyOsStr, LossyOsStrings};
+use crate::os_serialization::{
+    ExactEnvPairs, ExactOsStr, ExactOsStrings, LossyEnvPairs, LossyOsStr, LossyOsStrings,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +49,7 @@ pub struct ExecEvent {
     pub supported_isolation: ExecutionIsolation,
     pub program: OsString,
     pub args: Vec<OsString>,
+    pub env: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub workspace_root: PathBuf,
     pub declared_mutation: bool,
@@ -73,8 +76,10 @@ impl Serialize for ExecEvent {
             supported_isolation: ExecutionIsolation,
             program: LossyOsStr<'a>,
             args: LossyOsStrings<'a>,
+            env: LossyEnvPairs<'a>,
             program_exact: ExactOsStr<'a>,
             args_exact: ExactOsStrings<'a>,
+            env_exact: ExactEnvPairs<'a>,
             cwd: &'a PathBuf,
             workspace_root: &'a PathBuf,
             declared_mutation: bool,
@@ -90,8 +95,10 @@ impl Serialize for ExecEvent {
             supported_isolation: self.supported_isolation,
             program: LossyOsStr(self.program.as_os_str()),
             args: LossyOsStrings(&self.args),
+            env: LossyEnvPairs(&self.env),
             program_exact: ExactOsStr(self.program.as_os_str()),
             args_exact: ExactOsStrings(&self.args),
+            env_exact: ExactEnvPairs(&self.env),
             cwd: &self.cwd,
             workspace_root: &self.workspace_root,
             declared_mutation: self.declared_mutation,

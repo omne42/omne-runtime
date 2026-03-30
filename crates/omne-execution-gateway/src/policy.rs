@@ -1,12 +1,10 @@
-use std::fs::{File, OpenOptions};
 use std::io;
-use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
-use std::str;
 
 use serde::{Deserialize, Serialize};
 
+use crate::path_guard;
 use policy_meta::ExecutionIsolation;
 
 const MAX_POLICY_JSON_BYTES: usize = 1024 * 1024;
@@ -48,84 +46,15 @@ impl GatewayPolicy {
     }
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
-        let content = read_utf8_regular_file_nofollow(path.as_ref(), MAX_POLICY_JSON_BYTES)?;
+        let content = path_guard::read_utf8_regular_file_nofollow(
+            path.as_ref(),
+            MAX_POLICY_JSON_BYTES,
+            "policy file",
+        )?;
         let policy = serde_json::from_str::<Self>(&content)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
         Ok(policy)
     }
-}
-
-fn read_utf8_regular_file_nofollow(path: &Path, max_bytes: usize) -> io::Result<String> {
-    let metadata = std::fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("path is not a regular file: {}", path.display()),
-        ));
-    }
-    let file = open_regular_readonly_nofollow(path)?;
-    let mut bytes = Vec::new();
-    let limit = u64::try_from(max_bytes)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let mut limited = file.take(limit);
-    limited.read_to_end(&mut bytes)?;
-    if bytes.len() > max_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "policy file exceeds size limit ({} > {} bytes)",
-                bytes.len(),
-                max_bytes
-            ),
-        ));
-    }
-    str::from_utf8(&bytes)
-        .map(str::to_owned)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))
-}
-
-#[cfg(unix)]
-fn open_regular_readonly_nofollow(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(windows)]
-fn open_regular_readonly_nofollow(path: &Path) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn open_regular_readonly_nofollow(path: &Path) -> io::Result<File> {
-    let file = OpenOptions::new().read(true).open(path)?;
-    ensure_regular_file(path, file)
-}
-
-fn ensure_regular_file(path: &Path, file: File) -> io::Result<File> {
-    let metadata = file.metadata()?;
-    if metadata.is_file() {
-        return Ok(file);
-    }
-
-    Err(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("path is not a regular file: {}", path.display()),
-    ))
 }
 
 fn is_explicit_program_path(program: impl AsRef<Path>) -> bool {
@@ -202,7 +131,7 @@ fn executable_stem(name: &str) -> Option<&str> {
 mod tests {
     #[cfg(unix)]
     use std::ffi::OsString;
-    use std::fs;
+    use std::fs::{self, File};
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
     #[cfg(unix)]
@@ -374,6 +303,33 @@ mod tests {
         symlink(&target, &link).expect("create symlink");
 
         let err = GatewayPolicy::load_json(&link).expect_err("symlink should be rejected");
+        assert_ne!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_json_rejects_ancestor_symlink_input() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let real_dir = dir.path().join("real");
+        let alias_dir = dir.path().join("alias");
+        std::fs::create_dir(&real_dir).expect("create real dir");
+        let policy_path = real_dir.join("policy.json");
+        std::fs::write(
+            &policy_path,
+            r#"{
+                "allow_isolation_none": true,
+                "enforce_allowlisted_program_for_mutation": false,
+                "mutating_program_allowlist": [],
+                "default_isolation": "none"
+            }"#,
+        )
+        .expect("write policy");
+        symlink(&real_dir, &alias_dir).expect("symlink ancestor");
+
+        let err = GatewayPolicy::load_json(&alias_dir.join("policy.json"))
+            .expect_err("ancestor symlink should be rejected");
         assert_ne!(err.kind(), io::ErrorKind::InvalidData);
     }
 

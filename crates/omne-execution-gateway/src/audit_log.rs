@@ -1,5 +1,4 @@
 use std::fmt::Display;
-use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -10,6 +9,7 @@ use serde::Serialize;
 
 use crate::audit::ExecEvent;
 use crate::error::{ExecError, ExecResult};
+use crate::path_guard;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AuditLogger {
@@ -74,148 +74,9 @@ impl AuditLogger {
     }
 
     fn try_open_appendable_file(&self) -> Result<std::fs::File, Box<dyn std::error::Error>> {
-        if let Some(parent) = self.path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            ensure_directory_chain(parent)?;
-        }
-        if self.path.exists() {
-            ensure_existing_regular_file_path(&self.path)?;
-        }
-        open_appendable_regular_file_nofollow(&self.path)
+        path_guard::open_appendable_regular_file_nofollow(&self.path, "audit log")
+            .map_err(|err| err.into())
     }
-}
-
-fn ensure_existing_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(format!("path is not a directory: {}", path.display()).into());
-    }
-    Ok(())
-}
-
-fn ensure_existing_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(format!("path is not a regular file: {}", path.display()).into());
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut options = OpenOptions::new();
-    options
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(windows)]
-fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-
-    let mut options = OpenOptions::new();
-    options
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)?;
-    ensure_regular_file(path, file)
-}
-
-fn ensure_regular_file(path: &Path, file: File) -> Result<File, Box<dyn std::error::Error>> {
-    let metadata = file.metadata()?;
-    if metadata.is_file() {
-        return Ok(file);
-    }
-
-    Err(format!("path is not a regular file: {}", path.display()).into())
-}
-
-fn ensure_directory_chain(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let normalized = normalize_directory_chain_path(path)?;
-    let mut current = PathBuf::new();
-
-    for component in normalized.components() {
-        current.push(component.as_os_str());
-        if current.parent().is_none() {
-            continue;
-        }
-
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    return Err(format!("path is not a directory: {}", current.display()).into());
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match fs::create_dir(&current) {
-                    Ok(()) => {}
-                    Err(create_error)
-                        if create_error.kind() == std::io::ErrorKind::AlreadyExists =>
-                    {
-                        ensure_existing_directory(&current)?;
-                    }
-                    Err(create_error) => return Err(create_error.into()),
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-
-    Ok(())
-}
-
-fn normalize_directory_chain_path(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-
-    let mut normalized = PathBuf::new();
-    let mut saw_root = false;
-    for component in absolute.components() {
-        match component {
-            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
-                normalized.push(component.as_os_str());
-                saw_root = true;
-            }
-            std::path::Component::Normal(part) => normalized.push(part),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                if !normalized.pop() {
-                    return Err(format!("invalid audit log parent: {}", path.display()).into());
-                }
-            }
-        }
-    }
-
-    if !saw_root {
-        return Err(format!("invalid audit log parent: {}", path.display()).into());
-    }
-    Ok(normalized)
 }
 
 #[derive(Debug, Serialize)]
@@ -574,6 +435,7 @@ mod tests {
             supported_isolation: ExecutionIsolation::BestEffort,
             program: program.into(),
             args: Vec::new(),
+            env: Vec::new(),
             cwd: ".".into(),
             workspace_root: ".".into(),
             declared_mutation: false,

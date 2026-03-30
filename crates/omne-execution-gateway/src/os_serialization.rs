@@ -59,6 +59,56 @@ impl Serialize for ExactOsStrings<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LossyEnvPairs<'a>(pub(crate) &'a [(OsString, OsString)]);
+
+impl Serialize for LossyEnvPairs<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for (name, value) in self.0 {
+            seq.serialize_element(&LossyEnvPair {
+                name: LossyOsStr(name.as_os_str()),
+                value: LossyOsStr(value.as_os_str()),
+            })?;
+        }
+        seq.end()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExactEnvPairs<'a>(pub(crate) &'a [(OsString, OsString)]);
+
+impl Serialize for ExactEnvPairs<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for (name, value) in self.0 {
+            seq.serialize_element(&ExactEnvPair {
+                name: ExactOsStr(name.as_os_str()),
+                value: ExactOsStr(value.as_os_str()),
+            })?;
+        }
+        seq.end()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct LossyEnvPair<'a> {
+    name: LossyOsStr<'a>,
+    value: LossyOsStr<'a>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct ExactEnvPair<'a> {
+    name: ExactOsStr<'a>,
+    value: ExactOsStr<'a>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct ExactOsStringValue {
