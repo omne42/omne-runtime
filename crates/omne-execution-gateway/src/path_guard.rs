@@ -60,6 +60,51 @@ pub(crate) fn open_appendable_regular_file_nofollow(
     ensure_regular_file(file.into_std(), &normalized, label)
 }
 
+#[allow(dead_code)]
+pub(crate) fn validate_appendable_regular_file_nofollow(
+    path: &Path,
+    label: &str,
+) -> io::Result<()> {
+    let normalized = normalize_absolute_path(path, label)?;
+    let leaf = normalized.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{label} must include a file name: {}", path.display()),
+        )
+    })?;
+    let parent = normalized.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{label} must include a parent directory: {}",
+                path.display()
+            ),
+        )
+    })?;
+    let (base, components) = split_root(parent, label)?;
+    let mut current = Dir::open_ambient_dir(&base, ambient_authority())?;
+
+    for component in components {
+        match current.open_dir_nofollow(Path::new(&component)) {
+            Ok(next) => current = next,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        }
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    options.follow(FollowSymlinks::No);
+    match current.open_with(Path::new(&leaf), &options) {
+        Ok(file) => {
+            ensure_regular_file(file.into_std(), &normalized, label)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 fn ensure_regular_file(file: std::fs::File, path: &Path, label: &str) -> io::Result<std::fs::File> {
     let metadata = file.metadata()?;
     if metadata.is_file() {
@@ -242,5 +287,18 @@ mod tests {
         super::open_appendable_regular_file_nofollow(&path, "audit log").expect("open appendable");
 
         assert!(path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_appendable_regular_file_allows_missing_parent_directories_without_creating_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = canonical_temp_root(&dir).join("logs/nested/audit.jsonl");
+
+        super::validate_appendable_regular_file_nofollow(&path, "audit log")
+            .expect("validate appendable");
+
+        assert!(!path.exists());
+        assert!(!path.parent().expect("audit parent").exists());
     }
 }

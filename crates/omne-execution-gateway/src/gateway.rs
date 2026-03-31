@@ -163,32 +163,41 @@ impl ExecGateway {
     /// Execute a request and retain the authoritative policy/audit event.
     pub fn execute(&self, request: &ExecRequest) -> ExecutionOutcome {
         let (event, result) = match self.prepare_request(request) {
-            Ok(prepared) => {
-                let mut command = Command::new(&prepared.bound_program.path);
-                command.args(&request.args);
-                configure_request_environment(&prepared.event.env, &mut command);
-                configure_noninteractive_stdio(&mut command);
-                let result = apply_prepared_request(&prepared, &mut command).and_then(|monitor| {
-                    let mut child = command.spawn().map_err(ExecError::Spawn)?;
-                    let sandbox_runtime = monitor.observe_after_spawn();
-                    let status = child.wait().map_err(ExecError::Spawn)?;
-                    Ok((sandbox_runtime, status))
-                });
-                match result {
-                    Ok((sandbox_runtime, status)) => {
-                        let mut event = prepared.event;
-                        event.sandbox_runtime = sandbox_runtime;
-                        (event, Ok(status))
+            Ok(prepared) => match self.ensure_audit_ready(&prepared.event) {
+                Ok(()) => {
+                    let mut command = Command::new(&prepared.bound_program.path);
+                    command.args(&request.args);
+                    configure_request_environment(&prepared.event.env, &mut command);
+                    configure_noninteractive_stdio(&mut command);
+                    let result =
+                        apply_prepared_request(&prepared, &mut command).and_then(|monitor| {
+                            let mut child = command.spawn().map_err(ExecError::Spawn)?;
+                            let sandbox_runtime = monitor.observe_after_spawn();
+                            let status = child.wait().map_err(ExecError::Spawn)?;
+                            Ok((sandbox_runtime, status))
+                        });
+                    match result {
+                        Ok((sandbox_runtime, status)) => {
+                            let mut event = prepared.event;
+                            event.sandbox_runtime = sandbox_runtime;
+                            (event, Ok(status))
+                        }
+                        Err(err) => (prepared.event, Err(err)),
                     }
-                    Err(err) => (prepared.event, Err(err)),
                 }
-            }
+                Err(err) => {
+                    let (event, err) = err.into_parts();
+                    (event, Err(err))
+                }
+            },
             Err(err) => {
                 let (event, err) = err.into_parts();
                 (event, Err(err))
             }
         };
-        let result = if let Some(audit) = &self.audit {
+        let result = if audit_error_already_reported(&result) {
+            result
+        } else if let Some(audit) = &self.audit {
             let audit_result = audit.write_execution_record(&event, &result);
             combine_result_with_audit_write(result, audit_result)
         } else {
@@ -209,8 +218,8 @@ impl ExecGateway {
         command: Command,
     ) -> (ExecEvent, ExecResult<PreparedCommand>) {
         let (event, result) = match self.prepare_request(request) {
-            Ok(prepared) => {
-                match validate_prepared_command_matches_request(
+            Ok(prepared) => match self.ensure_audit_ready(&prepared.event) {
+                Ok(()) => match validate_prepared_command_matches_request(
                     prepared.bound_program.path.as_os_str(),
                     &request.args,
                     &command,
@@ -227,14 +236,20 @@ impl ExecGateway {
                         let event = self.deny_event(prepared.event, "prepared_command_mismatch");
                         (event, Err(err))
                     }
+                },
+                Err(err) => {
+                    let (event, err) = err.into_parts();
+                    (event, Err(err))
                 }
-            }
+            },
             Err(err) => {
                 let (event, err) = err.into_parts();
                 (event, Err(err))
             }
         };
-        let result = if let Some(audit) = &self.audit {
+        let result = if audit_error_already_reported(&result) {
+            result
+        } else if let Some(audit) = &self.audit {
             let audit_result = audit.write_prepare_record(&event, &result);
             combine_result_with_audit_write(result, audit_result)
         } else {
@@ -287,46 +302,65 @@ impl ExecGateway {
                     ExecError::MutationDeclarationRequired,
                 ));
             }
-            let program_is_allowlisted = self
+            let program_path = Path::new(&request.program);
+            let mutating_allowlisted = self
                 .policy
-                .is_mutating_program_allowlisted_path(Path::new(&request.program));
-            if request.declared_mutation && !program_is_allowlisted {
-                return Err(self.deny_preflight(
-                    event,
-                    "mutation_requires_allowlisted_program",
-                    ExecError::PolicyDenied(
-                        "declared mutating command must use an allowlisted program".to_string(),
-                    ),
-                ));
+                .is_mutating_program_allowlisted_path(program_path);
+            let non_mutating_allowlisted = self
+                .policy
+                .is_non_mutating_program_allowlisted_path(program_path);
+
+            if request.declared_mutation {
+                if !mutating_allowlisted {
+                    return Err(self.deny_preflight(
+                        event,
+                        "mutation_requires_allowlisted_program",
+                        ExecError::PolicyDenied(
+                            "declared mutating command must use an allowlisted program".to_string(),
+                        ),
+                    ));
+                }
+                must_bind_program_contents = true;
+            } else {
+                if mutating_allowlisted {
+                    return Err(self.deny_preflight(
+                        event,
+                        "allowlisted_program_requires_declared_mutation",
+                        ExecError::PolicyDenied(
+                            "allowlisted mutating program must declare mutation".to_string(),
+                        ),
+                    ));
+                }
+                if uses_opaque_command_launcher(&request.program) {
+                    return Err(self.deny_preflight(
+                        event,
+                        "opaque_command_requires_declared_mutation",
+                        ExecError::PolicyDenied(
+                            "opaque command launchers must declare mutation".to_string(),
+                        ),
+                    ));
+                }
+                if uses_known_mutating_program(&request.program) {
+                    return Err(self.deny_preflight(
+                        event,
+                        "known_mutating_program_requires_declared_mutation",
+                        ExecError::PolicyDenied(
+                            "known mutating tools must declare mutation".to_string(),
+                        ),
+                    ));
+                }
+                if !non_mutating_allowlisted {
+                    return Err(self.deny_preflight(
+                        event,
+                        "non_mutating_requires_allowlisted_program",
+                        ExecError::PolicyDenied(
+                            "declared non-mutating command must use an allowlisted program"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                must_bind_program_contents = true;
             }
-            if uses_opaque_command_launcher(&request.program) && !program_is_allowlisted {
-                return Err(self.deny_preflight(
-                    event,
-                    "opaque_command_requires_allowlisted_program",
-                    ExecError::PolicyDenied(
-                        "opaque command launchers must use an allowlisted program".to_string(),
-                    ),
-                ));
-            }
-            if uses_known_mutating_program(&request.program) && !request.declared_mutation {
-                return Err(self.deny_preflight(
-                    event,
-                    "known_mutating_program_requires_declared_mutation",
-                    ExecError::PolicyDenied(
-                        "known mutating tools must declare mutation".to_string(),
-                    ),
-                ));
-            }
-            if program_is_allowlisted && !request.declared_mutation {
-                return Err(self.deny_preflight(
-                    event,
-                    "allowlisted_program_requires_declared_mutation",
-                    ExecError::PolicyDenied(
-                        "allowlisted mutating program must declare mutation".to_string(),
-                    ),
-                ));
-            }
-            must_bind_program_contents = program_is_allowlisted;
         }
 
         if request.required_isolation > self.supported_isolation {
@@ -341,7 +375,7 @@ impl ExecGateway {
         }
 
         if let Some(audit) = &self.audit
-            && let Err(err) = audit.ensure_ready()
+            && let Err(err) = audit.validate_ready_without_side_effects()
         {
             return Err(self.deny_preflight(event, "audit_log_unavailable", err));
         }
@@ -420,6 +454,16 @@ impl ExecGateway {
             event: Box::new(self.deny_event(event, reason)),
             error: err,
         }
+    }
+
+    fn ensure_audit_ready(&self, event: &ExecEvent) -> Result<(), PreflightError> {
+        if let Some(audit) = &self.audit
+            && let Err(err) = audit.ensure_ready()
+        {
+            return Err(self.deny_preflight(event.clone(), "audit_log_unavailable", err));
+        }
+
+        Ok(())
     }
 }
 
@@ -1036,6 +1080,15 @@ fn combine_result_with_audit_write<T>(
     }
 }
 
+fn audit_error_already_reported<T>(result: &ExecResult<T>) -> bool {
+    matches!(
+        result,
+        Err(ExecError::AuditLogUnavailable { .. }
+            | ExecError::AuditLogWriteFailed { .. }
+            | ExecError::AuditLogWriteFailedAfterExecutionError { .. })
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -1333,7 +1386,7 @@ mod tests {
 
         let err = gateway
             .preflight(&request)
-            .expect_err("unwritable audit log should deny request");
+            .expect_err("non-directory audit parent should be rejected");
         let (event, err) = err.into_parts();
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(event.reason.as_deref(), Some("audit_log_unavailable"));
@@ -1379,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    fn preflight_creates_missing_audit_log_parent_directories() {
+    fn pure_request_projections_do_not_create_missing_audit_log_parent_directories() {
         let workspace = tempdir().expect("create temp workspace");
         let audit_path = canonical_test_root(&workspace)
             .join("logs")
@@ -1401,11 +1454,53 @@ mod tests {
             workspace.path(),
         );
 
+        let resolution = gateway.resolve_request(&request);
+        assert!(Path::new(&resolution.program).is_absolute());
+        assert!(
+            !audit_path.exists(),
+            "resolve_request must stay side-effect free"
+        );
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
+        assert!(!audit_path.exists(), "evaluate must stay side-effect free");
+
         let event = gateway.preflight(&request).expect("preflight should pass");
         assert_eq!(event.decision, ExecDecision::Run);
+        assert!(!audit_path.exists(), "preflight must stay side-effect free");
+    }
+
+    #[test]
+    fn execute_creates_missing_audit_log_parent_directories() {
+        let workspace = tempdir().expect("create temp workspace");
+        let audit_path = canonical_test_root(&workspace)
+            .join("logs")
+            .join("audit")
+            .join("gateway.jsonl");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                audit_log_path: Some(audit_path.clone()),
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let request = ExecRequest::new(
+            dummy_program(),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        );
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Run);
+        let status = result.expect("execute should still succeed");
+        assert!(status.success(), "unexpected status: {status}");
         assert!(
             audit_path.exists(),
-            "audit file should be created during preflight"
+            "execute should prepare and write the audit file"
         );
     }
 
@@ -1544,6 +1639,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn denies_non_mutating_for_non_allowlisted_program() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            resolved_non_mutating_program_path(),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("non_mutating_requires_allowlisted_program")
+        );
+    }
+
+    #[test]
+    fn allows_non_mutating_for_explicitly_allowlisted_program_path() {
+        let program = resolved_non_mutating_program_path();
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
+    }
+
     #[cfg(unix)]
     #[test]
     fn prepared_allowlisted_program_rejects_in_place_content_change() {
@@ -1614,6 +1755,35 @@ mod tests {
     }
 
     #[test]
+    fn denies_non_mutating_for_bare_program_even_when_same_name_is_allowlisted() {
+        let resolved_program = resolved_non_mutating_program_path();
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec![resolved_program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            non_mutating_program(),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("non_mutating_requires_allowlisted_program")
+        );
+    }
+
+    #[test]
     fn denies_mutation_for_explicit_path_that_only_matches_allowlisted_basename() {
         let policy = GatewayPolicy {
             mutating_program_allowlist: vec!["omne-fs".to_string()],
@@ -1660,7 +1830,7 @@ mod tests {
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(
             event.reason.as_deref(),
-            Some("opaque_command_requires_allowlisted_program")
+            Some("opaque_command_requires_declared_mutation")
         );
     }
 
@@ -1776,7 +1946,7 @@ mod tests {
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(
             event.reason.as_deref(),
-            Some("opaque_command_requires_allowlisted_program")
+            Some("opaque_command_requires_declared_mutation")
         );
     }
 
@@ -2071,6 +2241,7 @@ mod tests {
     fn prepare_command_denies_mismatched_command_identity() {
         let policy = GatewayPolicy {
             allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2350,6 +2521,7 @@ mod tests {
         let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
         let policy = GatewayPolicy {
             allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
             audit_log_path: Some(audit_path.clone()),
             ..GatewayPolicy::default()
         };

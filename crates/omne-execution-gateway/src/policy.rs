@@ -15,6 +15,7 @@ pub struct GatewayPolicy {
     pub allow_isolation_none: bool,
     pub enforce_allowlisted_program_for_mutation: bool,
     pub mutating_program_allowlist: Vec<String>,
+    pub non_mutating_program_allowlist: Vec<String>,
     pub default_isolation: ExecutionIsolation,
     pub audit_log_path: Option<PathBuf>,
 }
@@ -25,6 +26,7 @@ impl Default for GatewayPolicy {
             allow_isolation_none: false,
             enforce_allowlisted_program_for_mutation: true,
             mutating_program_allowlist: Vec::new(),
+            non_mutating_program_allowlist: Vec::new(),
             default_isolation: ExecutionIsolation::BestEffort,
             audit_log_path: None,
         }
@@ -37,10 +39,22 @@ impl GatewayPolicy {
     }
 
     pub fn is_mutating_program_allowlisted_path(&self, program: &Path) -> bool {
+        self.is_program_allowlisted_path(&self.mutating_program_allowlist, program)
+    }
+
+    pub fn is_non_mutating_program_allowlisted(&self, program: &str) -> bool {
+        self.is_non_mutating_program_allowlisted_path(Path::new(program))
+    }
+
+    pub fn is_non_mutating_program_allowlisted_path(&self, program: &Path) -> bool {
+        self.is_program_allowlisted_path(&self.non_mutating_program_allowlist, program)
+    }
+
+    fn is_program_allowlisted_path(&self, allowlist: &[String], program: &Path) -> bool {
         if !is_explicit_program_path(program) {
             return false;
         }
-        self.mutating_program_allowlist
+        allowlist
             .iter()
             .any(|item| is_explicit_program_path(item) && program_path_matches(item, program))
     }
@@ -153,6 +167,7 @@ mod tests {
         assert!(!policy.allow_isolation_none);
         assert!(policy.enforce_allowlisted_program_for_mutation);
         assert!(policy.mutating_program_allowlist.is_empty());
+        assert!(policy.non_mutating_program_allowlist.is_empty());
     }
 
     #[test]
@@ -184,6 +199,17 @@ mod tests {
         assert!(!policy.is_mutating_program_allowlisted("/tmp/omne-fs"));
     }
 
+    #[test]
+    fn explicit_path_non_mutating_allowlist_requires_exact_path_match() {
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec!["/usr/local/bin/echo".to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(policy.is_non_mutating_program_allowlisted("/usr/local/bin/echo"));
+        assert!(!policy.is_non_mutating_program_allowlisted("/tmp/echo"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn explicit_path_allowlist_matches_same_binary_identity_via_symlink_alias() {
@@ -205,6 +231,25 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn explicit_path_non_mutating_allowlist_matches_same_binary_identity_via_symlink_alias() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("echo");
+        let alias = dir.path().join("echo-link");
+        fs::write(&target, b"#!/bin/sh\nexit 0\n").expect("write tool");
+        symlink(&target, &alias).expect("create symlink alias");
+
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec![target.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(policy.is_non_mutating_program_allowlisted(&alias.display().to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn non_utf8_explicit_path_is_not_allowlisted_via_lossy_text() {
         let dir = tempdir().expect("tempdir");
         let program = dir.path().join(OsString::from_vec(vec![0x66, 0x6f, 0x80]));
@@ -215,6 +260,7 @@ mod tests {
         };
 
         assert!(!policy.is_mutating_program_allowlisted_path(&program));
+        assert!(!policy.is_non_mutating_program_allowlisted_path(&program));
     }
 
     #[cfg(windows)]
@@ -249,6 +295,7 @@ mod tests {
                 "allow_isolation_none": false,
                 "enforce_allowlisted_program_for_mutation": true,
                 "mutating_program_allowlist": ["C:/tools/omne-fs"],
+                "non_mutating_program_allowlist": ["C:/tools/echo"],
                 "default_isolation": "best_effort",
                 "unexpected_field": true
             }"#,
@@ -308,6 +355,7 @@ mod tests {
                 "allow_isolation_none": false,
                 "enforce_allowlisted_program_for_mutation": true,
                 "mutating_program_allowlist": [],
+                "non_mutating_program_allowlist": [],
                 "default_isolation": "best_effort"
             }"#,
         )

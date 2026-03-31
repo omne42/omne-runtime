@@ -15,6 +15,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
   "allow_isolation_none": true,
   "enforce_allowlisted_program_for_mutation": true,
   "mutating_program_allowlist": ["/usr/local/bin/omne-fs"],
+  "non_mutating_program_allowlist": ["/usr/bin/echo"],
   "default_isolation": "best_effort",
   "audit_log_path": "/tmp/omne_exec_audit.jsonl"
 }
@@ -24,7 +25,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 
 ```json
 {
-  "program": "echo",
+  "program": "/usr/bin/echo",
   "args": ["hello-from-omne-execution"],
   "cwd": ".",
   "workspace_root": ".",
@@ -40,8 +41,11 @@ Unknown request fields are rejected fail-closed instead of being ignored.
 `request.json` must be a bounded regular file; symlink, special-file, and oversized inputs are rejected fail-closed.
 When `program` matches `mutating_program_allowlist`, the gateway requires
 `declared_mutation = true`; declared mutations still must use an allowlisted explicit path.
+When `declared_mutation = false`, the request must likewise use an explicit path from
+`non_mutating_program_allowlist`; unknown tools can no longer self-label as read-only and bypass
+the mutation boundary.
 Bare program names are denied fail-closed for mutation authorization, even if a same-name string
-appears in `mutating_program_allowlist`.
+appears in either allowlist.
 For ordinary execution, bare program names are resolved to an absolute executable path during
 preflight; if lookup cannot be bound to a concrete executable, the request fails closed instead of
 passing an unresolved name through to `spawn()`.
@@ -53,6 +57,8 @@ mutation intent.
 Known mutating tool families such as `git`, `make`, package managers, and core file-mutating
 utilities are also denied when callers set `"declared_mutation": false`; to run them, callers must
 declare mutation and use an explicitly allowlisted executable path.
+`request_resolution`, `event`, and the pure evaluation methods stay side-effect free; the gateway
+only creates the audit parent chain during `execute()` / `prepare_command()`.
 
 ## Output Schema
 
