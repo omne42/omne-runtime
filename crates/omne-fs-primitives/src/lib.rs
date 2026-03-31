@@ -17,7 +17,9 @@ mod path_identity;
 mod platform_open;
 mod read_limited;
 
-pub use advisory_lock::{AdvisoryLockGuard, lock_advisory_file_in_ambient_root};
+pub use advisory_lock::{
+    AdvisoryLockGuard, lock_advisory_file_in_ambient_root, lock_advisory_file_in_root,
+};
 pub use atomic_write::{
     AtomicDirectoryError, AtomicDirectoryOptions, AtomicWriteError, AtomicWriteOptions,
     StagedAtomicDirectory, StagedAtomicFile, stage_directory_atomically, stage_file_atomically,

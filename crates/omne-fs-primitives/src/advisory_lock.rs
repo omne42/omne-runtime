@@ -5,6 +5,7 @@ use fs2::FileExt;
 
 use crate::{
     Dir, MissingRootPolicy, create_regular_file_at, open_ambient_root, open_regular_file_at,
+    open_root,
 };
 
 #[derive(Debug)]
@@ -24,7 +25,6 @@ pub fn lock_advisory_file_in_ambient_root(
     file_name: &Path,
     file_label: &str,
 ) -> io::Result<AdvisoryLockGuard> {
-    let file_name = validate_single_file_name(file_name, file_label)?;
     let directory = open_ambient_root(
         root,
         root_label,
@@ -36,16 +36,45 @@ pub fn lock_advisory_file_in_ambient_root(
     .map(|root| root.into_dir())
     .ok_or_else(|| io::Error::other(format!("{root_label} could not be created")))?;
 
-    let file = match create_regular_file_at(&directory, file_name) {
+    lock_advisory_file_in_directory(&directory, file_name, file_label)
+}
+
+pub fn lock_advisory_file_in_root(
+    root: &Path,
+    root_label: &str,
+    file_name: &Path,
+    file_label: &str,
+) -> io::Result<AdvisoryLockGuard> {
+    let directory = open_root(
+        root,
+        root_label,
+        MissingRootPolicy::Create,
+        |directory, component, _, error| {
+            map_root_component_error(directory, component, error, root_label)
+        },
+    )?
+    .map(|root| root.into_dir())
+    .ok_or_else(|| io::Error::other(format!("{root_label} could not be created")))?;
+
+    lock_advisory_file_in_directory(&directory, file_name, file_label)
+}
+
+fn lock_advisory_file_in_directory(
+    directory: &Dir,
+    file_name: &Path,
+    file_label: &str,
+) -> io::Result<AdvisoryLockGuard> {
+    let file_name = validate_single_file_name(file_name, file_label)?;
+    let file = match create_regular_file_at(directory, file_name) {
         Ok(file) => file.into_std(),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            open_regular_file_at(&directory, file_name)
+            open_regular_file_at(directory, file_name)
                 .map(|file| file.into_std())
-                .map_err(|error| map_regular_file_error(&directory, file_name, error, file_label))?
+                .map_err(|error| map_regular_file_error(directory, file_name, error, file_label))?
         }
         Err(error) => {
             return Err(map_regular_file_error(
-                &directory, file_name, error, file_label,
+                directory, file_name, error, file_label,
             ));
         }
     };
@@ -179,6 +208,27 @@ mod tests {
         .expect_err("symlinked root should fail");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_advisory_file_in_root_rejects_symlinked_existing_ancestor() {
+        let temp = TempDir::new().expect("temp dir");
+        let outside = temp.path().join("outside");
+        let linked_parent = temp.path().join("linked-parent");
+        fs::create_dir_all(&outside).expect("mkdir outside");
+        symlink(&outside, &linked_parent).expect("symlink parent");
+
+        let error = lock_advisory_file_in_root(
+            &linked_parent.join("locks"),
+            "lock namespace",
+            Path::new("catalog.lock"),
+            "lock file",
+        )
+        .expect_err("symlinked ancestor should fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(!outside.join("locks").join("catalog.lock").exists());
     }
 
     #[cfg(unix)]
