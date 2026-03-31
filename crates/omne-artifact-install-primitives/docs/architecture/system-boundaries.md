@@ -18,6 +18,7 @@
 - 在 Unix 上把 zip symlink 条目按 symlink 语义物化，并对 symlink target 读取施加独立长度上限；非 Unix 平台遇到 zip symlink 条目时 fail-closed。
 - 对 tar hard link 条目允许目标成员晚于 link 条目出现，只要最终目标仍解析到 staging 目录内的 regular file。
 - 候选来源只记录调用方给定的 `source_label`，不把 `gateway|canonical|mirror` 之类产品来源枚举硬编码进 primitive contract。
+- 对聚合后的 install-phase 失败，只在所有 install 尝试都指向同一类 runtime 原因时才保留结构化 detail；这样调用方可以基于稳定 error signal 决定是否重试，而不用依赖错误文案。
 
 ## 不负责什么
 

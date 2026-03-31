@@ -2,7 +2,8 @@ use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use omne_archive_primitives::{
-    ArchiveBinaryMatch, BinaryArchiveRequest, extract_binary_from_archive_reader_to_writer,
+    ArchiveBinaryMatch, BinaryArchiveRequest, ExtractBinaryFromArchiveError,
+    extract_binary_from_archive_reader_to_writer,
 };
 use omne_fs_primitives::{
     AtomicWriteOptions, stage_file_atomically, stage_file_atomically_with_name,
@@ -10,8 +11,8 @@ use omne_fs_primitives::{
 use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 
 use crate::artifact_download::{
-    ArtifactDownloadCandidate, ArtifactInstallError, candidate_failure_message,
-    download_candidate_to_writer_with_options, failed_candidates_error,
+    ArtifactDownloadCandidate, ArtifactInstallError, ArtifactInstallErrorDetail,
+    candidate_failure_message, download_candidate_to_writer_with_options, failed_candidates_error,
 };
 use crate::install_lock::lock_install_destination;
 
@@ -197,11 +198,25 @@ where
         },
         staged.file_mut(),
     )
-    .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    .map_err(artifact_install_error_from_extract_error)?;
     staged
         .commit()
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     Ok(matched)
+}
+
+fn artifact_install_error_from_extract_error(
+    err: ExtractBinaryFromArchiveError,
+) -> ArtifactInstallError {
+    match err {
+        ExtractBinaryFromArchiveError::BinaryNotFound { .. } => {
+            ArtifactInstallError::install_with_detail(
+                ArtifactInstallErrorDetail::ArchiveBinaryNotFound,
+                err.to_string(),
+            )
+        }
+        _ => ArtifactInstallError::install(err.to_string()),
+    }
 }
 
 fn lock_binary_install_destination(
@@ -278,11 +293,15 @@ mod tests {
     use omne_fs_primitives::lock_advisory_file_in_ambient_root;
     use omne_integrity_primitives::hash_sha256;
 
-    use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactInstallError};
+    use crate::artifact_download::{
+        ArtifactDownloadCandidate, ArtifactInstallError, ArtifactInstallErrorDetail,
+        ArtifactInstallErrorKind,
+    };
 
     use super::{
         BinaryArchiveInstallRequest, DownloadBinaryRequest, binary_install_lock_file_name,
         download_and_install_binary_from_archive, download_binary_to_destination,
+        install_binary_from_archive,
     };
 
     fn canonical_test_root(dir: &tempfile::TempDir) -> PathBuf {
@@ -442,6 +461,32 @@ mod tests {
         assert_eq!(std::fs::read(&destination)?, b"good-binary");
 
         handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[test]
+    fn archive_binary_not_found_preserves_structured_install_detail() -> Result<(), Box<dyn Error>>
+    {
+        let asset_name = "demo.zip";
+        let archive = make_zip_archive(&[("demo/bin/other", b"other-binary", 0o755)])?;
+        let temp = tempfile::tempdir()?;
+        let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let destination = canonical_test_root(&temp).join(&binary_name);
+
+        let err = install_binary_from_archive(
+            asset_name,
+            &archive,
+            &binary_name,
+            &destination,
+            Some("demo/bin/demo"),
+        )
+        .expect_err("missing binary should fail");
+
+        assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
+        assert_eq!(
+            err.detail(),
+            Some(ArtifactInstallErrorDetail::ArchiveBinaryNotFound)
+        );
         Ok(())
     }
 
