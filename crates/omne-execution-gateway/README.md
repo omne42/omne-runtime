@@ -15,7 +15,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed if requested isolation exceeds host support
 - fail-closed if a request marked as `policy_default` no longer matches the gateway's current policy default
 - fail-closed if `program` is neither a bare command name nor an absolute path
-- explicit absolute `program` paths are bound as file identities and revalidated immediately before spawn; this narrows but cannot eliminate the final OS-level race between the last check and `exec`
+- explicit absolute `program` paths must already resolve to spawnable executables, are bound as file identities, and are revalidated immediately before spawn; this narrows but cannot eliminate the final OS-level race between the last check and `exec`
 - bare command names are resolved to an absolute executable path during preflight, rebound as an executable identity, and rejected fail-closed if lookup cannot be bound
 - workspace boundary enforcement (`cwd` must stay inside `workspace_root`, and execution binds canonicalized directory identities before spawn)
 - explicit mutation declaration for every request when mutation enforcement is enabled

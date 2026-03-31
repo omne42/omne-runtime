@@ -7,6 +7,7 @@
 - retry appendable audit-log file opens when concurrent first-writer creation briefly reports `ENOENT`, so JSONL audit writes stay stable on macOS and other sensitive filesystems
 - require `declared_mutation=false` requests to bind an explicit executable from `non_mutating_program_allowlist`; unknown tools can no longer bypass mutation policy just by self-labeling as read-only
 - resolve bare command names to absolute executable identities before execution, fail closed when lookup cannot be bound, and require `prepare_command()` callers to pass the same resolved executable path instead of an unresolved bare `Command`
+- reject explicit program paths that are not spawnable executables, and replace Unix test-only `/bin/sh` assumptions with runtime shell resolution so package tests stay portable across minimal hosts
 - include `event.args` plus exact `program_exact` / `args_exact` JSON encodings so audit logs and CLI output preserve non-UTF-8 argv without relying on lossy replacement characters
 - include explicit request `env` plus exact `env_exact` JSON encodings, and clear inherited process state so `execute()` / `prepare_command()` only spawn with the audited request environment
 - harden audit-log parent creation so missing intermediate directories are created one component at a time with symlink checks instead of ambient `create_dir_all`
