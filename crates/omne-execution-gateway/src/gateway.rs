@@ -1266,7 +1266,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn preserves_requested_symlink_program_paths_in_events() {
-        use std::os::unix::fs::PermissionsExt;
         use std::os::unix::fs::symlink;
 
         let policy = GatewayPolicy {
@@ -2297,8 +2296,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn prepared_command_fails_closed_when_program_identity_changes_before_spawn() {
-        use std::os::unix::fs::PermissionsExt;
-
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             enforce_allowlisted_program_for_mutation: false,
@@ -2829,6 +2826,19 @@ mod tests {
         let mut permissions = fs::metadata(path).expect("metadata").permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).expect("set permissions");
+    }
+
+    #[cfg(unix)]
+    fn write_unix_shell_executable(path: &Path, body: &str) {
+        write_unix_executable(
+            path,
+            &format!("#!{}\n{body}", dummy_program_absolute_path().display()),
+        );
+    }
+
+    #[cfg(unix)]
+    fn write_test_executable_placeholder(path: &Path) {
+        write_unix_shell_executable(path, "exit 0\n");
     }
 
     fn host_supported_test_isolation() -> ExecutionIsolation {
