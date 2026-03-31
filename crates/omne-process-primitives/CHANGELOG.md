@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- make Linux process-tree cleanup fail closed when the leader has already exited before cleanup
+  capture can read a `/proc` identity snapshot, instead of arming orphan-group cleanup on a bare
+  PGID
 - resolve bare direct commands to a concrete executable path before spawn, so request-scoped `PATH`
   probing, execution, and `CommandNotFound` classification stay consistent and missing
   interpreters/loaders are not mislabeled as missing commands
