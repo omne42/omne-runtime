@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::fmt;
+use std::future::Future;
 use std::io::Write;
+use std::pin::Pin;
 
 use http_kit::write_response_body_limited;
 
@@ -92,29 +94,76 @@ impl fmt::Display for ArtifactInstallError {
 
 impl std::error::Error for ArtifactInstallError {}
 
-pub(crate) async fn download_candidate_to_writer_with_options<W>(
-    client: &reqwest::Client,
+pub type ArtifactDownloadFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), ArtifactInstallError>> + Send + 'a>>;
+
+pub trait ArtifactDownloader {
+    fn download_to_writer<'a, W>(
+        &'a self,
+        candidate: &'a ArtifactDownloadCandidate,
+        writer: &'a mut W,
+        max_bytes: Option<u64>,
+    ) -> ArtifactDownloadFuture<'a>
+    where
+        W: Write + Send + ?Sized + 'a;
+}
+
+impl ArtifactDownloader for reqwest::Client {
+    fn download_to_writer<'a, W>(
+        &'a self,
+        candidate: &'a ArtifactDownloadCandidate,
+        writer: &'a mut W,
+        max_bytes: Option<u64>,
+    ) -> ArtifactDownloadFuture<'a>
+    where
+        W: Write + Send + ?Sized + 'a,
+    {
+        Box::pin(async move {
+            let response = self
+                .get(&candidate.url)
+                .send()
+                .await
+                .map_err(|err| ArtifactInstallError::download(err.to_string()))?;
+            if !response.status().is_success() {
+                return Err(ArtifactInstallError::download(format!(
+                    "HTTP {}",
+                    response.status()
+                )));
+            }
+            write_response_body_limited(response, writer, max_bytes)
+                .await
+                .map_err(|err| ArtifactInstallError::download(err.to_string()))
+        })
+    }
+}
+
+impl ArtifactDownloader for http_kit::HttpClientProfile {
+    fn download_to_writer<'a, W>(
+        &'a self,
+        candidate: &'a ArtifactDownloadCandidate,
+        writer: &'a mut W,
+        max_bytes: Option<u64>,
+    ) -> ArtifactDownloadFuture<'a>
+    where
+        W: Write + Send + ?Sized + 'a,
+    {
+        ArtifactDownloader::download_to_writer(self.client(), candidate, writer, max_bytes)
+    }
+}
+
+pub(crate) async fn download_candidate_to_writer_with_options<D, W>(
+    downloader: &D,
     candidate: &ArtifactDownloadCandidate,
     writer: &mut W,
     max_bytes: Option<u64>,
 ) -> Result<(), ArtifactInstallError>
 where
-    W: Write + ?Sized,
+    D: ArtifactDownloader + ?Sized,
+    W: Write + Send + ?Sized,
 {
-    let response = client
-        .get(&candidate.url)
-        .send()
+    downloader
+        .download_to_writer(candidate, writer, max_bytes)
         .await
-        .map_err(|err| ArtifactInstallError::download(err.to_string()))?;
-    if !response.status().is_success() {
-        return Err(ArtifactInstallError::download(format!(
-            "HTTP {}",
-            response.status()
-        )));
-    }
-    write_response_body_limited(response, writer, max_bytes)
-        .await
-        .map_err(|err| ArtifactInstallError::download(err.to_string()))
 }
 
 pub(crate) fn candidate_failure_message(
