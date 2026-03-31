@@ -842,6 +842,43 @@ mod tests {
         assert!(collected_env.is_empty());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn sudo_command_uses_trusted_target_path_instead_of_request_path_shadow() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let package_manager = ["apt-get", "dnf", "yum", "apk", "pacman", "zypper"]
+            .into_iter()
+            .find_map(|name| {
+                resolve_host_system_package_manager_path(OsStr::new(name))
+                    .map(|resolved| (name, resolved))
+            });
+        let Some((package_manager, resolved_path)) = package_manager else {
+            return;
+        };
+
+        let shadowed_program = write_test_command(temp.path(), package_manager);
+        let env = vec![(
+            OsString::from("PATH"),
+            temp.path().as_os_str().to_os_string(),
+        )];
+        let request = HostCommandRequest {
+            program: OsStr::new(package_manager),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let command = build_command(&request, HostCommandExecution::Sudo);
+        let target = command
+            .get_args()
+            .last()
+            .expect("sudo target should be present");
+
+        assert_ne!(Path::new(target), shadowed_program.as_path());
+        assert_eq!(Path::new(target), resolved_path.as_path());
+    }
+
     #[test]
     fn direct_command_keeps_explicit_environment_on_spawned_process() {
         let env = vec![(OsString::from("OMNE_TEST_VALUE"), OsString::from("world"))];
@@ -1208,7 +1245,7 @@ mod tests {
     #[test]
     fn run_host_command_returns_after_direct_child_exit_even_when_background_keeps_stdout_open() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let command_path = write_background_writer_command(temp.path(), "daemonize");
+        let command_path = write_background_writer_command(temp.path(), "daemonize", "stdout");
         let request = HostCommandRequest {
             program: command_path.as_os_str(),
             args: &[],
@@ -1227,6 +1264,32 @@ mod tests {
         assert!(output.output.status.success());
         let stdout = String::from_utf8_lossy(&output.output.stdout);
         assert!(stdout.contains("parent-ready"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_host_command_returns_after_direct_child_exit_even_when_background_keeps_stderr_open() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path =
+            write_background_writer_command(temp.path(), "daemonize-stderr", "stderr");
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let started = std::time::Instant::now();
+        let output = run_host_command(&request).expect("run host command");
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "background descendants must not keep run_host_command blocked"
+        );
+        assert!(output.output.status.success());
+        let stderr = String::from_utf8_lossy(&output.output.stderr);
+        assert!(stderr.contains("parent-ready"));
     }
 
     #[cfg(unix)]
@@ -1422,12 +1485,13 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn write_background_writer_command(dir: &Path, name: &str) -> PathBuf {
-        write_shell_executable(
-            dir,
-            name,
-            "(sleep 2; printf 'late-child\\n') &\nprintf 'parent-ready\\n'\n",
-        )
+    fn write_background_writer_command(dir: &Path, name: &str, stream: &str) -> PathBuf {
+        let body = match stream {
+            "stdout" => "(sleep 2; printf 'late-child\\n') &\nprintf 'parent-ready\\n'\n",
+            "stderr" => "(sleep 2; printf 'late-child\\n' >&2) &\nprintf 'parent-ready\\n' >&2\n",
+            other => panic!("unexpected background stream: {other}"),
+        };
+        write_shell_executable(dir, name, body)
     }
 
     #[cfg(unix)]
