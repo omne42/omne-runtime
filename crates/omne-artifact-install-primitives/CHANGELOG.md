@@ -14,3 +14,4 @@
 - replace public `reqwest::Client` parameters with a narrow `ArtifactDownloader` contract, while keeping built-in integrations for `reqwest::Client` and `http-kit::HttpClientProfile`
 - replace the hard-coded `ArtifactDownloadCandidateKind` enum with caller-defined `source_label` strings so candidate provenance stays product-agnostic
 - move checksum verification, archive extraction, and staged commit work onto Tokio blocking threads so the async install APIs stop monopolizing runtime workers during heavy local install phases
+- add regression coverage that product-specific archive layouts only install via exact `archive_binary_hint`, so archive selection cannot drift back to extra product fields or hidden fallbacks
