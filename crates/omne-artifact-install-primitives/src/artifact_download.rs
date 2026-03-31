@@ -161,6 +161,13 @@ pub(crate) fn failed_candidates_error(
     }
 }
 
+pub(crate) fn no_candidates_error(canonical_url: &str) -> ArtifactInstallError {
+    ArtifactInstallError::download(format!(
+        "artifact install requires at least one download candidate for {}",
+        redact_url_for_error(canonical_url)
+    ))
+}
+
 fn redact_url_for_error(raw: &str) -> String {
     let Ok(mut url) = reqwest::Url::parse(raw) else {
         return "<invalid-url>".to_string();
@@ -198,6 +205,7 @@ mod tests {
     use super::{
         ArtifactDownloadCandidate, ArtifactInstallError, ArtifactInstallErrorDetail,
         ArtifactInstallErrorKind, candidate_failure_message, failed_candidates_error,
+        no_candidates_error,
     };
 
     #[test]
@@ -371,5 +379,20 @@ mod tests {
 
         assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
         assert_eq!(err.detail(), None);
+    }
+
+    #[test]
+    fn no_candidates_error_reports_missing_candidate_list() {
+        let err = no_candidates_error("https://token@example.invalid/demo.zip?sig=secret");
+
+        assert_eq!(err.kind(), ArtifactInstallErrorKind::Download);
+        assert!(
+            err.to_string()
+                .contains("requires at least one download candidate"),
+            "unexpected message: {err}"
+        );
+        assert!(err.to_string().contains("https://example.invalid/demo.zip"));
+        assert!(!err.to_string().contains("token@"));
+        assert!(!err.to_string().contains("sig=secret"));
     }
 }

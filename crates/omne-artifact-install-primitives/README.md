@@ -12,6 +12,7 @@ Reusable artifact download and install primitives shared by higher-level callers
 ## Scope
 
 - ordered artifact download candidate execution
+- empty candidate lists fail fast as caller-input errors instead of being misreported as download retries that all failed
 - optional SHA-256 verification for downloaded artifacts
 - direct binary artifact atomic installation, serialized per destination during the install/commit phase
 - binary-from-archive installation with the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget
