@@ -159,6 +159,8 @@ mod tests {
     };
     #[cfg(unix)]
     use std::ffi::OsStr;
+    #[cfg(unix)]
+    use std::path::PathBuf;
 
     #[test]
     fn missing_command_returns_none() {
@@ -180,7 +182,8 @@ mod tests {
 
         let temp = tempfile::tempdir().expect("tempdir");
         let executable = temp.path().join("tool");
-        std::fs::write(&executable, "#!/bin/sh\n").expect("write executable");
+        std::fs::write(&executable, format!("#!{}\n", test_shell_path().display()))
+            .expect("write executable");
         let mut executable_permissions = std::fs::metadata(&executable)
             .expect("stat executable")
             .permissions();
@@ -237,5 +240,10 @@ mod tests {
 
         assert!(is_regular_command_path(&plain_file));
         assert!(!is_spawnable_command_path(&plain_file));
+    }
+
+    #[cfg(unix)]
+    fn test_shell_path() -> PathBuf {
+        resolve_command_path_or_standard_location("sh").expect("resolve test shell")
     }
 }
