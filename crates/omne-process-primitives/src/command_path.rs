@@ -73,7 +73,6 @@ pub(crate) fn is_spawnable_command_path(path: &Path) -> bool {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn is_regular_command_path(path: &Path) -> bool {
     path.is_file()
 }
