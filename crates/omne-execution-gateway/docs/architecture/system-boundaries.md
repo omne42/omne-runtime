@@ -15,6 +15,7 @@
 - gateway 自己管理的 spawn 路径会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端。
 - 平台 sandbox 编排与 runtime 观测。
 - 结构化审计事件和日志输出，包括可读的 lossy `program` / `args` / `env` 字段，以及面向机器恢复的 exact OS-string 编码字段。allowlist、opaque launcher 和 known mutator 门控本身继续保持在原生 `OsStr` / `Path` 边界，不先把请求收窄成 lossy UTF-8。
+- policy / request / audit log 的 bounded regular-file 读取与 appendable-file 校验现在直接复用 `omne-fs-primitives` 的 ambient-root no-follow helper，而不是在 gateway 本地复制一套文件系统原语。
 
 当前平台语义补充：
 
@@ -29,7 +30,7 @@
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，已知高风险 mutator/toolchain（例如 `git`、`make`、包管理器和核心文件变更命令）以及 opaque launcher/interpreter（例如 `sh`、`python`、`node`）不能宣称 `declared_mutation=false`；调用方必须显式声明 mutation 并跨过 mutating allowlist 边界。
 - Windows 上命令路径和 workspace 边界比较按平台语义做大小写不敏感处理，不要求调用方传入与文件系统完全同大小写的字面量。
 - `GatewayPolicy::load_json()` 只接受通过 descriptor-backed 祖先目录 no-follow walk 打开的 regular file；祖先 symlink/reparse point、目录或其他特殊文件都会 fail-closed 拒绝。
-- `omne-execution` CLI 的 `request.json` 也只接受同样的 bounded no-follow regular file 输入，避免通过祖先 symlink、特殊文件或超大输入把 CLI 边界退化成非确定性文件读取。
+- `omne-execution` CLI 的 `request.json` 也只接受同样的 bounded no-follow regular file 输入，避免通过祖先 symlink、特殊文件或超大输入把 CLI 边界退化成非确定性文件读取；其中 `program` / `args` / `env` 既可以用普通 UTF-8 JSON string，也可以用 exact OS-string 编码对象保留非 UTF-8 输入。
 - 缺失、不可访问或不是目录的 `cwd` 会被报告为 `cwd_invalid`，避免把普通输入/环境错误误记成 workspace 越界。
 - `ExecRequest` 的显式环境变量现在属于 request/audit 契约的一部分；`execute()` 和 `prepare_command()` 在 spawn 前都会清空继承环境，只注入 request 声明过的 env，避免调用方用未审计的 `PATH`、`LD_PRELOAD`、`PYTHONPATH` 等变量偷偷改变执行语义。
 - 配置了 `audit_log_path` 时，`evaluate()` / `resolve_request()` / `preflight()` 保持纯评估，不提前创建日志目录或文件；真正的 audit sink 准备只在 `execute()` / `prepare_command()` 前发生，并继续通过 descriptor-backed no-follow walk 拒绝祖先 symlink/reparse point 或其他不安全路径。
