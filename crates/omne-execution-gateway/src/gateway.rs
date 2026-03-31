@@ -2448,7 +2448,10 @@ mod tests {
             .expect("prepare command")
             .spawn()
             .expect("spawn prepared command");
-        assert!(child.stdin.is_none(), "prepared command should not inherit stdin");
+        assert!(
+            child.stdin.is_none(),
+            "prepared command should not inherit stdin"
+        );
         assert!(
             child.stdout.is_none(),
             "prepared command should not expose stdout capture handles"
