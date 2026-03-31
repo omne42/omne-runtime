@@ -40,22 +40,24 @@ require_no_conflict_markers() {
 }
 
 check_docs_conflict_markers() {
+  local paths_file
+  paths_file="$(mktemp)"
+  find "$root" \
+    \( -path "$root/.git" -o -path "$root/target" -o -path "$root/site" \) -prune -o \
+    -type f \
+    \( \
+      -path "$root/docs/*" -o \
+      -path "$root/crates/*/docs/*" -o \
+      -path "$root/README.md" -o \
+      -path "$root/AGENTS.md" -o \
+      -path "$root/crates/*/README.md" -o \
+      -path "$root/crates/*/AGENTS.md" \
+    \) \
+    -print0 >"$paths_file"
   while IFS= read -r -d '' path; do
     require_no_conflict_markers "$path"
-  done < <(
-    find "$root" \
-      \( -path "$root/.git" -o -path "$root/target" -o -path "$root/site" \) -prune -o \
-      -type f \
-      \( \
-        -path "$root/docs/*" -o \
-        -path "$root/crates/*/docs/*" -o \
-        -path "$root/README.md" -o \
-        -path "$root/AGENTS.md" -o \
-        -path "$root/crates/*/README.md" -o \
-        -path "$root/crates/*/AGENTS.md" \
-      \) \
-      -print0
-  )
+  done <"$paths_file"
+  rm -f "$paths_file"
 }
 
 check_crate_docs() {
