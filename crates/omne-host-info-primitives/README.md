@@ -13,8 +13,7 @@ Low-level host platform and target-triple primitives shared across callers.
 
 - host OS and architecture detection
 - canonical target-triple mapping, including fail-closed Linux `gnu` vs `musl` detection before a
-  default host triple is exposed, with filesystem fallbacks for standard libc loader paths when
-  command probes are unavailable
+  default host triple is exposed
 - target override normalization
 - home-directory resolution
 - executable suffix inference

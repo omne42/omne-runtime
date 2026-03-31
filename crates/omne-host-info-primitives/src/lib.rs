@@ -207,34 +207,7 @@ where
     F: Fn(&std::path::Path) -> bool,
     G: Fn(&str, &[&str]) -> Option<LinuxCommandOutput>,
 {
-    let musl_loader_paths = [
-        "/lib/ld-musl-x86_64.so.1",
-        "/lib/ld-musl-aarch64.so.1",
-        "/lib64/ld-musl-x86_64.so.1",
-        "/lib64/ld-musl-aarch64.so.1",
-        "/etc/alpine-release",
-    ];
-    if musl_loader_paths
-        .iter()
-        .any(|path| path_exists(std::path::Path::new(path)))
-    {
-        return Some(HostLinuxLibc::Musl);
-    }
-
-    let glibc_loader_paths = [
-        "/lib/ld-linux-x86-64.so.2",
-        "/lib64/ld-linux-x86-64.so.2",
-        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
-        "/lib/ld-linux-aarch64.so.1",
-        "/lib64/ld-linux-aarch64.so.1",
-        "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
-    ];
-    if glibc_loader_paths
-        .iter()
-        .any(|path| path_exists(std::path::Path::new(path)))
-    {
-        return Some(HostLinuxLibc::Gnu);
-    }
+    let _ = path_exists;
 
     if let Some(output) = run_command("getconf", &["GNU_LIBC_VERSION"])
         && output.status_success
@@ -386,12 +359,12 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_prefers_musl_filesystem_markers() {
+    fn detect_host_linux_libc_ignores_musl_filesystem_markers_without_runtime_evidence() {
         let libc = super::detect_host_linux_libc_with(
             &|path| path == std::path::Path::new("/etc/alpine-release"),
             &|_, _| None,
         );
-        assert_eq!(libc, Some(HostLinuxLibc::Musl));
+        assert_eq!(libc, None);
     }
 
     #[cfg(target_os = "linux")]
@@ -412,10 +385,19 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_uses_glibc_loader_paths_when_commands_are_unavailable() {
+    fn detect_host_linux_libc_ignores_musl_toolchain_files_when_getconf_reports_glibc() {
         let libc = super::detect_host_linux_libc_with(
-            &|path| path == std::path::Path::new("/lib64/ld-linux-x86-64.so.2"),
-            &|_, _| None,
+            &|path| path == std::path::Path::new("/lib/ld-musl-x86_64.so.1"),
+            &|program, _| {
+                if program == "getconf" {
+                    return Some(super::LinuxCommandOutput {
+                        status_success: true,
+                        stdout: "glibc 2.39\n".to_string(),
+                        stderr: String::new(),
+                    });
+                }
+                None
+            },
         );
         assert_eq!(libc, Some(HostLinuxLibc::Gnu));
     }
@@ -441,8 +423,11 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_rejects_unknown_linux_libc_when_no_markers_or_commands_match() {
-        let libc = super::detect_host_linux_libc_with(&|_| false, &|_, _| None);
+    fn detect_host_linux_libc_rejects_unknown_linux_libc_when_runtime_checks_fail() {
+        let libc = super::detect_host_linux_libc_with(
+            &|path| path == std::path::Path::new("/lib64/ld-linux-x86-64.so.2"),
+            &|_, _| None,
+        );
         assert_eq!(libc, None);
     }
 
