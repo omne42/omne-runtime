@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- add regression coverage proving `prepare_command()` discards caller-provided `stdin`
+  overrides, so hidden input handles cannot leak back across the gateway boundary
+- add regression coverage proving `prepare_command()` discards caller-provided `stdout`/`stderr`
+  overrides, so hidden stdio state cannot leak back across the gateway boundary
+- add regression coverage proving bare-command `ExecEvent` output stays bound to the resolved
+  absolute executable path instead of drifting back to the caller's unresolved token
 - rebuild `prepare_command()` results from the validated request instead of reusing the caller's original `Command`, so hidden pre-exec and other opaque process state cannot bypass the gateway boundary
 - bind audit-log writes to the appendable file handle opened during `execute()` / `prepare_command()`, so post-preflight path swaps cannot redirect the final record to a different sink
 - treat `/usr/bin/env`-style launcher indirection as opaque execution, so non-mutating requests cannot bypass the launcher gate through `env`

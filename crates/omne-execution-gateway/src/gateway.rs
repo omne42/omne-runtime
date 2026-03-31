@@ -2287,6 +2287,56 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn prepare_command_discards_preconfigured_stdio_overrides() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let program = dummy_program_absolute_path();
+        let request = ExecRequest::new(
+            &program,
+            vec!["-c", "exit 0"],
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+        let mut command = Command::new(&program);
+        command.args(["-c", "exit 0"]);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let mut child = result
+            .expect("prepare command")
+            .spawn()
+            .expect("spawn prepared command");
+
+        assert!(
+            child.stdin.is_none(),
+            "prepared command should discard caller stdin override"
+        );
+        assert!(
+            child.stdout.is_none(),
+            "prepared command should discard caller stdout override"
+        );
+        assert!(
+            child.stderr.is_none(),
+            "prepared command should discard caller stderr override"
+        );
+        let status = child.wait().expect("wait prepared command");
+        assert!(status.success(), "unexpected status: {status}");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn prepare_command_discards_preconfigured_arg0_override() {
         use std::os::unix::process::CommandExt;
 
@@ -2362,6 +2412,55 @@ mod tests {
             .expect("spawn prepared command without inherited process-group override")
             .wait()
             .expect("wait prepared command");
+        assert!(status.success(), "unexpected status: {status}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_command_discards_preconfigured_stdio_handles() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let program = dummy_program_absolute_path();
+        let request = ExecRequest::new(
+            &program,
+            vec!["-c", "exit 0"],
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+        let mut command = Command::new(&program);
+        command.args(["-c", "exit 0"]);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let mut child = result
+            .expect("prepare command")
+            .spawn()
+            .expect("spawn prepared command");
+        assert!(
+            child.stdin.is_none(),
+            "prepared command should not inherit stdin"
+        );
+        assert!(
+            child.stdout.is_none(),
+            "prepared command should not expose stdout capture handles"
+        );
+        assert!(
+            child.stderr.is_none(),
+            "prepared command should not expose stderr capture handles"
+        );
+        let status = child.wait().expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
     }
 
@@ -2604,6 +2703,32 @@ mod tests {
         let resolution = gateway.resolve_request(&request);
 
         assert_eq!(resolution.program, resolved_non_mutating_program_path());
+    }
+
+    #[test]
+    fn evaluate_resolves_bare_program_to_absolute_path_in_event() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            non_mutating_program(),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            host_supported_test_isolation(),
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+
+        assert_eq!(event.program, resolved_non_mutating_program_path());
     }
 
     #[cfg(unix)]
