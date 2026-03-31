@@ -11,7 +11,9 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
@@ -386,7 +388,9 @@ where
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
-    use std::path::{Path, PathBuf};
+    #[cfg(target_os = "linux")]
+    use std::path::Path;
+    use std::path::PathBuf;
 
     use super::{
         HostArchitecture, HostLinuxLibc, HostOperatingSystem, TargetTripleError,
