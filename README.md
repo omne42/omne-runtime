@@ -34,9 +34,10 @@ Each crate under `crates/` owns the same minimum documentation skeleton:
 - `docs/architecture/system-boundaries.md`
 - `docs/architecture/source-layout.md`
 
-Run `./scripts/check-docs-system.sh` to verify the workspace and crate documentation skeletons.
-The nested workspace package `crates/omne-fs/cli` stays documented through `crates/omne-fs/*`; it
-is a package inside the `omne-fs` boundary, not a tenth top-level capability crate.
+Run `./scripts/check-docs-system.sh` to verify the workspace documentation skeletons against the
+actual `Cargo.toml` member list. The nested workspace package `crates/omne-fs/cli` stays
+documented through `crates/omne-fs/*`; it is a package inside the `omne-fs` boundary, not a tenth
+top-level capability crate.
 
 Naming follows `omne-<capability>` so each crate name carries both product scope and boundary role at
 a glance. Public crate names avoid redundant prefixes and unclear jargon; established abbreviations

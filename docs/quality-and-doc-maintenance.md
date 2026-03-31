@@ -26,7 +26,8 @@ workspace 根必须具备：
 - `docs/architecture/system-boundaries.md`
 
 嵌套在某个 crate 边界里的 workspace package 继续复用父 crate 的文档系统；只有当它被提升为
-新的 sibling capability crate 时，才补自己的顶层文档骨架。
+新的 sibling capability crate 时，才补自己的顶层文档骨架。`scripts/check-docs-system.sh`
+会按 `Cargo.toml` 的真实 workspace members 校验这一点，而不是只扫顶层 `crates/*`。
 
 ## AGENTS 规则
 
@@ -45,6 +46,6 @@ workspace 根必须具备：
 
 ## 机械校验
 
-- 运行 `../scripts/check-docs-system.sh` 检查骨架、README 入口、`AGENTS.md` 长度，以及文档系统范围内残留的 git conflict marker。
+- 运行 `../scripts/check-docs-system.sh` 检查 workspace members 对应的文档骨架、README 入口、`AGENTS.md` 长度，以及文档系统范围内残留的 git conflict marker。
 - 文档变更至少运行一次该脚本。
 - 如涉及代码行为变化，再补对应 crate 的测试或 workspace 测试。
