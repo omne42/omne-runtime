@@ -33,9 +33,7 @@ impl Default for GatewayPolicy {
 }
 
 impl GatewayPolicy {
-    pub fn default_for_supported_isolation(
-        supported_isolation: ExecutionIsolation,
-    ) -> Self {
+    pub fn default_for_supported_isolation(supported_isolation: ExecutionIsolation) -> Self {
         let default_isolation = match supported_isolation {
             ExecutionIsolation::None => ExecutionIsolation::None,
             ExecutionIsolation::BestEffort | ExecutionIsolation::Strict => {
