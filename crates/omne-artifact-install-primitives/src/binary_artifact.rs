@@ -565,6 +565,47 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn archive_binary_install_requires_exact_hint_for_product_specific_layout(
+    ) -> Result<(), Box<dyn Error>> {
+        let asset_name = "MinGit-1.2.3-64-bit.zip";
+        let archive = make_zip_archive(&[("PortableGit/cmd/git.exe", b"MZ", 0o755)])?;
+        let temp = tempfile::tempdir()?;
+        let destination = canonical_test_root(&temp).join("git.exe");
+
+        let err = install_binary_from_archive(asset_name, &archive, "git.exe", &destination, None)
+            .expect_err("product-specific layout should require an explicit archive hint");
+
+        assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
+        assert_eq!(
+            err.detail(),
+            Some(ArtifactInstallErrorDetail::ArchiveBinaryNotFound)
+        );
+        assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn archive_binary_install_accepts_exact_hint_for_product_specific_layout(
+    ) -> Result<(), Box<dyn Error>> {
+        let asset_name = "MinGit-1.2.3-64-bit.zip";
+        let archive = make_zip_archive(&[("PortableGit/cmd/git.exe", b"MZ", 0o755)])?;
+        let temp = tempfile::tempdir()?;
+        let destination = canonical_test_root(&temp).join("git.exe");
+
+        let matched = install_binary_from_archive(
+            asset_name,
+            &archive,
+            "git.exe",
+            &destination,
+            Some("PortableGit/cmd/git.exe"),
+        )?;
+
+        assert_eq!(matched.archive_path, "PortableGit/cmd/git.exe");
+        assert_eq!(std::fs::read(&destination)?, b"MZ");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn direct_binary_install_serializes_same_destination() -> Result<(), Box<dyn Error>> {
         let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
