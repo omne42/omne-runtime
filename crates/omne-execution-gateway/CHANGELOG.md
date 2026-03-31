@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- keep `evaluate()` / `resolve_request()` / `preflight()` side-effect free by moving audit-sink preparation to `execute()` / `prepare_command()`, while still failing closed before unaudited execution when the sink is unavailable
+- require `declared_mutation=false` requests to bind an explicit executable from `non_mutating_program_allowlist`; unknown tools can no longer bypass mutation policy just by self-labeling as read-only
 - resolve bare command names to absolute executable identities before execution, fail closed when lookup cannot be bound, and require `prepare_command()` callers to pass the same resolved executable path instead of an unresolved bare `Command`
 - include `event.args` plus exact `program_exact` / `args_exact` JSON encodings so audit logs and CLI output preserve non-UTF-8 argv without relying on lossy replacement characters
 - include explicit request `env` plus exact `env_exact` JSON encodings, and clear inherited process state so `execute()` / `prepare_command()` only spawn with the audited request environment

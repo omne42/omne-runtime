@@ -51,6 +51,15 @@ impl AuditLogger {
             })
     }
 
+    pub(crate) fn validate_ready_without_side_effects(&self) -> ExecResult<()> {
+        path_guard::validate_appendable_regular_file_nofollow(&self.path, "audit log").map_err(
+            |err| ExecError::AuditLogUnavailable {
+                path: self.path.clone(),
+                detail: err.to_string(),
+            },
+        )
+    }
+
     fn write_record(&self, record: AuditRecord) -> ExecResult<()> {
         self.try_write_record(record)
             .map_err(|err| ExecError::AuditLogWriteFailed {

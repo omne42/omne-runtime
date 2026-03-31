@@ -100,6 +100,9 @@ that resolved executable path, and rejects unresolved bare-command `Command` val
 they are intentionally non-interactive and do not surface child output.
 `prepare_command()` only records preflight audit state; final exit auditing and runtime sandbox
 observation remain part of `execute()`, which still owns the complete child lifecycle.
+`resolve_request()`, `evaluate()`, and `preflight()` stay side-effect free even when
+`audit_log_path` is configured; audit-sink creation happens only on `execute()` /
+`prepare_command()`.
 
 ## CapabilityReport
 
@@ -145,9 +148,12 @@ Path: `omne_execution_gateway::GatewayPolicy`
 - `GatewayPolicy::default()`
 - `GatewayPolicy::load_json(path)`
 - `is_mutating_program_allowlisted(program)`
+- `is_non_mutating_program_allowlisted(program)`
 
 `is_mutating_program_allowlisted(program)` only authorizes explicit program paths, and it compares
 their resolved executable identity rather than basename text.
+`is_non_mutating_program_allowlisted(program)` applies the same explicit-path + executable-identity
+check for requests that declare `declared_mutation = false`.
 
 ## ExecError Variants
 
