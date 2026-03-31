@@ -10,6 +10,7 @@
 //! - inferring executable suffixes from target triples
 
 use std::ffi::OsString;
+use std::fmt;
 use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::process::Command;
@@ -93,6 +94,25 @@ impl HostPlatform {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetTripleError {
+    Empty,
+    Unsupported(String),
+}
+
+impl fmt::Display for TargetTripleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "target triple must not be empty"),
+            Self::Unsupported(target) => {
+                write!(f, "unsupported target triple: {target}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TargetTripleError {}
+
 #[cfg(windows)]
 const HOME_ENV_KEYS: &[&str] = &["HOME", "USERPROFILE"];
 #[cfg(not(windows))]
@@ -107,22 +127,27 @@ pub fn detect_host_target_triple() -> Option<&'static str> {
     detect_host_platform().map(HostPlatform::target_triple)
 }
 
-pub fn resolve_target_triple(override_target: Option<&str>, host_target_triple: &str) -> String {
+pub fn resolve_target_triple(
+    override_target: Option<&str>,
+    host_target_triple: &str,
+) -> Result<String, TargetTripleError> {
     if let Some(raw) = override_target {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
-            return trimmed.to_string();
+            return normalize_target_triple(trimmed).map(str::to_string);
         }
     }
-    host_target_triple.to_string()
+    normalize_target_triple(host_target_triple).map(str::to_string)
 }
 
-pub fn executable_suffix_for_target(target_triple: &str) -> &'static str {
-    if target_triple.contains("windows") {
-        ".exe"
-    } else {
-        ""
-    }
+pub fn executable_suffix_for_target(
+    target_triple: &str,
+) -> Result<&'static str, TargetTripleError> {
+    let platform = host_platform_from_target_triple(target_triple)?;
+    Ok(match platform.operating_system() {
+        HostOperatingSystem::Windows => ".exe",
+        HostOperatingSystem::Linux | HostOperatingSystem::Macos => "",
+    })
 }
 
 pub fn resolve_home_dir() -> Option<PathBuf> {
@@ -171,6 +196,77 @@ fn host_platform_from_parts(
             HostOperatingSystem::Macos | HostOperatingSystem::Windows => None,
         },
     })
+}
+
+fn host_platform_from_target_triple(
+    target_triple: &str,
+) -> Result<HostPlatform, TargetTripleError> {
+    let normalized = normalize_target_triple(target_triple)?;
+    match normalized {
+        "aarch64-apple-darwin" => Ok(HostPlatform {
+            os: HostOperatingSystem::Macos,
+            arch: HostArchitecture::Aarch64,
+            linux_libc: None,
+        }),
+        "x86_64-apple-darwin" => Ok(HostPlatform {
+            os: HostOperatingSystem::Macos,
+            arch: HostArchitecture::X86_64,
+            linux_libc: None,
+        }),
+        "aarch64-unknown-linux-gnu" => Ok(HostPlatform {
+            os: HostOperatingSystem::Linux,
+            arch: HostArchitecture::Aarch64,
+            linux_libc: Some(HostLinuxLibc::Gnu),
+        }),
+        "aarch64-unknown-linux-musl" => Ok(HostPlatform {
+            os: HostOperatingSystem::Linux,
+            arch: HostArchitecture::Aarch64,
+            linux_libc: Some(HostLinuxLibc::Musl),
+        }),
+        "x86_64-unknown-linux-gnu" => Ok(HostPlatform {
+            os: HostOperatingSystem::Linux,
+            arch: HostArchitecture::X86_64,
+            linux_libc: Some(HostLinuxLibc::Gnu),
+        }),
+        "x86_64-unknown-linux-musl" => Ok(HostPlatform {
+            os: HostOperatingSystem::Linux,
+            arch: HostArchitecture::X86_64,
+            linux_libc: Some(HostLinuxLibc::Musl),
+        }),
+        "aarch64-pc-windows-msvc" => Ok(HostPlatform {
+            os: HostOperatingSystem::Windows,
+            arch: HostArchitecture::Aarch64,
+            linux_libc: None,
+        }),
+        "x86_64-pc-windows-msvc" => Ok(HostPlatform {
+            os: HostOperatingSystem::Windows,
+            arch: HostArchitecture::X86_64,
+            linux_libc: None,
+        }),
+        other => Err(TargetTripleError::Unsupported(other.to_string())),
+    }
+}
+
+fn normalize_target_triple(raw: &str) -> Result<&str, TargetTripleError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(TargetTripleError::Empty);
+    }
+    host_platform_from_target_triple_text(trimmed)
+}
+
+fn host_platform_from_target_triple_text(target_triple: &str) -> Result<&str, TargetTripleError> {
+    match target_triple {
+        "aarch64-apple-darwin"
+        | "x86_64-apple-darwin"
+        | "aarch64-unknown-linux-gnu"
+        | "aarch64-unknown-linux-musl"
+        | "x86_64-unknown-linux-gnu"
+        | "x86_64-unknown-linux-musl"
+        | "aarch64-pc-windows-msvc"
+        | "x86_64-pc-windows-msvc" => Ok(target_triple),
+        other => Err(TargetTripleError::Unsupported(other.to_string())),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -254,9 +350,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        HostArchitecture, HostLinuxLibc, HostOperatingSystem, detect_host_target_triple,
-        executable_suffix_for_target, host_platform_from_parts, resolve_home_dir_with,
-        resolve_target_triple,
+        HostArchitecture, HostLinuxLibc, HostOperatingSystem, TargetTripleError,
+        detect_host_target_triple, executable_suffix_for_target, host_platform_from_parts,
+        resolve_home_dir_with, resolve_target_triple,
     };
 
     #[test]
@@ -297,12 +393,15 @@ mod tests {
     fn executable_suffix_matches_windows_and_unix_targets() {
         assert_eq!(
             executable_suffix_for_target("x86_64-pc-windows-msvc"),
-            ".exe"
+            Ok(".exe")
         );
-        assert_eq!(executable_suffix_for_target("x86_64-unknown-linux-gnu"), "");
+        assert_eq!(
+            executable_suffix_for_target("x86_64-unknown-linux-gnu"),
+            Ok("")
+        );
         assert_eq!(
             executable_suffix_for_target("x86_64-unknown-linux-musl"),
-            ""
+            Ok("")
         );
     }
 
@@ -310,11 +409,38 @@ mod tests {
     fn resolve_target_triple_prefers_trimmed_override() {
         assert_eq!(
             resolve_target_triple(Some("  custom-target  "), "x86_64-unknown-linux-gnu"),
-            "custom-target"
+            Err(TargetTripleError::Unsupported("custom-target".to_string()))
         );
         assert_eq!(
             resolve_target_triple(Some("   "), "x86_64-unknown-linux-gnu"),
-            "x86_64-unknown-linux-gnu"
+            Ok("x86_64-unknown-linux-gnu".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_target_triple_accepts_supported_override() {
+        assert_eq!(
+            resolve_target_triple(
+                Some("  aarch64-pc-windows-msvc  "),
+                "x86_64-unknown-linux-gnu",
+            ),
+            Ok("aarch64-pc-windows-msvc".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_target_triple_rejects_unknown_host_target() {
+        assert_eq!(
+            resolve_target_triple(None, "windows-gnu"),
+            Err(TargetTripleError::Unsupported("windows-gnu".to_string()))
+        );
+    }
+
+    #[test]
+    fn executable_suffix_rejects_unknown_targets() {
+        assert_eq!(
+            executable_suffix_for_target("windows"),
+            Err(TargetTripleError::Unsupported("windows".to_string()))
         );
     }
 
