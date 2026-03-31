@@ -7,6 +7,8 @@ use cap_std::ambient_authority;
 use cap_std::fs::OpenOptions;
 pub use cap_std::fs::{Dir, File};
 
+use crate::read_limited::{ReadUtf8Error, read_utf8_limited};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissingRootPolicy {
     Error,
@@ -215,6 +217,51 @@ pub fn create_regular_file_at(directory: &Dir, component: &Path) -> io::Result<F
     directory.open_with(component, &options)
 }
 
+pub fn read_utf8_regular_file_in_ambient_root(
+    path: &Path,
+    label: &str,
+    max_bytes: usize,
+) -> Result<String, ReadUtf8Error> {
+    let (root, leaf, _) = open_parent_root_for_regular_file(path, label, MissingRootPolicy::Error)
+        .map_err(ReadUtf8Error::Io)?
+        .ok_or_else(|| {
+            ReadUtf8Error::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{label} parent directory not found: {}", path.display()),
+            ))
+        })?;
+    let root = root.into_dir();
+    let mut file = open_regular_file_at(&root, Path::new(&leaf)).map_err(ReadUtf8Error::Io)?;
+    read_utf8_limited(&mut file, max_bytes)
+}
+
+pub fn open_appendable_regular_file_in_ambient_root(path: &Path, label: &str) -> io::Result<File> {
+    let (root, leaf, _) =
+        open_parent_root_for_regular_file(path, label, MissingRootPolicy::Create)?.ok_or_else(
+            || {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("{label} parent directory not found: {}", path.display()),
+                )
+            },
+        )?;
+    let root = root.into_dir();
+    open_appendable_regular_file_at(&root, Path::new(&leaf))
+}
+
+pub fn validate_appendable_regular_file_in_ambient_root(
+    path: &Path,
+    label: &str,
+) -> io::Result<()> {
+    let Some((root, leaf, _)) =
+        open_parent_root_for_regular_file(path, label, MissingRootPolicy::ReturnNone)?
+    else {
+        return Ok(());
+    };
+    let root = root.into_dir();
+    validate_appendable_regular_file_at(&root, Path::new(&leaf))
+}
+
 fn ensure_regular_file(file: File) -> io::Result<File> {
     let metadata = file.metadata()?;
     if metadata.is_file() {
@@ -225,6 +272,56 @@ fn ensure_regular_file(file: File) -> io::Result<File> {
         io::ErrorKind::InvalidData,
         "target file must be a regular file",
     ))
+}
+
+fn open_appendable_regular_file_at(directory: &Dir, component: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true).truncate(false);
+    options.follow(FollowSymlinks::No);
+    let file = directory.open_with(component, &options)?;
+    ensure_regular_file(file)
+}
+
+fn validate_appendable_regular_file_at(directory: &Dir, component: &Path) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    options.follow(FollowSymlinks::No);
+    match directory.open_with(component, &options) {
+        Ok(file) => {
+            ensure_regular_file(file)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn open_parent_root_for_regular_file(
+    path: &Path,
+    label: &str,
+    missing_root_policy: MissingRootPolicy,
+) -> io::Result<Option<(RootDir, OsString, PathBuf)>> {
+    let normalized = normalize_root(path, label)?;
+    let leaf = normalized
+        .file_name()
+        .map(|value| value.to_os_string())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{label} must include a file name: {}", path.display()),
+            )
+        })?;
+    let parent = normalized.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{label} must include a parent directory: {}",
+                path.display()
+            ),
+        )
+    })?;
+    open_root(parent, label, missing_root_policy, |_, _, _, error| error)
+        .map(|root| root.map(|root| (root, leaf, normalized)))
 }
 
 fn normalize_root(root: &Path, label: &str) -> io::Result<PathBuf> {
@@ -551,5 +648,87 @@ mod tests {
             .expect_err("existing file should not count as a directory");
 
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
+    fn read_utf8_regular_file_in_ambient_root_reads_existing_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let file_path = temp.path().join("policy.json");
+        fs::write(&file_path, "{\"ok\":true}\n").expect("write file");
+
+        let content = read_utf8_regular_file_in_ambient_root(&file_path, "policy file", 1024)
+            .expect("read regular file");
+
+        assert_eq!(content, "{\"ok\":true}\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_utf8_regular_file_in_ambient_root_rejects_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().expect("temp dir");
+        let real = temp.path().join("real");
+        fs::create_dir_all(&real).expect("mkdir real");
+        fs::write(real.join("policy.json"), "{}").expect("write file");
+        symlink(&real, temp.path().join("linked")).expect("create symlink");
+
+        let error = read_utf8_regular_file_in_ambient_root(
+            &temp.path().join("linked").join("policy.json"),
+            "policy file",
+            1024,
+        )
+        .expect_err("symlinked ancestor should fail");
+
+        assert!(matches!(error, ReadUtf8Error::Io(_)));
+    }
+
+    #[test]
+    fn open_appendable_regular_file_in_ambient_root_creates_parent_chain() {
+        let temp = TempDir::new().expect("temp dir");
+        let log_path = temp.path().join("audit").join("events.jsonl");
+
+        {
+            let mut file = open_appendable_regular_file_in_ambient_root(&log_path, "audit log")
+                .expect("open appendable file");
+            use std::io::Write;
+            writeln!(file, "{{\"event\":\"prepared\"}}").expect("write record");
+        }
+
+        assert_eq!(
+            fs::read_to_string(&log_path).expect("read audit log"),
+            "{\"event\":\"prepared\"}\n"
+        );
+    }
+
+    #[test]
+    fn validate_appendable_regular_file_in_ambient_root_allows_missing_leaf_without_side_effects() {
+        let temp = TempDir::new().expect("temp dir");
+        let missing = temp.path().join("audit").join("events.jsonl");
+
+        validate_appendable_regular_file_in_ambient_root(&missing, "audit log")
+            .expect("missing leaf should validate");
+
+        assert!(!missing.exists());
+        assert!(!temp.path().join("audit").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_appendable_regular_file_in_ambient_root_rejects_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().expect("temp dir");
+        let real = temp.path().join("real");
+        fs::create_dir_all(&real).expect("mkdir real");
+        symlink(&real, temp.path().join("linked")).expect("create symlink");
+
+        let error = validate_appendable_regular_file_in_ambient_root(
+            &temp.path().join("linked").join("events.jsonl"),
+            "audit log",
+        )
+        .expect_err("symlinked ancestor should fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }
