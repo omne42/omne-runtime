@@ -11,9 +11,9 @@ use omne_fs_primitives::{
 use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 
 use crate::artifact_download::{
-    ArtifactDownloadCandidate, ArtifactInstallError, ArtifactInstallErrorDetail,
-    candidate_failure_message, download_candidate_to_writer_with_options, failed_candidates_error,
-    no_candidates_error,
+    ArtifactDownloadCandidate, ArtifactDownloader, ArtifactInstallError,
+    ArtifactInstallErrorDetail, candidate_failure_message,
+    download_candidate_to_writer_with_options, failed_candidates_error, no_candidates_error,
 };
 use crate::install_lock::lock_install_destination;
 
@@ -62,11 +62,14 @@ pub fn install_binary_from_archive(
     )
 }
 
-pub async fn download_binary_to_destination(
-    client: &reqwest::Client,
+pub async fn download_binary_to_destination<D>(
+    downloader: &D,
     candidates: &[ArtifactDownloadCandidate],
     request: &DownloadBinaryRequest<'_>,
-) -> Result<ArtifactDownloadCandidate, ArtifactInstallError> {
+) -> Result<ArtifactDownloadCandidate, ArtifactInstallError>
+where
+    D: ArtifactDownloader + ?Sized,
+{
     if candidates.is_empty() {
         return Err(no_candidates_error(request.canonical_url));
     }
@@ -81,7 +84,7 @@ pub async fn download_binary_to_destination(
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
 
         let download_result = download_candidate_to_writer_with_options(
-            client,
+            downloader,
             candidate,
             staged.file_mut(),
             request.max_download_bytes,
@@ -115,11 +118,14 @@ pub async fn download_binary_to_destination(
     Err(failed_candidates_error(request.canonical_url, errors))
 }
 
-pub async fn download_and_install_binary_from_archive(
-    client: &reqwest::Client,
+pub async fn download_and_install_binary_from_archive<D>(
+    downloader: &D,
     candidates: &[ArtifactDownloadCandidate],
     request: &BinaryArchiveInstallRequest<'_>,
-) -> Result<InstalledArchiveBinary, ArtifactInstallError> {
+) -> Result<InstalledArchiveBinary, ArtifactInstallError>
+where
+    D: ArtifactDownloader + ?Sized,
+{
     if candidates.is_empty() {
         return Err(no_candidates_error(request.canonical_url));
     }
@@ -134,7 +140,7 @@ pub async fn download_and_install_binary_from_archive(
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
 
         let download_result = download_candidate_to_writer_with_options(
-            client,
+            downloader,
             candidate,
             staged.file_mut(),
             request.max_download_bytes,
@@ -303,8 +309,8 @@ mod tests {
     use omne_integrity_primitives::hash_sha256;
 
     use crate::artifact_download::{
-        ArtifactDownloadCandidate, ArtifactInstallError, ArtifactInstallErrorDetail,
-        ArtifactInstallErrorKind,
+        ArtifactDownloadCandidate, ArtifactDownloadFuture, ArtifactDownloader,
+        ArtifactInstallError, ArtifactInstallErrorDetail, ArtifactInstallErrorKind,
     };
 
     use super::{
@@ -353,6 +359,33 @@ mod tests {
                 let _ = stream.flush();
             }
         })
+    }
+
+    struct StaticDownloader {
+        responses: HashMap<String, Vec<u8>>,
+    }
+
+    impl ArtifactDownloader for StaticDownloader {
+        fn download_to_writer<'a, W>(
+            &'a self,
+            candidate: &'a ArtifactDownloadCandidate,
+            writer: &'a mut W,
+            _max_bytes: Option<u64>,
+        ) -> ArtifactDownloadFuture<'a>
+        where
+            W: Write + Send + ?Sized + 'a,
+        {
+            let response = self
+                .responses
+                .get(&candidate.url)
+                .cloned()
+                .unwrap_or_else(|| b"not found".to_vec());
+            Box::pin(async move {
+                writer
+                    .write_all(&response)
+                    .map_err(|err| ArtifactInstallError::download(err.to_string()))
+            })
+        }
     }
 
     fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -418,6 +451,39 @@ mod tests {
         assert_eq!(std::fs::read(&destination)?, good_binary);
 
         handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_binary_download_accepts_custom_downloader() -> Result<(), Box<dyn Error>> {
+        let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let canonical_url = format!("https://example.invalid/{asset_name}");
+        let binary = b"demo-binary".to_vec();
+        let expected_sha256 = hash_sha256(&binary);
+        let temp = tempfile::tempdir()?;
+        let destination = canonical_test_root(&temp).join(&asset_name);
+        let downloader = StaticDownloader {
+            responses: HashMap::from([(canonical_url.clone(), binary.clone())]),
+        };
+
+        let selected = download_binary_to_destination(
+            &downloader,
+            &[ArtifactDownloadCandidate {
+                url: canonical_url.clone(),
+                source_label: "fixture".to_string(),
+            }],
+            &DownloadBinaryRequest {
+                canonical_url: &canonical_url,
+                destination: &destination,
+                asset_name: &asset_name,
+                expected_sha256: Some(&expected_sha256),
+                max_download_bytes: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(selected.source_label, "fixture");
+        assert_eq!(std::fs::read(&destination)?, binary);
         Ok(())
     }
 

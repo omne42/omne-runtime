@@ -9,6 +9,7 @@
 - 消费调用方给定的有序下载候选列表。
 - 当调用方给出空候选列表时，立即返回“缺少 download candidates”的输入错误，而不是伪装成“所有候选下载都失败了”。
 - 以受限响应体流式下载 artifact。
+- 对外只暴露 caller-supplied `ArtifactDownloader` 边界；具体 HTTP client（例如 `reqwest` 或 `http-kit` profile）适配留在实现层，不把 transport 类型直接写进 primitive public API。
 - 对下载结果执行可选的 SHA-256 校验。
 - 把直接二进制资产原子安装到目标路径，并在 install/commit 阶段按目标路径做 advisory lock 串行化。
 - install 阶段使用的 advisory lock root 也遵循和 staged destination 相同的 no-follow 祖先校验，不能沿 symlink 祖先把锁建到目标边界之外。

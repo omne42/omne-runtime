@@ -22,7 +22,7 @@ use omne_fs_primitives::{
 use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 
 use crate::artifact_download::{
-    ArtifactDownloadCandidate, ArtifactInstallError, candidate_failure_message,
+    ArtifactDownloadCandidate, ArtifactDownloader, ArtifactInstallError, candidate_failure_message,
     download_candidate_to_writer_with_options, failed_candidates_error, no_candidates_error,
 };
 use crate::install_lock::lock_install_destination;
@@ -57,11 +57,14 @@ pub fn install_archive_tree_from_bytes(
     )
 }
 
-pub async fn download_and_install_archive_tree(
-    client: &reqwest::Client,
+pub async fn download_and_install_archive_tree<D>(
+    downloader: &D,
     candidates: &[ArtifactDownloadCandidate],
     request: &ArchiveTreeInstallRequest<'_>,
-) -> Result<ArtifactDownloadCandidate, ArtifactInstallError> {
+) -> Result<ArtifactDownloadCandidate, ArtifactInstallError>
+where
+    D: ArtifactDownloader + ?Sized,
+{
     if !is_archive_tree_asset_name(request.asset_name) {
         return Err(ArtifactInstallError::install(format!(
             "archive tree install requires a supported archive asset, got `{}`",
@@ -82,7 +85,7 @@ pub async fn download_and_install_archive_tree(
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
 
         let download_result = download_candidate_to_writer_with_options(
-            client,
+            downloader,
             candidate,
             staged.file_mut(),
             request.max_download_bytes,
@@ -652,7 +655,9 @@ mod tests {
 
     use omne_fs_primitives::lock_advisory_file_in_ambient_root;
 
-    use crate::artifact_download::ArtifactDownloadCandidate;
+    use crate::artifact_download::{
+        ArtifactDownloadCandidate, ArtifactDownloadFuture, ArtifactDownloader, ArtifactInstallError,
+    };
 
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
@@ -771,6 +776,33 @@ mod tests {
         })
     }
 
+    struct StaticDownloader {
+        responses: HashMap<String, Vec<u8>>,
+    }
+
+    impl ArtifactDownloader for StaticDownloader {
+        fn download_to_writer<'a, W>(
+            &'a self,
+            candidate: &'a ArtifactDownloadCandidate,
+            writer: &'a mut W,
+            _max_bytes: Option<u64>,
+        ) -> ArtifactDownloadFuture<'a>
+        where
+            W: Write + Send + ?Sized + 'a,
+        {
+            let response = self
+                .responses
+                .get(&candidate.url)
+                .cloned()
+                .unwrap_or_else(|| b"not found".to_vec());
+            Box::pin(async move {
+                writer
+                    .write_all(&response)
+                    .map_err(|err| ArtifactInstallError::download(err.to_string()))
+            })
+        }
+    }
+
     #[tokio::test]
     async fn archive_tree_download_retries_after_invalid_canonical_archive()
     -> Result<(), Box<dyn Error>> {
@@ -825,6 +857,42 @@ mod tests {
         assert!(destination.join("LICENSE").exists());
 
         handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn archive_tree_download_accepts_custom_downloader() -> Result<(), Box<dyn Error>> {
+        let archive_name = "demo-tree.zip";
+        let canonical_url = format!("https://example.invalid/{archive_name}");
+        let archive = make_zip_archive(&[
+            ("bin/demo.exe", b"MZ".as_slice(), 0o755),
+            ("LICENSE", b"demo-license\n".as_slice(), 0o644),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = canonical_test_root(&temp).join("tree");
+        let downloader = StaticDownloader {
+            responses: HashMap::from([(canonical_url.clone(), archive)]),
+        };
+
+        let selected = download_and_install_archive_tree(
+            &downloader,
+            &[ArtifactDownloadCandidate {
+                url: canonical_url.clone(),
+                source_label: "fixture".to_string(),
+            }],
+            &ArchiveTreeInstallRequest {
+                canonical_url: &canonical_url,
+                destination: &destination,
+                asset_name: archive_name,
+                expected_sha256: None,
+                max_download_bytes: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(selected.source_label, "fixture");
+        assert!(destination.join("bin/demo.exe").exists());
+        assert!(destination.join("LICENSE").exists());
         Ok(())
     }
 
