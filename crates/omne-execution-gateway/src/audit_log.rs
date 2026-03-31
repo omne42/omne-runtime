@@ -11,6 +11,8 @@ use crate::audit::ExecEvent;
 use crate::error::{ExecError, ExecResult};
 use crate::path_guard;
 
+const APPENDABLE_OPEN_NOT_FOUND_RETRIES: usize = 4;
+
 #[derive(Debug, Clone)]
 pub(crate) struct AuditLogger {
     path: PathBuf,
@@ -83,8 +85,24 @@ impl AuditLogger {
     }
 
     fn try_open_appendable_file(&self) -> Result<std::fs::File, Box<dyn std::error::Error>> {
-        path_guard::open_appendable_regular_file_nofollow(&self.path, "audit log")
-            .map_err(|err| err.into())
+        let mut last_not_found = None;
+        for attempt in 0..APPENDABLE_OPEN_NOT_FOUND_RETRIES {
+            match path_guard::open_appendable_regular_file_nofollow(&self.path, "audit log") {
+                Ok(file) => return Ok(file),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    last_not_found = Some(err);
+                    if attempt + 1 < APPENDABLE_OPEN_NOT_FOUND_RETRIES {
+                        std::thread::yield_now();
+                        continue;
+                    }
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+
+        Err(last_not_found
+            .unwrap_or_else(|| std::io::Error::other("audit log open failed without an error"))
+            .into())
     }
 }
 
