@@ -20,7 +20,7 @@
 - `crates/omne-artifact-install-primitives`
   - 制品下载、SHA 校验、binary 安装与 archive-tree 安装编排原语。
 - `crates/omne-archive-primitives`
-  - 归档格式识别、条目遍历和目标二进制提取原语。
+  - 归档格式识别、条目遍历、archive tree walker 和目标二进制提取原语。
 - `crates/omne-execution-gateway`
   - 命令执行边界、隔离语义、审计和 sandbox 编排。
 - `crates/omne-fs`

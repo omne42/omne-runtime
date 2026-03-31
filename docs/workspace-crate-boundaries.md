@@ -110,8 +110,8 @@ package 名保持一致。
 
 | Member | 负责什么 | 不负责什么 |
 | --- | --- | --- |
-| `omne-artifact-install-primitives` | 无产品策略的 artifact 安装管道：下载候选执行、可选 SHA-256 校验、direct binary 原子落盘、binary-from-archive 安装、archive-tree 预算/link 校验与 staged directory replace 编排 | GitHub release 元数据、候选顺序策略、产品目录布局、领域错误码、CLI |
-| `omne-archive-primitives` | 无策略的 archive/compression 能力：`.tar.gz`、`.tar.xz`、`.zip` 识别，归档条目遍历，按精确 hint 或约定布局匹配目标二进制，提取目标二进制字节 | 文件写入、权限设置、原子替换、下载、来源校验、领域错误映射、CLI |
+| `omne-artifact-install-primitives` | 无产品策略的 artifact 安装管道：下载候选执行、可选 SHA-256 校验、direct binary 原子落盘、binary-from-archive 安装、以及基于 shared archive walker 的 staged directory replace 编排 | GitHub release 元数据、候选顺序策略、产品目录布局、领域错误码、CLI |
+| `omne-archive-primitives` | 无策略的 archive/compression 能力：`.tar.gz`、`.tar.xz`、`.zip` 识别，归档条目遍历，按精确 hint 或约定布局匹配目标二进制，提取目标二进制字节，以及 archive tree walker 的路径/link/预算硬化 | 文件写入、权限设置、原子替换、下载、来源校验、领域错误映射、CLI |
 | `omne-execution-gateway` | 执行请求模型、隔离级别校验、`policy_default` 来源校验、执行时的 `workspace/cwd` 校验、声明式变更命令门控、sandbox 应用、审计事件与日志 | 文件系统操作策略、通用文件 API、`omne-fs` CLI 语义解析、超时/取消策略、stdout/stderr 保密策略、通用进程树清理原语 |
 | `omne-fs` | 文件系统 `SandboxPolicy`、root/path/permission/limit/secret 语义、redaction、高层文件操作、CLI、policy I/O | 描述符级 no-follow open、通用 bounded-read 原语、进程清理、OS sandbox |
 | `omne-fs-cli` | `omne-fs` 的 CLI 二进制入口、参数接线和输出适配；它复用 `omne-fs` 的文件系统策略边界，而不是重新定义一套文件系统能力 | 新的 runtime capability 边界、低层文件系统原语、独立 policy 模型 |
@@ -134,7 +134,7 @@ package 名保持一致。
 - 对下载结果执行可选的 SHA-256 校验
 - 把 direct binary asset 原子安装到目标路径
 - 从受支持的 archive 中提取目标二进制并安装
-- 把 archive tree 解到 `omne-fs-primitives` 提供的 staged 目录并在成功后替换目标目录
+- 基于 `omne-archive-primitives` 的 shared walker 把 archive tree 物化到 staged 目录，并在成功后替换目标目录
 
 这些职责可以从下面这些文件直接看到：
 
@@ -167,11 +167,13 @@ package 名保持一致。
 - 遍历归档条目并统一归一化条目路径
 - 按精确 `archive_binary` hint 或约定布局查找目标条目；非常规 archive 布局必须由调用方提供精确 hint，primitive 不内置产品特例
 - 读取并返回匹配到的目标二进制字节
+- 为 archive tree 调用方提供共享 walker，统一路径净化、link target 读取和 tree 级预算控制
 
 这些职责可以从下面这些文件直接看到：
 
 - `crates/omne-archive-primitives/src/lib.rs`
 - `crates/omne-archive-primitives/src/binary_archive.rs`
+- `crates/omne-archive-primitives/src/archive_tree.rs`
 
 ### 它不负责什么
 

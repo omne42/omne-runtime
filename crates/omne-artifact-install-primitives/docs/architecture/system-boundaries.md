@@ -33,8 +33,8 @@
 - 依赖 `http-kit` 做受限响应体下载。
 - 依赖 `omne-integrity-primitives` 做 digest 校验。
 - 依赖 `omne-fs-primitives` 做 staged atomic file/directory replace。
-- 依赖 `omne-archive-primitives` 做 archive binary 提取。
-- 对 archive tree 安装，它负责 archive 语义、预算和 link 校验；目录 staging/replace 原语下沉到 `omne-fs-primitives`。
+- 依赖 `omne-archive-primitives` 做 archive binary 提取和 archive tree walker。
+- 对 archive tree 安装，archive 格式读取、entry/path/link 语义、以及 tree 级预算收口在 `omne-archive-primitives`；目录 staging/replace 原语下沉到 `omne-fs-primitives`。
 
 ## 调用方边界
 
