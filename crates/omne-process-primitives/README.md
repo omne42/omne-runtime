@@ -13,6 +13,7 @@ Low-level host-command and process-tree primitives shared across callers.
 
 - host command discovery, including `OsStr`-friendly probe/resolve helpers
 - request-scoped command probes that honor request `PATH` overrides for bare direct commands without changing caller-cwd semantics for explicit relative program paths
+- `command_available*` probes that keep the same spawnable contract as execution and do not report non-executable files as available
 - host command execution with captured output that returns after the direct child exits even if daemonized descendants keep inherited stdout/stderr open
 - host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
 - non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
