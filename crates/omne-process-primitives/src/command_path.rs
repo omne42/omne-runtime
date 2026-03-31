@@ -32,17 +32,17 @@ pub fn resolve_command_path_or_standard_location_os(command: &OsStr) -> Option<P
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn resolve_available_command_path(command: &str) -> Option<PathBuf> {
     resolve_available_command_path_os(OsStr::new(command))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn resolve_available_command_path_os(command: &OsStr) -> Option<PathBuf> {
     resolve_available_command_path_with_path_var(command, std::env::var_os("PATH"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn resolve_available_command_path_with_path_var(
     command: &OsStr,
     path_var: Option<std::ffi::OsString>,
