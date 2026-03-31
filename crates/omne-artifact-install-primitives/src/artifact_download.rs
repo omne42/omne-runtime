@@ -26,15 +26,22 @@ pub enum ArtifactInstallErrorKind {
     Install,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactInstallErrorDetail {
+    ArchiveBinaryNotFound,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CandidateFailure {
     pub(crate) kind: ArtifactInstallErrorKind,
+    pub(crate) detail: Option<ArtifactInstallErrorDetail>,
     pub(crate) message: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct ArtifactInstallError {
     kind: ArtifactInstallErrorKind,
+    detail: Option<ArtifactInstallErrorDetail>,
     message: String,
 }
 
@@ -42,6 +49,7 @@ impl ArtifactInstallError {
     pub fn download(message: impl Into<String>) -> Self {
         Self {
             kind: ArtifactInstallErrorKind::Download,
+            detail: None,
             message: message.into(),
         }
     }
@@ -49,6 +57,18 @@ impl ArtifactInstallError {
     pub fn install(message: impl Into<String>) -> Self {
         Self {
             kind: ArtifactInstallErrorKind::Install,
+            detail: None,
+            message: message.into(),
+        }
+    }
+
+    pub fn install_with_detail(
+        detail: ArtifactInstallErrorDetail,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ArtifactInstallErrorKind::Install,
+            detail: Some(detail),
             message: message.into(),
         }
     }
@@ -56,6 +76,11 @@ impl ArtifactInstallError {
     #[must_use]
     pub const fn kind(&self) -> ArtifactInstallErrorKind {
         self.kind
+    }
+
+    #[must_use]
+    pub const fn detail(&self) -> Option<ArtifactInstallErrorDetail> {
+        self.detail
     }
 }
 
@@ -98,6 +123,7 @@ pub(crate) fn candidate_failure_message(
 ) -> CandidateFailure {
     CandidateFailure {
         kind: err.kind(),
+        detail: err.detail(),
         message: format!(
             "{}:{} -> {err}",
             candidate.display_source_label(),
@@ -111,6 +137,7 @@ pub(crate) fn failed_candidates_error(
     errors: Vec<CandidateFailure>,
 ) -> ArtifactInstallError {
     let kind = aggregate_failure_kind(&errors);
+    let detail = aggregate_failure_detail(&errors);
     let details = errors
         .into_iter()
         .map(|error| error.message)
@@ -121,9 +148,16 @@ pub(crate) fn failed_candidates_error(
         ArtifactInstallErrorKind::Download => ArtifactInstallError::download(format!(
             "all artifact download candidates failed for {canonical_url}: {details}"
         )),
-        ArtifactInstallErrorKind::Install => ArtifactInstallError::install(format!(
-            "all artifact candidates failed for {canonical_url}; at least one candidate reached install phase: {details}"
-        )),
+        ArtifactInstallErrorKind::Install => {
+            let message = format!(
+                "all artifact candidates failed for {canonical_url}; at least one candidate reached install phase: {details}"
+            );
+            if let Some(detail) = detail {
+                ArtifactInstallError::install_with_detail(detail, message)
+            } else {
+                ArtifactInstallError::install(message)
+            }
+        }
     }
 }
 
@@ -149,11 +183,21 @@ fn aggregate_failure_kind(errors: &[CandidateFailure]) -> ArtifactInstallErrorKi
     }
 }
 
+fn aggregate_failure_detail(errors: &[CandidateFailure]) -> Option<ArtifactInstallErrorDetail> {
+    let mut install_failures = errors
+        .iter()
+        .filter(|error| error.kind == ArtifactInstallErrorKind::Install);
+    let first_detail = install_failures.next()?.detail?;
+    install_failures
+        .all(|error| error.detail == Some(first_detail))
+        .then_some(first_detail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactDownloadCandidate, ArtifactInstallError, ArtifactInstallErrorKind,
-        candidate_failure_message, failed_candidates_error,
+        ArtifactDownloadCandidate, ArtifactInstallError, ArtifactInstallErrorDetail,
+        ArtifactInstallErrorKind, candidate_failure_message, failed_candidates_error,
     };
 
     #[test]
@@ -195,6 +239,7 @@ mod tests {
         );
 
         assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
+        assert_eq!(err.detail(), None);
         assert!(
             err.to_string()
                 .contains("at least one candidate reached install phase"),
@@ -229,6 +274,7 @@ mod tests {
         );
 
         assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
+        assert_eq!(err.detail(), None);
         assert!(
             !err.to_string().contains("all download candidates failed"),
             "unexpected message: {err}"
@@ -246,6 +292,7 @@ mod tests {
         let failure =
             candidate_failure_message(&candidate, &ArtifactInstallError::download("HTTP 403"));
         assert_eq!(failure.kind, ArtifactInstallErrorKind::Download);
+        assert_eq!(failure.detail, None);
         assert!(failure.message.contains("https://example.invalid/demo.zip"));
         assert!(!failure.message.contains("token@"));
         assert!(!failure.message.contains("sig=secret"));
@@ -261,10 +308,68 @@ mod tests {
 
         let failure =
             candidate_failure_message(&candidate, &ArtifactInstallError::download("HTTP 404"));
+        assert_eq!(failure.detail, None);
         assert!(
             failure
                 .message
                 .starts_with("candidate:https://example.invalid/demo.zip")
         );
+    }
+
+    #[test]
+    fn failed_candidates_error_preserves_shared_install_detail() {
+        let candidate = ArtifactDownloadCandidate {
+            url: "https://example.invalid/demo.zip".to_string(),
+            source_label: "canonical".to_string(),
+        };
+
+        let err = failed_candidates_error(
+            "https://example.invalid/demo.zip",
+            vec![candidate_failure_message(
+                &candidate,
+                &ArtifactInstallError::install_with_detail(
+                    ArtifactInstallErrorDetail::ArchiveBinaryNotFound,
+                    "binary `demo` not found in zip archive",
+                ),
+            )],
+        );
+
+        assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
+        assert_eq!(
+            err.detail(),
+            Some(ArtifactInstallErrorDetail::ArchiveBinaryNotFound)
+        );
+    }
+
+    #[test]
+    fn failed_candidates_error_drops_install_detail_when_install_failures_disagree() {
+        let mirror = ArtifactDownloadCandidate {
+            url: "https://mirror.example.invalid/demo.zip".to_string(),
+            source_label: "mirror".to_string(),
+        };
+        let gateway = ArtifactDownloadCandidate {
+            url: "https://gateway.example.invalid/demo.zip".to_string(),
+            source_label: "gateway".to_string(),
+        };
+
+        let err = failed_candidates_error(
+            "https://example.invalid/demo.zip",
+            vec![
+                candidate_failure_message(
+                    &mirror,
+                    &ArtifactInstallError::install_with_detail(
+                        ArtifactInstallErrorDetail::ArchiveBinaryNotFound,
+                        "binary `demo` not found in zip archive",
+                    ),
+                ),
+                candidate_failure_message(
+                    &gateway,
+                    &ArtifactInstallError::install("permission denied"),
+                ),
+            ],
+        );
+
+        assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
+        assert_eq!(err.detail(), None);
     }
 }

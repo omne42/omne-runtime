@@ -19,6 +19,7 @@ Reusable artifact download and install primitives shared by higher-level callers
 - archive-tree link extraction that fails closed if a parent directory chain contains symlink ancestors
 - Unix zip symlink materialization and tar forward hard-link resolution inside the staged tree
 - exact archive-relative `archive_binary_hint` selection for product-specific binary layouts; no separate tool-name fallback remains
+- install-phase errors keep a narrow structured detail when every attempted archive extraction failed for the same reason, so callers can make stable retry decisions without parsing error strings
 - candidate provenance labels stay caller-defined via free-form `source_label`, instead of hard-coding product source enums into the primitive layer
 - heavy local install phases such as checksum verification, archive extraction, and staged commit run on Tokio blocking threads instead of the async worker pool
 
