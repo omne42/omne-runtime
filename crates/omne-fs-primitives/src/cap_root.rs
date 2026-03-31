@@ -463,8 +463,13 @@ fn split_ambient_existing_ancestor(
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
 
     use tempfile::TempDir;
+
+    fn canonical_temp_root(temp: &TempDir) -> PathBuf {
+        temp.path().canonicalize().expect("canonicalize temp dir")
+    }
 
     #[test]
     fn open_root_returns_none_when_missing_root_is_allowed() {
@@ -653,7 +658,8 @@ mod tests {
     #[test]
     fn read_utf8_regular_file_in_ambient_root_reads_existing_file() {
         let temp = TempDir::new().expect("temp dir");
-        let file_path = temp.path().join("policy.json");
+        let root = canonical_temp_root(&temp);
+        let file_path = root.join("policy.json");
         fs::write(&file_path, "{\"ok\":true}\n").expect("write file");
 
         let content = read_utf8_regular_file_in_ambient_root(&file_path, "policy file", 1024)
@@ -686,7 +692,8 @@ mod tests {
     #[test]
     fn open_appendable_regular_file_in_ambient_root_creates_parent_chain() {
         let temp = TempDir::new().expect("temp dir");
-        let log_path = temp.path().join("audit").join("events.jsonl");
+        let root = canonical_temp_root(&temp);
+        let log_path = root.join("audit").join("events.jsonl");
 
         {
             let mut file = open_appendable_regular_file_in_ambient_root(&log_path, "audit log")
@@ -704,13 +711,14 @@ mod tests {
     #[test]
     fn validate_appendable_regular_file_in_ambient_root_allows_missing_leaf_without_side_effects() {
         let temp = TempDir::new().expect("temp dir");
-        let missing = temp.path().join("audit").join("events.jsonl");
+        let root = canonical_temp_root(&temp);
+        let missing = root.join("audit").join("events.jsonl");
 
         validate_appendable_regular_file_in_ambient_root(&missing, "audit log")
             .expect("missing leaf should validate");
 
         assert!(!missing.exists());
-        assert!(!temp.path().join("audit").exists());
+        assert!(!root.join("audit").exists());
     }
 
     #[cfg(unix)]
