@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus};
@@ -7,20 +8,26 @@ use std::process::{ExitCode, ExitStatus};
 use omne_execution_gateway::{
     ExecEvent, ExecGateway, ExecRequest, ExecResult, GatewayPolicy, RequestResolution,
 };
+use omne_fs_primitives::{ReadUtf8Error, read_utf8_regular_file_in_ambient_root};
 use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
 
 const MAX_REQUEST_JSON_BYTES: usize = 1024 * 1024;
 
-#[path = "../path_guard.rs"]
-mod path_guard;
+#[allow(dead_code)]
+#[path = "../os_serialization.rs"]
+mod os_serialization;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecRequestWire {
-    program: String,
-    #[serde(default)]
-    args: Vec<String>,
+    #[serde(deserialize_with = "os_serialization::deserialize_lossy_or_exact_os_string")]
+    program: OsString,
+    #[serde(
+        default,
+        deserialize_with = "os_serialization::deserialize_lossy_or_exact_os_strings"
+    )]
+    args: Vec<OsString>,
     #[serde(default)]
     env: Vec<ExecEnvVarWire>,
     cwd: PathBuf,
@@ -33,8 +40,10 @@ struct ExecRequestWire {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecEnvVarWire {
-    name: String,
-    value: String,
+    #[serde(deserialize_with = "os_serialization::deserialize_lossy_or_exact_os_string")]
+    name: OsString,
+    #[serde(deserialize_with = "os_serialization::deserialize_lossy_or_exact_os_string")]
+    value: OsString,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,9 +149,23 @@ fn build_exec_request(
 }
 
 fn load_request(path: &Path) -> Result<ExecRequestWire, String> {
-    let content =
-        path_guard::read_utf8_regular_file_nofollow(path, MAX_REQUEST_JSON_BYTES, "request file")
-            .map_err(|e| format!("failed to read request {}: {e}", path.display()))?;
+    let content = read_utf8_regular_file_in_ambient_root(
+        path,
+        "request file",
+        MAX_REQUEST_JSON_BYTES,
+    )
+    .map_err(|err| match err {
+        ReadUtf8Error::Io(source) => {
+            format!("failed to read request {}: {source}", path.display())
+        }
+        ReadUtf8Error::TooLarge { bytes, max_bytes } => format!(
+            "failed to read request {}: request file exceeds size limit ({bytes} > {max_bytes} bytes)",
+            path.display()
+        ),
+        ReadUtf8Error::InvalidUtf8(source) => {
+            format!("failed to read request {}: {source}", path.display())
+        }
+    })?;
     serde_json::from_str(&content)
         .map_err(|e| format!("invalid request json {}: {e}", path.display()))
 }
@@ -191,6 +214,8 @@ mod tests {
     #[cfg(unix)]
     use std::fs;
     use std::fs::File;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
     #[cfg(unix)]
@@ -431,11 +456,11 @@ mod tests {
         let request = build_exec_request(
             &policy,
             ExecRequestWire {
-                program: "echo".to_string(),
-                args: vec!["hello".to_string()],
+                program: OsString::from("echo"),
+                args: vec![OsString::from("hello")],
                 env: vec![ExecEnvVarWire {
-                    name: "PATH".to_string(),
-                    value: "/usr/bin".to_string(),
+                    name: OsString::from("PATH"),
+                    value: OsString::from("/usr/bin"),
                 }],
                 cwd: ".".into(),
                 workspace_root: ".".into(),
@@ -495,6 +520,78 @@ mod tests {
         assert!(wire.to_string().contains("unknown field"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn exec_request_wire_accepts_exact_non_utf8_program_args_and_env() {
+        let wire = serde_json::from_str::<ExecRequestWire>(
+            r#"{
+                "program": {
+                    "encoding": "unix_bytes_hex",
+                    "value": "666f80"
+                },
+                "args": [
+                    "hello",
+                    {
+                        "encoding": "unix_bytes_hex",
+                        "value": "776f80"
+                    }
+                ],
+                "env": [{
+                    "name": {
+                        "encoding": "unix_bytes_hex",
+                        "value": "4b455980"
+                    },
+                    "value": {
+                        "encoding": "unix_bytes_hex",
+                        "value": "56414c80"
+                    }
+                }],
+                "cwd": ".",
+                "workspace_root": ".",
+                "required_isolation": "best_effort",
+                "declared_mutation": false
+            }"#,
+        )
+        .expect("exact request json should deserialize");
+
+        assert_eq!(wire.program.as_os_str().as_bytes(), &[0x66, 0x6f, 0x80]);
+        assert_eq!(wire.args[0], OsString::from("hello"));
+        assert_eq!(wire.args[1].as_os_str().as_bytes(), &[0x77, 0x6f, 0x80]);
+        assert_eq!(
+            wire.env[0].name.as_os_str().as_bytes(),
+            &[0x4b, 0x45, 0x59, 0x80]
+        );
+        assert_eq!(
+            wire.env[0].value.as_os_str().as_bytes(),
+            &[0x56, 0x41, 0x4c, 0x80]
+        );
+    }
+
+    #[test]
+    fn exec_request_wire_rejects_invalid_exact_os_string_encoding() {
+        let err = serde_json::from_str::<ExecRequestWire>(
+            r#"{
+                "program": {
+                    "encoding": "platform_debug",
+                    "value": "echo"
+                },
+                "args": [],
+                "cwd": ".",
+                "workspace_root": ".",
+                "required_isolation": "best_effort",
+                "declared_mutation": false
+            }"#,
+        )
+        .expect_err("unsupported exact encoding should fail");
+
+        assert!(
+            err.to_string().contains("unknown variant")
+                || err.to_string().contains("unsupported")
+                || err.to_string().contains("did not match any variant"),
+            "unexpected error: {err}"
+        );
+    }
+
     #[test]
     fn load_request_rejects_oversized_input() {
         let dir = tempdir().expect("tempdir");
@@ -530,7 +627,7 @@ mod tests {
         let err = load_request(&link).expect_err("symlink request should fail closed");
         assert!(
             err.contains("Too many levels of symbolic links")
-                || err.contains("path is not a regular file"),
+                || err.contains("target file must be a regular file"),
             "unexpected error: {err}"
         );
     }
@@ -556,7 +653,8 @@ mod tests {
             err.contains("Not a directory")
                 || err.contains("failed to open file")
                 || err.contains("No such file")
-                || err.contains("path is not a regular file"),
+                || err.contains("target file must be a regular file")
+                || err.contains("must not traverse symlinks"),
             "unexpected error: {err}"
         );
     }
@@ -572,7 +670,7 @@ mod tests {
         assert!(
             err.contains("No such device or address")
                 || err.contains("Operation not supported on socket")
-                || err.contains("path is not a regular file"),
+                || err.contains("target file must be a regular file"),
             "unexpected error: {err}"
         );
     }
