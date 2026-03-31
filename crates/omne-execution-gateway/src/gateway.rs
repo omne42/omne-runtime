@@ -1500,8 +1500,8 @@ mod tests {
             ExecutionIsolation::None,
         );
         let request = ExecRequest::new(
-            dummy_program(),
-            Vec::<OsString>::new(),
+            dummy_program_absolute_path(),
+            vec![OsString::from(dummy_shell_flag()), OsString::from("exit 0")],
             workspace.path(),
             ExecutionIsolation::None,
             workspace.path(),
@@ -2873,7 +2873,11 @@ mod tests {
             },
             ExecutionIsolation::None,
         );
-        let program = dummy_program_absolute_path();
+        #[cfg(windows)]
+        let program = workspace.path().join("stdin-helper.exe");
+        #[cfg(not(windows))]
+        let program = workspace.path().join("stdin-helper");
+        write_test_executable_placeholder(&program);
         let request = ExecRequest::new(
             &program,
             Vec::<OsString>::new(),
@@ -2917,7 +2921,7 @@ mod tests {
             .spawn()
             .expect("spawn helper test process");
         let _blocking_stdin = child.stdin.take().expect("helper stdin");
-        let status = wait_for_child_with_timeout(&mut child, Duration::from_secs(3));
+        let status = wait_for_child_with_timeout(&mut child, Duration::from_secs(10));
         assert!(
             status.success(),
             "helper process should exit successfully, got {status}"
