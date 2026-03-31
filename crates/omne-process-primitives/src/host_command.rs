@@ -647,6 +647,7 @@ enum CommandOutputError {
 }
 
 impl CommandOutputError {
+    #[cfg(unix)]
     fn is_executable_file_busy(&self) -> bool {
         match self {
             Self::Spawn(source) => source.kind() == io::ErrorKind::ExecutableFileBusy,
