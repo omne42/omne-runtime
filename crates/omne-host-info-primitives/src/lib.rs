@@ -303,7 +303,20 @@ where
     F: Fn(&std::path::Path) -> bool,
     G: Fn(&str, &[&str]) -> Option<LinuxCommandOutput>,
 {
-    let _ = path_exists;
+    let glibc_loader_paths = [
+        "/lib/ld-linux-x86-64.so.2",
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "/lib/ld-linux-aarch64.so.1",
+        "/lib64/ld-linux-aarch64.so.1",
+        "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
+    ];
+    if glibc_loader_paths
+        .iter()
+        .any(|path| path_exists(std::path::Path::new(path)))
+    {
+        return Some(HostLinuxLibc::Gnu);
+    }
 
     if let Some(output) = run_command("getconf", &["GNU_LIBC_VERSION"])
         && output.status_success
@@ -549,11 +562,18 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_rejects_unknown_linux_libc_when_runtime_checks_fail() {
+    fn detect_host_linux_libc_uses_glibc_loader_paths_when_runtime_commands_fail() {
         let libc = super::detect_host_linux_libc_with(
             &|path| path == std::path::Path::new("/lib64/ld-linux-x86-64.so.2"),
             &|_, _| None,
         );
+        assert_eq!(libc, Some(HostLinuxLibc::Gnu));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_host_linux_libc_rejects_unknown_linux_libc_when_runtime_checks_fail() {
+        let libc = super::detect_host_linux_libc_with(&|_| false, &|_, _| None);
         assert_eq!(libc, None);
     }
 
