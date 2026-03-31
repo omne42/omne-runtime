@@ -2841,6 +2841,11 @@ mod tests {
         write_unix_shell_executable(path, "exit 0\n");
     }
 
+    #[cfg(windows)]
+    fn write_test_executable_placeholder(path: &Path) {
+        fs::write(path, "@echo off\r\nexit /b 0\r\n").expect("write executable placeholder");
+    }
+
     fn host_supported_test_isolation() -> ExecutionIsolation {
         ExecutionIsolation::None
     }
