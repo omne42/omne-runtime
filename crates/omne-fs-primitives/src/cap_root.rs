@@ -200,7 +200,7 @@ pub fn open_regular_file_at(directory: &Dir, component: &Path) -> io::Result<Fil
                 && !metadata.is_file()
             {
                 return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
+                    io::ErrorKind::InvalidInput,
                     "target file must be a regular file",
                 ));
             }
@@ -269,7 +269,7 @@ fn ensure_regular_file(file: File) -> io::Result<File> {
     }
 
     Err(io::Error::new(
-        io::ErrorKind::InvalidData,
+        io::ErrorKind::InvalidInput,
         "target file must be a regular file",
     ))
 }
@@ -635,7 +635,7 @@ mod tests {
         let error =
             open_regular_file_at(&root, Path::new("nested")).expect_err("directory is not a file");
 
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
