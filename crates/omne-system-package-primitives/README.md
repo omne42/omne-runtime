@@ -15,7 +15,8 @@ Low-level system package primitives shared across callers.
 - validated `SystemPackageName` parsing for package identifiers before recipe construction
 - package-manager enum modeling
 - install recipe construction from validated package names, plus `try_*` helpers for string callers
-- default package-manager order per OS
+- default package-manager order only for supported explicit OS identifiers; unknown OS values fail
+  closed instead of returning an empty recipe set
 
 ## Non-Goals
 
