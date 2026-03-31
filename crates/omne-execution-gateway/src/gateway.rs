@@ -234,10 +234,7 @@ impl ExecGateway {
                     &command,
                 ) {
                     Ok(()) => {
-                        let mut command = command;
-                        configure_request_environment(&prepared.event.env, &mut command);
-                        configure_noninteractive_stdio(&mut command);
-                        command.current_dir(&prepared.resolved_paths.cwd.path);
+                        let command = build_prepared_spawn_command(&prepared, &request.args);
                         let event = prepared.event.clone();
                         (
                             event,
@@ -851,6 +848,15 @@ fn apply_prepared_request(
         prepared.required_isolation,
         &prepared.resolved_paths.workspace_root.path,
     )
+}
+
+fn build_prepared_spawn_command(prepared: &PreparedExecRequest, args: &[OsString]) -> Command {
+    let mut command = Command::new(&prepared.bound_program.path);
+    command.args(args);
+    configure_request_environment(&prepared.event.env, &mut command);
+    configure_noninteractive_stdio(&mut command);
+    command.current_dir(&prepared.resolved_paths.cwd.path);
+    command
 }
 
 fn configure_noninteractive_stdio(command: &mut Command) {
@@ -2274,6 +2280,86 @@ mod tests {
             .expect("prepare command")
             .spawn()
             .expect("spawn prepared command")
+            .wait()
+            .expect("wait prepared command");
+        assert!(status.success(), "unexpected status: {status}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_command_discards_preconfigured_arg0_override() {
+        use std::os::unix::process::CommandExt;
+
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let program = dummy_program_absolute_path();
+        let request = ExecRequest::new(
+            &program,
+            vec!["-c", "test \"$0\" != leaked-argv0"],
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+        let mut command = Command::new(&program);
+        command.args(["-c", "test \"$0\" != leaked-argv0"]);
+        command.arg0("leaked-argv0");
+
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let status = result
+            .expect("prepare command")
+            .spawn()
+            .expect("spawn prepared command without leaked argv0")
+            .wait()
+            .expect("wait prepared command");
+        assert!(status.success(), "unexpected status: {status}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_command_discards_process_group_override_from_input_command() {
+        use std::os::unix::process::CommandExt;
+
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let program = dummy_program_absolute_path();
+        let request = ExecRequest::new(
+            &program,
+            vec![
+                "-c",
+                "pgid=$(ps -o pgid= -p \"$$\" | tr -d ' ')\ntest \"$pgid\" != \"$$\"",
+            ],
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+        let mut command = Command::new(&program);
+        command.args([
+            "-c",
+            "pgid=$(ps -o pgid= -p \"$$\" | tr -d ' ')\ntest \"$pgid\" != \"$$\"",
+        ]);
+        command.process_group(0);
+
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let status = result
+            .expect("prepare command")
+            .spawn()
+            .expect("spawn prepared command without inherited process-group override")
             .wait()
             .expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
