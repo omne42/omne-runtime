@@ -260,7 +260,7 @@ where
                 "path escapes archive root",
             )
         })?;
-        let enclosed = sanitize_archive_path(archive_format, &enclosed)?;
+        let enclosed = sanitize_archive_path(archive_format, enclosed)?;
         budget.record_entry(&enclosed)?;
         if entry.is_dir() {
             visitor
