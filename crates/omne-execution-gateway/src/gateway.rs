@@ -1505,6 +1505,49 @@ mod tests {
     }
 
     #[test]
+    fn prepare_command_creates_audit_log_and_writes_prepare_record() {
+        let workspace = tempdir().expect("create temp workspace");
+        let audit_path = canonical_test_root(&workspace)
+            .join("logs")
+            .join("audit")
+            .join("gateway.jsonl");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                audit_log_path: Some(audit_path.clone()),
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let request = ExecRequest::new(
+            non_mutating_program(),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let command = Command::new(resolved_non_mutating_program_path());
+        let (event, result) = gateway.prepare_command(&request, command);
+
+        assert_eq!(event.decision, ExecDecision::Run);
+        assert!(result.is_ok(), "prepare_command should succeed: {result:?}");
+        assert!(
+            audit_path.exists(),
+            "prepare_command should prepare and write the audit file"
+        );
+
+        let content = fs::read_to_string(&audit_path).expect("read audit log");
+        let record: serde_json::Value =
+            serde_json::from_str(content.lines().next().expect("audit line"))
+                .expect("parse audit json");
+        assert_eq!(record["result"]["status"], "prepared");
+        assert_eq!(record["event"]["decision"], "run");
+    }
+
+    #[test]
     fn capability_report_matches_supported_isolation() {
         let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let report = gateway.capability_report();

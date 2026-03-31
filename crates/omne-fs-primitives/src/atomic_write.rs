@@ -778,6 +778,30 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn stage_directory_rejects_missing_suffix_redirected_by_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let trusted_parent = temp.path().join("trusted");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&trusted_parent).expect("mkdir trusted parent");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        symlink(&outside, trusted_parent.join("logs")).expect("create target symlink");
+        let destination = trusted_parent.join("logs").join("tree");
+
+        let err = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+            .expect_err("symlinked missing suffix must fail");
+        assert!(matches!(
+            err,
+            super::AtomicDirectoryError::IoPath {
+                op: "prepare_parent",
+                ..
+            }
+        ));
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn atomic_write_allows_macos_tempdir_root_alias() {
