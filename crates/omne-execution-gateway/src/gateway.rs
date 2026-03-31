@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use crate::audit::{ExecDecision, ExecEvent, requested_policy_meta};
-use crate::audit_log::AuditLogger;
+use crate::audit_log::{AuditLogger, PreparedAuditSink};
 use crate::error::{ExecError, ExecResult};
 use crate::policy::GatewayPolicy;
 use crate::sandbox;
@@ -168,9 +168,9 @@ impl ExecGateway {
 
     /// Execute a request and retain the authoritative policy/audit event.
     pub fn execute(&self, request: &ExecRequest) -> ExecutionOutcome {
-        let (event, result) = match self.prepare_request(request) {
-            Ok(prepared) => match self.ensure_audit_ready(&prepared.event) {
-                Ok(()) => {
+        let (event, result, audit_sink) = match self.prepare_request(request) {
+            Ok(prepared) => match self.prepare_audit_sink(&prepared.event) {
+                Ok(mut audit_sink) => {
                     let mut command = Command::new(&prepared.bound_program.path);
                     command.args(&request.args);
                     configure_request_environment(&prepared.event.env, &mut command);
@@ -186,23 +186,26 @@ impl ExecGateway {
                         Ok((sandbox_runtime, status)) => {
                             let mut event = prepared.event;
                             event.sandbox_runtime = sandbox_runtime;
-                            (event, Ok(status))
+                            (event, Ok(status), audit_sink.take())
                         }
-                        Err(err) => (prepared.event, Err(err)),
+                        Err(err) => (prepared.event, Err(err), audit_sink.take()),
                     }
                 }
                 Err(err) => {
                     let (event, err) = err.into_parts();
-                    (event, Err(err))
+                    (event, Err(err), None)
                 }
             },
             Err(err) => {
                 let (event, err) = err.into_parts();
-                (event, Err(err))
+                (event, Err(err), None)
             }
         };
         let result = if audit_error_already_reported(&result) {
             result
+        } else if let Some(mut audit_sink) = audit_sink {
+            let audit_result = audit_sink.write_execution_record(&event, &result);
+            combine_result_with_audit_write(result, audit_result)
         } else if let Some(audit) = &self.audit {
             let audit_result = audit.write_execution_record(&event, &result);
             combine_result_with_audit_write(result, audit_result)
@@ -223,9 +226,9 @@ impl ExecGateway {
         request: &ExecRequest,
         command: Command,
     ) -> (ExecEvent, ExecResult<PreparedCommand>) {
-        let (event, result) = match self.prepare_request(request) {
-            Ok(prepared) => match self.ensure_audit_ready(&prepared.event) {
-                Ok(()) => match validate_prepared_command_matches_request(
+        let (event, result, audit_sink) = match self.prepare_request(request) {
+            Ok(prepared) => match self.prepare_audit_sink(&prepared.event) {
+                Ok(mut audit_sink) => match validate_prepared_command_matches_request(
                     prepared.bound_program.path.as_os_str(),
                     &request.args,
                     &command,
@@ -236,25 +239,32 @@ impl ExecGateway {
                         configure_noninteractive_stdio(&mut command);
                         command.current_dir(&prepared.resolved_paths.cwd.path);
                         let event = prepared.event.clone();
-                        (event, Ok(PreparedCommand { command, prepared }))
+                        (
+                            event,
+                            Ok(PreparedCommand { command, prepared }),
+                            audit_sink.take(),
+                        )
                     }
                     Err(err) => {
                         let event = self.deny_event(prepared.event, "prepared_command_mismatch");
-                        (event, Err(err))
+                        (event, Err(err), audit_sink.take())
                     }
                 },
                 Err(err) => {
                     let (event, err) = err.into_parts();
-                    (event, Err(err))
+                    (event, Err(err), None)
                 }
             },
             Err(err) => {
                 let (event, err) = err.into_parts();
-                (event, Err(err))
+                (event, Err(err), None)
             }
         };
         let result = if audit_error_already_reported(&result) {
             result
+        } else if let Some(mut audit_sink) = audit_sink {
+            let audit_result = audit_sink.write_prepare_record(&event, &result);
+            combine_result_with_audit_write(result, audit_result)
         } else if let Some(audit) = &self.audit {
             let audit_result = audit.write_prepare_record(&event, &result);
             combine_result_with_audit_write(result, audit_result)
@@ -462,14 +472,18 @@ impl ExecGateway {
         }
     }
 
-    fn ensure_audit_ready(&self, event: &ExecEvent) -> Result<(), PreflightError> {
-        if let Some(audit) = &self.audit
-            && let Err(err) = audit.ensure_ready()
-        {
-            return Err(self.deny_preflight(event.clone(), "audit_log_unavailable", err));
+    fn prepare_audit_sink(
+        &self,
+        event: &ExecEvent,
+    ) -> Result<Option<PreparedAuditSink>, PreflightError> {
+        if let Some(audit) = &self.audit {
+            return audit
+                .prepare_sink()
+                .map(Some)
+                .map_err(|err| self.deny_preflight(event.clone(), "audit_log_unavailable", err));
         }
 
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -2689,11 +2703,13 @@ mod tests {
         assert!(content.contains("\"status\":\"prepare_error\""));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn execute_status_fails_when_audit_write_breaks_after_preflight() {
+    fn execute_status_reuses_prepared_audit_sink_after_path_replacement() {
         let workspace = tempdir().expect("create temp workspace");
         let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
-        let (program, args) = audit_breaking_shell_command(&audit_path);
+        let moved_audit_path = canonical_test_root(&workspace).join("audit.moved.jsonl");
+        let (program, args) = audit_rebinding_shell_command(&audit_path, &moved_audit_path);
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             audit_log_path: Some(audit_path.clone()),
@@ -2713,21 +2729,17 @@ mod tests {
         )
         .with_declared_mutation(true);
 
-        let result = gateway.execute_status(&request);
-        #[cfg(windows)]
-        match result {
-            Err(ExecError::AuditLogWriteFailed { path, .. }) => assert_eq!(path, audit_path),
-            Ok(status) => assert!(
-                !status.success(),
-                "windows helper should not succeed when audit sink mutation does not surface"
-            ),
-            Err(other) => panic!("unexpected error: {other}"),
-        }
-        #[cfg(not(windows))]
-        match result.expect_err("audit write failure should be surfaced") {
-            ExecError::AuditLogWriteFailed { path, .. } => assert_eq!(path, audit_path),
-            other => panic!("unexpected error: {other}"),
-        }
+        let status = gateway
+            .execute_status(&request)
+            .expect("prepared audit sink should survive path replacement");
+        assert!(status.success());
+        assert!(
+            audit_path.is_dir(),
+            "original audit path should now be a directory"
+        );
+
+        let content = fs::read_to_string(&moved_audit_path).expect("read moved audit file");
+        assert!(content.contains("\"status\":\"exited\""));
     }
 
     #[cfg(unix)]
@@ -2806,27 +2818,20 @@ mod tests {
         )
     }
 
-    #[cfg(windows)]
-    fn audit_breaking_shell_command(audit_path: &Path) -> (PathBuf, Vec<OsString>) {
-        (
-            dummy_program_absolute_path(),
-            vec![
-                OsString::from("/C"),
-                OsString::from(format!(
-                    "del /F /Q \"{0}\" && mkdir \"{0}\"",
-                    audit_path.display()
-                )),
-            ],
-        )
-    }
-
     #[cfg(not(windows))]
-    fn audit_breaking_shell_command(audit_path: &Path) -> (PathBuf, Vec<OsString>) {
+    fn audit_rebinding_shell_command(
+        audit_path: &Path,
+        moved_path: &Path,
+    ) -> (PathBuf, Vec<OsString>) {
         (
             dummy_program_absolute_path(),
             vec![
                 OsString::from("-c"),
-                OsString::from(format!("rm \"{0}\" && mkdir \"{0}\"", audit_path.display())),
+                OsString::from(format!(
+                    "mv \"{0}\" \"{1}\" && mkdir \"{0}\"",
+                    audit_path.display(),
+                    moved_path.display()
+                )),
             ],
         )
     }

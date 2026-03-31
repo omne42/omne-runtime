@@ -20,6 +20,12 @@ pub(crate) struct AuditLogger {
     path: PathBuf,
 }
 
+#[derive(Debug)]
+pub(crate) struct PreparedAuditSink {
+    path: PathBuf,
+    file: std::fs::File,
+}
+
 impl AuditLogger {
     pub(crate) fn new(path: impl AsRef<Path>) -> Self {
         Self {
@@ -46,9 +52,18 @@ impl AuditLogger {
         self.write_record(AuditRecord::from_execution(event, result))
     }
 
+    #[cfg(test)]
     pub(crate) fn ensure_ready(&self) -> ExecResult<()> {
-        self.try_open_appendable_file()
+        self.try_open_sink()
             .map(|_| ())
+            .map_err(|err| ExecError::AuditLogUnavailable {
+                path: self.path.clone(),
+                detail: err.to_string(),
+            })
+    }
+
+    pub(crate) fn prepare_sink(&self) -> ExecResult<PreparedAuditSink> {
+        self.try_open_sink()
             .map_err(|err| ExecError::AuditLogUnavailable {
                 path: self.path.clone(),
                 detail: err.to_string(),
@@ -65,32 +80,24 @@ impl AuditLogger {
     }
 
     fn write_record(&self, record: AuditRecord) -> ExecResult<()> {
-        self.try_write_record(record)
+        self.try_open_sink()
+            .and_then(|mut sink| sink.try_write_record(record))
             .map_err(|err| ExecError::AuditLogWriteFailed {
                 path: self.path.clone(),
                 detail: err.to_string(),
             })
     }
 
-    fn try_write_record(&self, record: AuditRecord) -> Result<(), Box<dyn std::error::Error>> {
-        let line = serde_json::to_string(&record)?;
-        let mut file = self.try_open_appendable_file()?;
-        file.lock_exclusive()?;
-        let write_result = file
-            .seek(SeekFrom::End(0))
-            .and_then(|_| writeln!(file, "{line}"))
-            .and_then(|_| file.flush());
-        let unlock_result = file.unlock();
-        write_result?;
-        unlock_result?;
-        Ok(())
-    }
-
-    fn try_open_appendable_file(&self) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    fn try_open_sink(&self) -> Result<PreparedAuditSink, Box<dyn std::error::Error>> {
         let mut last_not_found = None;
         for attempt in 0..APPENDABLE_OPEN_NOT_FOUND_RETRIES {
             match open_appendable_regular_file_in_ambient_root(&self.path, "audit log") {
-                Ok(file) => return Ok(file.into_std()),
+                Ok(file) => {
+                    return Ok(PreparedAuditSink {
+                        path: self.path.clone(),
+                        file: file.into_std(),
+                    });
+                }
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     last_not_found = Some(err);
                     if attempt + 1 < APPENDABLE_OPEN_NOT_FOUND_RETRIES {
@@ -105,6 +112,49 @@ impl AuditLogger {
         Err(last_not_found
             .unwrap_or_else(|| std::io::Error::other("audit log open failed without an error"))
             .into())
+    }
+}
+
+impl PreparedAuditSink {
+    pub(crate) fn write_prepare_record<T, E>(
+        &mut self,
+        event: &ExecEvent,
+        result: &Result<T, E>,
+    ) -> ExecResult<()>
+    where
+        E: Display,
+    {
+        self.write_record(AuditRecord::from_prepare(event, result))
+    }
+
+    pub(crate) fn write_execution_record(
+        &mut self,
+        event: &ExecEvent,
+        result: &ExecResult<ExitStatus>,
+    ) -> ExecResult<()> {
+        self.write_record(AuditRecord::from_execution(event, result))
+    }
+
+    fn write_record(&mut self, record: AuditRecord) -> ExecResult<()> {
+        self.try_write_record(record)
+            .map_err(|err| ExecError::AuditLogWriteFailed {
+                path: self.path.clone(),
+                detail: err.to_string(),
+            })
+    }
+
+    fn try_write_record(&mut self, record: AuditRecord) -> Result<(), Box<dyn std::error::Error>> {
+        let line = serde_json::to_string(&record)?;
+        self.file.lock_exclusive()?;
+        let write_result = self
+            .file
+            .seek(SeekFrom::End(0))
+            .and_then(|_| writeln!(self.file, "{line}"))
+            .and_then(|_| self.file.flush());
+        let unlock_result = self.file.unlock();
+        write_result?;
+        unlock_result?;
+        Ok(())
     }
 }
 
@@ -452,6 +502,31 @@ mod tests {
             ExecError::AuditLogWriteFailed { path: err_path, .. } => assert_eq!(err_path, path),
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_sink_keeps_writing_to_bound_handle_after_path_replacement() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_test_root(&dir);
+        let path = root.join("audit.jsonl");
+        let moved_path = root.join("audit.moved.jsonl");
+        let logger = AuditLogger::new(&path);
+        let event = sample_event("echo");
+
+        let mut sink = logger.prepare_sink().expect("prepare audit sink");
+        fs::rename(&path, &moved_path).expect("move prepared audit file");
+        fs::create_dir(&path).expect("replace original audit path with directory");
+
+        sink.write_prepare_record(&event, &Ok::<(), ExecError>(()))
+            .expect("prepared sink should keep writing through the bound handle");
+
+        let content = fs::read_to_string(&moved_path).expect("read moved audit file");
+        assert!(content.contains("\"status\":\"prepared\""));
+        assert!(
+            path.is_dir(),
+            "original audit path should now be a directory to prove no reopen happened"
+        );
     }
 
     fn sample_event(program: impl Into<OsString>) -> ExecEvent {

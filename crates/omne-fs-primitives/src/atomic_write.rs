@@ -298,6 +298,19 @@ fn ensure_atomic_parent_directory(
 }
 
 fn normalize_platform_root_alias(path: &Path) -> io::Result<PathBuf> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(path.to_path_buf())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        normalize_macos_root_alias(path)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn normalize_macos_root_alias(path: &Path) -> io::Result<PathBuf> {
     if !path.is_absolute() {
         return Ok(path.to_path_buf());
     }
@@ -313,7 +326,11 @@ fn normalize_platform_root_alias(path: &Path) -> io::Result<PathBuf> {
         }
 
         match fs::symlink_metadata(&visited) {
-            Ok(metadata) if metadata.file_type().is_symlink() && normal_index == 0 => {
+            Ok(metadata)
+                if metadata.file_type().is_symlink()
+                    && normal_index == 0
+                    && is_macos_root_alias_component(component) =>
+            {
                 let mut canonical = fs::canonicalize(&visited)?;
                 for remainder in components {
                     canonical.push(remainder.as_os_str());
@@ -329,6 +346,14 @@ fn normalize_platform_root_alias(path: &Path) -> io::Result<PathBuf> {
     }
 
     Ok(path.to_path_buf())
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_root_alias_component(component: Component<'_>) -> bool {
+    matches!(
+        component,
+        Component::Normal(part) if part == "var" || part == "tmp"
+    )
 }
 
 impl StagedAtomicFile {
@@ -814,5 +839,22 @@ mod tests {
             std::fs::read(&destination).expect("read destination"),
             b"tool"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_root_alias_matching_stays_narrow() {
+        assert!(super::is_macos_root_alias_component(Component::Normal(
+            "var".as_ref()
+        )));
+        assert!(super::is_macos_root_alias_component(Component::Normal(
+            "tmp".as_ref()
+        )));
+        assert!(!super::is_macos_root_alias_component(Component::Normal(
+            "private".as_ref()
+        )));
+        assert!(!super::is_macos_root_alias_component(Component::Normal(
+            "Users".as_ref()
+        )));
     }
 }
