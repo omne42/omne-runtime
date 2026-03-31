@@ -661,11 +661,13 @@ mod tests {
 
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
-        download_and_install_archive_tree, install_archive_tree_from_bytes,
-        install_archive_tree_from_reader_with_limits,
+        download_and_install_archive_tree, install_archive_tree_from_reader_with_limits,
     };
     #[cfg(unix)]
-    use super::{MAX_ZIP_SYMLINK_TARGET_BYTES, extract_tar_tree, extract_zip_tree};
+    use super::{
+        MAX_ZIP_SYMLINK_TARGET_BYTES, extract_tar_tree, extract_zip_tree,
+        install_archive_tree_from_bytes,
+    };
 
     fn canonical_test_root(dir: &tempfile::TempDir) -> PathBuf {
         dir.path()
@@ -1195,7 +1197,7 @@ mod tests {
             ("alias", b"safe/target.txt".as_slice(), 0o120777),
         ])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join("tree");
+        let destination = canonical_test_root(&temp).join("tree");
         fs::create_dir_all(&destination)?;
         fs::write(destination.join("stale.txt"), b"stale")?;
 
