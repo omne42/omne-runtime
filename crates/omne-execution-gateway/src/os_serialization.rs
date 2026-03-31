@@ -1,7 +1,8 @@
 use std::ffi::{OsStr, OsString};
 
-use serde::Serialize;
+use serde::de::Error as DeError;
 use serde::ser::{SerializeSeq, Serializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LossyOsStr<'a>(pub(crate) &'a OsStr);
@@ -109,16 +110,16 @@ struct ExactEnvPair<'a> {
     value: ExactOsStr<'a>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct ExactOsStringValue {
-    encoding: ExactOsStringEncoding,
-    value: String,
+pub(crate) struct ExactOsStringValue {
+    pub(crate) encoding: ExactOsStringEncoding,
+    pub(crate) value: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum ExactOsStringEncoding {
+pub(crate) enum ExactOsStringEncoding {
     Utf8,
     #[cfg(unix)]
     UnixBytesHex,
@@ -137,6 +138,107 @@ fn exact_os_string_value(value: &OsStr) -> ExactOsStringValue {
     }
 
     non_utf8_exact_os_string_value(value)
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum LossyOrExactOsString {
+    Utf8(String),
+    Exact(ExactOsStringValue),
+}
+
+#[allow(dead_code)]
+impl LossyOrExactOsString {
+    fn into_os_string(self) -> Result<OsString, String> {
+        match self {
+            Self::Utf8(value) => Ok(OsString::from(value)),
+            Self::Exact(value) => exact_os_string_value_into_os_string(value),
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn deserialize_lossy_or_exact_os_string<'de, D>(
+    deserializer: D,
+) -> Result<OsString, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    LossyOrExactOsString::deserialize(deserializer)?
+        .into_os_string()
+        .map_err(D::Error::custom)
+}
+
+#[allow(dead_code)]
+pub(crate) fn deserialize_lossy_or_exact_os_strings<'de, D>(
+    deserializer: D,
+) -> Result<Vec<OsString>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Vec::<LossyOrExactOsString>::deserialize(deserializer)?
+        .into_iter()
+        .map(LossyOrExactOsString::into_os_string)
+        .collect::<Result<_, _>>()
+        .map_err(D::Error::custom)
+}
+
+#[allow(dead_code)]
+fn exact_os_string_value_into_os_string(value: ExactOsStringValue) -> Result<OsString, String> {
+    match value.encoding {
+        ExactOsStringEncoding::Utf8 => Ok(OsString::from(value.value)),
+        #[cfg(unix)]
+        ExactOsStringEncoding::UnixBytesHex => decode_unix_bytes_hex_os_string(&value.value),
+        #[cfg(windows)]
+        ExactOsStringEncoding::WindowsUtf16LeHex => {
+            decode_windows_utf16_le_hex_os_string(&value.value)
+        }
+        #[cfg(all(not(unix), not(windows)))]
+        ExactOsStringEncoding::PlatformDebug => {
+            Err("platform_debug exact OS string input is unsupported on this platform".to_string())
+        }
+    }
+}
+
+#[cfg(unix)]
+#[allow(dead_code)]
+fn decode_unix_bytes_hex_os_string(hex: &str) -> Result<OsString, String> {
+    use std::os::unix::ffi::OsStringExt;
+
+    decode_hex(hex).map(OsString::from_vec)
+}
+
+#[cfg(windows)]
+#[allow(dead_code)]
+fn decode_windows_utf16_le_hex_os_string(hex: &str) -> Result<OsString, String> {
+    let bytes = decode_hex(hex)?;
+    let chunks = bytes.chunks_exact(2);
+    if !chunks.remainder().is_empty() {
+        return Err("windows_utf16_le_hex value must contain an even number of bytes".to_string());
+    }
+
+    let units = chunks
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    String::from_utf16(&units)
+        .map(OsString::from)
+        .map_err(|err| format!("invalid UTF-16 exact OS string value: {err}"))
+}
+
+#[allow(dead_code)]
+fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
+    if !hex.len().is_multiple_of(2) {
+        return Err("hex value must contain an even number of characters".to_string());
+    }
+
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&hex[index..index + 2], 16)
+                .map_err(|_| format!("invalid hex at byte offset {index}"))
+        })
+        .collect()
 }
 
 #[cfg(unix)]
@@ -212,5 +314,49 @@ mod tests {
                 "value": "666f80"
             })
         );
+    }
+
+    #[test]
+    fn decode_hex_rejects_odd_length() {
+        let err = decode_hex("abc").expect_err("odd-length hex should fail");
+        assert!(err.contains("even number"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deserialize_exact_unix_bytes_into_os_string() {
+        use std::os::unix::ffi::OsStringExt;
+
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(deserialize_with = "deserialize_lossy_or_exact_os_string")]
+            value: OsString,
+        }
+
+        let wrapper: Wrapper = serde_json::from_value(serde_json::json!({
+            "value": {
+                "encoding": "unix_bytes_hex",
+                "value": "666f80"
+            }
+        }))
+        .expect("deserialize exact unix bytes");
+
+        assert_eq!(wrapper.value, OsString::from_vec(vec![0x66, 0x6f, 0x80]));
+    }
+
+    #[test]
+    fn deserialize_utf8_string_into_os_string() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(deserialize_with = "deserialize_lossy_or_exact_os_string")]
+            value: OsString,
+        }
+
+        let wrapper: Wrapper = serde_json::from_value(serde_json::json!({
+            "value": "echo"
+        }))
+        .expect("deserialize utf8 string");
+
+        assert_eq!(wrapper.value, OsString::from("echo"));
     }
 }

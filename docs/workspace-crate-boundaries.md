@@ -89,8 +89,8 @@ package 名保持一致。
 - `omne-artifact-install-primitives` 依赖 `omne-archive-primitives`、
   `omne-fs-primitives`、`omne-integrity-primitives` 与 foundation 的 `http-kit`。
   它首先面向需要共享 artifact 下载 + 校验 + 落盘/解压安装管道的 sibling caller。
-- `omne-execution-gateway` 当前不依赖另外七个 workspace crate。
-  它直接依赖 `policy-meta`，并把平台相关 sandbox 代码保留在 `src/sandbox/*` 下。
+- `omne-execution-gateway` 当前依赖 `omne-fs-primitives` 与 `policy-meta`。
+  它把 bounded no-follow policy/request/audit-log 文件输入复用到 `omne-fs-primitives`，并把平台相关 sandbox 代码保留在 `src/sandbox/*` 下。
 - `omne-process-primitives` 是独立的 sibling crate，供需要通用命令探测、宿主机命令执行、host recipe 执行和进程树清理能力的下游 runtime 或 domain caller 直接依赖。
 - `omne-archive-primitives` 当前也不被其他 runtime crate 依赖。
   它首先面向需要共享 archive/compression 提取能力的 sibling caller。

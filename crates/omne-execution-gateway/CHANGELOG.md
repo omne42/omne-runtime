@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- reuse `omne-fs-primitives` ambient no-follow regular-file helpers for policy/request/audit-log inputs, and let CLI request JSON carry exact OS-string encodings instead of forcing UTF-8-only input
 - keep `evaluate()` / `resolve_request()` / `preflight()` side-effect free by moving audit-sink preparation to `execute()` / `prepare_command()`, while still failing closed before unaudited execution when the sink is unavailable
 - retry appendable audit-log file opens when concurrent first-writer creation briefly reports `ENOENT`, so JSONL audit writes stay stable on macOS and other sensitive filesystems
 - require `declared_mutation=false` requests to bind an explicit executable from `non_mutating_program_allowlist`; unknown tools can no longer bypass mutation policy just by self-labeling as read-only
