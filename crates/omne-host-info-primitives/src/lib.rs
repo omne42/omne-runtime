@@ -298,6 +298,12 @@ struct LinuxCommandOutput {
 }
 
 #[cfg(target_os = "linux")]
+const GETCONF_PROBE_CANDIDATES: &[&str] = &["getconf", "/usr/bin/getconf", "/bin/getconf"];
+
+#[cfg(target_os = "linux")]
+const LDD_PROBE_CANDIDATES: &[&str] = &["ldd", "/usr/bin/ldd", "/bin/ldd"];
+
+#[cfg(target_os = "linux")]
 fn detect_host_linux_libc_with<F, G>(path_exists: &F, run_command: &G) -> Option<HostLinuxLibc>
 where
     F: Fn(&std::path::Path) -> bool,
@@ -305,20 +311,39 @@ where
 {
     let _ = path_exists;
 
-    if let Some(output) = run_command("getconf", &["GNU_LIBC_VERSION"])
+    if let Some(output) =
+        run_linux_probe_command(run_command, GETCONF_PROBE_CANDIDATES, &["GNU_LIBC_VERSION"])
         && output.status_success
         && output.stdout.contains("glibc")
     {
         return Some(HostLinuxLibc::Gnu);
     }
 
-    let ldd_output = run_command("ldd", &["--version"])?;
+    let ldd_output = run_linux_probe_command(run_command, LDD_PROBE_CANDIDATES, &["--version"])?;
     let combined = format!("{}\n{}", ldd_output.stdout, ldd_output.stderr).to_ascii_lowercase();
     if combined.contains("musl") {
         return Some(HostLinuxLibc::Musl);
     }
     if ldd_output.status_success && (combined.contains("glibc") || combined.contains("gnu libc")) {
         return Some(HostLinuxLibc::Gnu);
+    }
+
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux_probe_command<G>(
+    run_command: &G,
+    programs: &[&str],
+    args: &[&str],
+) -> Option<LinuxCommandOutput>
+where
+    G: Fn(&str, &[&str]) -> Option<LinuxCommandOutput>,
+{
+    for program in programs {
+        if let Some(output) = run_command(program, args) {
+            return Some(output);
+        }
     }
 
     None
@@ -511,6 +536,22 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn detect_host_linux_libc_uses_absolute_getconf_probe_when_path_is_hidden() {
+        let libc = super::detect_host_linux_libc_with(&|_| false, &|program, _| {
+            if program == "/usr/bin/getconf" {
+                return Some(super::LinuxCommandOutput {
+                    status_success: true,
+                    stdout: "glibc 2.39\n".to_string(),
+                    stderr: String::new(),
+                });
+            }
+            None
+        });
+        assert_eq!(libc, Some(HostLinuxLibc::Gnu));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn detect_host_linux_libc_ignores_musl_toolchain_files_when_getconf_reports_glibc() {
         let libc = super::detect_host_linux_libc_with(
             &|path| path == std::path::Path::new("/lib/ld-musl-x86_64.so.1"),
@@ -545,6 +586,22 @@ mod tests {
             None
         });
         assert_eq!(libc, Some(HostLinuxLibc::Musl));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_host_linux_libc_uses_absolute_ldd_probe_when_path_is_hidden() {
+        let libc = super::detect_host_linux_libc_with(&|_| false, &|program, _| {
+            if program == "/usr/bin/ldd" {
+                return Some(super::LinuxCommandOutput {
+                    status_success: true,
+                    stdout: "ldd (GNU libc) 2.39\n".to_string(),
+                    stderr: String::new(),
+                });
+            }
+            None
+        });
+        assert_eq!(libc, Some(HostLinuxLibc::Gnu));
     }
 
     #[cfg(target_os = "linux")]

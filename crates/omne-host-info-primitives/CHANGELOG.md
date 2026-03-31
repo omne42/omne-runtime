@@ -8,6 +8,8 @@
   `gnu`/`musl` detection succeeds, so callers do not select the wrong target triple
 - stop inferring the host Linux libc from ambient musl/glibc filesystem markers, so a glibc host
   with extra musl toolchains cannot be misdetected as `*-musl`
+- keep Linux libc detection working when callers narrow `PATH` by retrying runtime probes through
+  standard absolute `getconf`/`ldd` paths instead of silently losing the host triple
 - reject unsupported target overrides and unknown host target triples instead of accepting arbitrary
   strings
 - infer executable suffixes only from validated canonical target triples instead of substring

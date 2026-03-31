@@ -8,8 +8,9 @@
 
 - 识别支持的宿主 OS/arch 组合。
 - 把宿主组合映射到 canonical target triple，并在 Linux 上先成功区分默认 `gnu` / `musl`
-  宿主 ABI；这里只接受运行时探测结果。如果 libc 无法判断，宿主识别直接 fail closed，而不是
-  默默回退成 `gnu`，也不会因为系统里额外存在 musl/glibc 工具链文件就误判宿主 ABI。
+  宿主 ABI；这里只接受运行时探测结果，并且在 bare command 被隐藏时会继续尝试标准绝对
+  `getconf` / `ldd` 路径。如果 libc 无法判断，宿主识别直接 fail closed，而不是默默回退成
+  `gnu`，也不会因为系统里额外存在 musl/glibc 工具链文件就误判宿主 ABI。
 - 解析可选 target override，并且只接受这个 crate 已知的 canonical target triple；空值时回退到
   已校验的宿主 triple。
 - 解析当前用户 home 目录，只接受来自标准环境变量的绝对路径。
