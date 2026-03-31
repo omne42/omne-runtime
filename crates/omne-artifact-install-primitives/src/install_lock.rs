@@ -48,6 +48,7 @@ pub(crate) fn sanitize_lock_component(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]
