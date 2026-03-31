@@ -846,17 +846,17 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_root_alias_matching_stays_narrow() {
-        assert!(super::is_macos_root_alias_component(std::path::Component::Normal(
-            "var".as_ref()
-        )));
-        assert!(super::is_macos_root_alias_component(std::path::Component::Normal(
-            "tmp".as_ref()
-        )));
-        assert!(!super::is_macos_root_alias_component(std::path::Component::Normal(
-            "private".as_ref()
-        )));
-        assert!(!super::is_macos_root_alias_component(std::path::Component::Normal(
-            "Users".as_ref()
-        )));
+        assert!(super::is_macos_root_alias_component(
+            std::path::Component::Normal("var".as_ref())
+        ));
+        assert!(super::is_macos_root_alias_component(
+            std::path::Component::Normal("tmp".as_ref())
+        ));
+        assert!(!super::is_macos_root_alias_component(
+            std::path::Component::Normal("private".as_ref())
+        ));
+        assert!(!super::is_macos_root_alias_component(
+            std::path::Component::Normal("Users".as_ref())
+        ));
     }
 }
