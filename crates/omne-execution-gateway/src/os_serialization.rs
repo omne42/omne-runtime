@@ -212,8 +212,6 @@ fn decode_unix_bytes_hex_os_string(hex: &str) -> Result<OsString, String> {
 #[cfg(windows)]
 #[allow(dead_code)]
 fn decode_windows_utf16_le_hex_os_string(hex: &str) -> Result<OsString, String> {
-    use std::os::windows::ffi::OsStringExt;
-
     let bytes = decode_hex(hex)?;
     let chunks = bytes.chunks_exact(2);
     if !chunks.remainder().is_empty() {
