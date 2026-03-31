@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- make Linux process-tree cleanup fail closed when the group leader exits before cleanup can bind a `/proc` identity, instead of arming `killpg` from a bare historical PGID
 - resolve bare direct commands to a concrete executable path before spawn, so request-scoped `PATH`
   probing, execution, and `CommandNotFound` classification stay consistent and missing
   interpreters/loaders are not mislabeled as missing commands

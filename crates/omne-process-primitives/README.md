@@ -28,8 +28,9 @@ Low-level host-command and process-tree primitives shared across callers.
 - fail-closed process-tree capture on Unix unless the child was spawned into its own dedicated process group via `configure_command_for_process_tree`
 - Windows `taskkill` cleanup that waits for command success before skipping descendant fallback
 - Unix process-group cleanup that fails closed once the captured leader PID has been reused by a
-  different live process, while Linux can still reap same-session orphaned descendants after the
-  original leader has actually exited
+  different live process, and on Linux also fails closed when the leader exits before cleanup can
+  still bind the original `/proc` identity; only leaders captured successfully may later reap
+  same-session orphaned descendants after the original leader has actually exited
 
 ## Non-Goals
 
