@@ -54,7 +54,7 @@ JSON mode example:
 ```json
 {
   "supported_isolation": "none",
-  "policy_default_isolation": "best_effort"
+  "policy_default_isolation": "none"
 }
 ```
 
@@ -87,7 +87,7 @@ Example fragment:
       "version": 1,
       "execution_isolation": "none"
     },
-    "policy_default_isolation": "best_effort"
+    "policy_default_isolation": "none"
   },
   "event": {
     "decision": "run",

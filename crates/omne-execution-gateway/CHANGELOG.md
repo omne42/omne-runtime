@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- make `GatewayPolicy::default()` host-compatible on current `None`-only hosts, and teach `ExecGateway::new()` / `with_supported_isolation()` to choose a capability-aligned default isolation instead of advertising an unusable policy default
 - require explicit absolute program paths to point at spawnable executables, and make Unix gateway
   tests resolve the actual shell path instead of assuming `/bin/sh`
 - reuse `omne-fs-primitives` ambient no-follow regular-file helpers for policy/request/audit-log inputs, and let CLI request JSON carry exact OS-string encodings instead of forcing UTF-8-only input

@@ -395,13 +395,13 @@ mod tests {
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             GatewayPolicy {
                 enforce_allowlisted_program_for_mutation: false,
-                ..GatewayPolicy::default()
+                ..GatewayPolicy::default_for_supported_isolation(ExecutionIsolation::BestEffort)
             },
             ExecutionIsolation::BestEffort,
         );
         let workspace = sample_workspace();
         let request = ExecRequest::with_policy_default_isolation(
-            "whoami",
+            "echo",
             Vec::<String>::new(),
             &workspace,
             ExecutionIsolation::BestEffort,

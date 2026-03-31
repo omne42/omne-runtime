@@ -106,8 +106,11 @@ impl Default for ExecGateway {
 
 impl ExecGateway {
     pub fn new() -> Self {
-        let policy = GatewayPolicy::default();
-        Self::with_policy_and_supported_isolation(policy, sandbox::detect_supported_isolation())
+        let supported_isolation = sandbox::detect_supported_isolation();
+        Self::with_policy_and_supported_isolation(
+            GatewayPolicy::default_for_supported_isolation(supported_isolation),
+            supported_isolation,
+        )
     }
 
     pub fn with_policy(policy: GatewayPolicy) -> Self {
@@ -127,7 +130,10 @@ impl ExecGateway {
     }
 
     pub fn with_supported_isolation(supported_isolation: ExecutionIsolation) -> Self {
-        Self::with_policy_and_supported_isolation(GatewayPolicy::default(), supported_isolation)
+        Self::with_policy_and_supported_isolation(
+            GatewayPolicy::default_for_supported_isolation(supported_isolation),
+            supported_isolation,
+        )
     }
 
     pub fn capability_report(&self) -> CapabilityReport {
@@ -1569,6 +1575,14 @@ mod tests {
             report.policy_default_isolation,
             ExecutionIsolation::BestEffort
         );
+    }
+
+    #[test]
+    fn default_gateway_policy_default_matches_none_only_hosts() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::None);
+        let report = gateway.capability_report();
+        assert_eq!(report.supported_isolation, ExecutionIsolation::None);
+        assert_eq!(report.policy_default_isolation, ExecutionIsolation::None);
     }
 
     #[test]
