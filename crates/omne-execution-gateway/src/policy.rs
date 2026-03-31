@@ -22,17 +22,34 @@ pub struct GatewayPolicy {
 impl Default for GatewayPolicy {
     fn default() -> Self {
         Self {
-            allow_isolation_none: false,
+            allow_isolation_none: true,
             enforce_allowlisted_program_for_mutation: true,
             mutating_program_allowlist: Vec::new(),
             non_mutating_program_allowlist: Vec::new(),
-            default_isolation: ExecutionIsolation::BestEffort,
+            default_isolation: ExecutionIsolation::None,
             audit_log_path: None,
         }
     }
 }
 
 impl GatewayPolicy {
+    pub fn default_for_supported_isolation(
+        supported_isolation: ExecutionIsolation,
+    ) -> Self {
+        let default_isolation = match supported_isolation {
+            ExecutionIsolation::None => ExecutionIsolation::None,
+            ExecutionIsolation::BestEffort | ExecutionIsolation::Strict => {
+                ExecutionIsolation::BestEffort
+            }
+        };
+
+        Self {
+            allow_isolation_none: matches!(default_isolation, ExecutionIsolation::None),
+            default_isolation,
+            ..Self::default()
+        }
+    }
+
     pub fn is_mutating_program_allowlisted(&self, program: &str) -> bool {
         self.is_mutating_program_allowlisted_path(Path::new(program))
     }
@@ -171,12 +188,21 @@ mod tests {
     }
 
     #[test]
-    fn default_policy_denies_none_and_enforces_mutation_allowlist() {
+    fn default_policy_allows_none_and_enforces_mutation_allowlist() {
         let policy = GatewayPolicy::default();
-        assert!(!policy.allow_isolation_none);
+        assert!(policy.allow_isolation_none);
         assert!(policy.enforce_allowlisted_program_for_mutation);
         assert!(policy.mutating_program_allowlist.is_empty());
         assert!(policy.non_mutating_program_allowlist.is_empty());
+        assert_eq!(policy.default_isolation, ExecutionIsolation::None);
+    }
+
+    #[test]
+    fn host_compatible_default_uses_best_effort_when_available() {
+        let policy = GatewayPolicy::default_for_supported_isolation(ExecutionIsolation::BestEffort);
+        assert!(!policy.allow_isolation_none);
+        assert_eq!(policy.default_isolation, ExecutionIsolation::BestEffort);
+        assert!(policy.enforce_allowlisted_program_for_mutation);
     }
 
     #[test]

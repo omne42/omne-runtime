@@ -20,6 +20,7 @@
 当前平台语义补充：
 
 - Linux、macOS 和 Windows 当前都只报告 `None` 为受支持隔离级别。
+- `GatewayPolicy::default()` 当前默认 `allow_isolation_none=true` 且 `default_isolation=none`，这样无显式 policy 的默认 gateway 不会在 `None` only 宿主上自相矛盾；如果调用方要把更强隔离当成默认值，必须显式写进 policy。
 - Linux 原生 sandbox 暂时下线，直到能在不依赖 post-`fork` unsafe Rust 执行的前提下重新引入。
 - 当请求的隔离级别高于宿主报告能力时，gateway 必须 fail-closed 拒绝，而不是回退到未隔离执行。
 - mutating allowlist 只授权显式程序路径；bare program name 因为无法绑定稳定可执行文件而 fail-closed 拒绝。
