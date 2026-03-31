@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- bind audit-log writes to the appendable file handle opened during `execute()` / `prepare_command()`, so post-preflight path swaps cannot redirect the final record to a different sink
 - treat `/usr/bin/env`-style launcher indirection as opaque execution, so non-mutating requests cannot bypass the launcher gate through `env`
 - make `GatewayPolicy::default()` host-compatible on current `None`-only hosts, and teach `ExecGateway::new()` / `with_supported_isolation()` to choose a capability-aligned default isolation instead of advertising an unusable policy default
 - require explicit absolute program paths to point at spawnable executables, and make Unix gateway
