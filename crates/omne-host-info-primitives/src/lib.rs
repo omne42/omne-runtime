@@ -465,10 +465,24 @@ mod tests {
     }
 
     #[test]
+    fn resolve_target_triple_rejects_blank_host_target() {
+        assert_eq!(
+            resolve_target_triple(None, "   "),
+            Err(TargetTripleError::Empty)
+        );
+    }
+
+    #[test]
     fn executable_suffix_rejects_unknown_targets() {
         assert_eq!(
             executable_suffix_for_target("windows"),
             Err(TargetTripleError::Unsupported("windows".to_string()))
+        );
+        assert_eq!(
+            executable_suffix_for_target("x86_64-unknown-linux-windows-gnu"),
+            Err(TargetTripleError::Unsupported(
+                "x86_64-unknown-linux-windows-gnu".to_string()
+            ))
         );
     }
 

@@ -15,3 +15,5 @@
   strings
 - infer executable suffixes only from validated canonical target triples instead of substring
   matches
+- add regression coverage for blank/near-miss target triples so canonical target validation and
+  suffix inference do not silently widen again
