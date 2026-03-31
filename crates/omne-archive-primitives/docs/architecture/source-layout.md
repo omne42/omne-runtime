@@ -9,6 +9,8 @@
 
 - `src/binary_archive.rs`
   - archive 格式识别、条目遍历、目标二进制匹配与提取实现。
+- `src/archive_tree.rs`
+  - archive tree walker、共享预算控制和 tar/zip link/path 硬化实现。
 
 ## 布局规则
 
