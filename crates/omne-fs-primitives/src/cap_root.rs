@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn open_root_returns_none_when_missing_root_is_allowed() {
         let temp = TempDir::new().expect("temp dir");
-        let base = temp.path().canonicalize().expect("canonicalize temp dir");
+        let base = canonical_temp_root(&temp);
         let root = base.join("missing");
 
         let opened = open_root(
@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn open_root_creates_missing_root_components() {
         let temp = TempDir::new().expect("temp dir");
-        let base = temp.path().canonicalize().expect("canonicalize temp dir");
+        let base = canonical_temp_root(&temp);
         let root = base.join("nested").join("root");
 
         let opened = open_root(
@@ -510,7 +510,7 @@ mod tests {
     #[test]
     fn open_root_with_report_tracks_new_directories_only() {
         let temp = TempDir::new().expect("temp dir");
-        let base = temp.path().canonicalize().expect("canonicalize temp dir");
+        let base = canonical_temp_root(&temp);
         let existing = base.join("existing");
         fs::create_dir_all(&existing).expect("mkdir existing");
         let root = existing.join("nested").join("root");
@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn materialize_root_preserves_missing_suffix_under_existing_ancestor() {
         let temp = TempDir::new().expect("temp dir");
-        let base = temp.path().canonicalize().expect("canonicalize temp dir");
+        let base = canonical_temp_root(&temp);
         let existing = base.join("existing");
         fs::create_dir_all(&existing).expect("mkdir existing");
 
