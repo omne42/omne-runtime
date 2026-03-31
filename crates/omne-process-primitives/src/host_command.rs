@@ -9,10 +9,8 @@ use omne_system_package_primitives::SystemPackageManager;
 use tempfile::tempfile;
 
 use crate::command_path::{
-    is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
-    resolve_available_command_path_os, resolve_available_command_path_with_path_var,
-    resolve_command_path_or_standard_location_os, resolve_command_path_os,
-    resolve_command_path_os_with_path_var,
+    is_spawnable_command_path, resolve_command_path_or_standard_location_os,
+    resolve_command_path_os, resolve_command_path_os_with_path_var,
 };
 
 const MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024 * 1024;
@@ -233,16 +231,16 @@ pub fn command_path_exists(command: &Path) -> bool {
 pub fn command_available(command: &str) -> bool {
     let command_os = OsStr::new(command);
     if is_explicit_command_path(command_os) {
-        return is_regular_command_path(Path::new(command_os));
+        return is_spawnable_command_path(Path::new(command_os));
     }
-    resolve_available_command_path(command).is_some()
+    resolve_command_path_os(command_os).is_some()
 }
 
 pub fn command_available_os(command: &OsStr) -> bool {
     if is_explicit_command_path(command) {
-        return is_regular_command_path(Path::new(command));
+        return is_spawnable_command_path(Path::new(command));
     }
-    resolve_available_command_path_os(command).is_some()
+    resolve_command_path_os(command).is_some()
 }
 
 pub fn command_exists_for_request(request: &HostCommandRequest<'_>) -> bool {
@@ -255,9 +253,9 @@ pub fn command_exists_for_request(request: &HostCommandRequest<'_>) -> bool {
 
 pub fn command_available_for_request(request: &HostCommandRequest<'_>) -> bool {
     if is_explicit_command_path(request.program) {
-        return is_regular_command_path(&resolve_program_for_direct_spawn(request));
+        return is_spawnable_command_path(&resolve_program_for_direct_spawn(request));
     }
-    resolve_available_command_path_with_path_var(request.program, effective_path_var(request.env))
+    resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
         .is_some()
 }
 
@@ -1314,7 +1312,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn non_executable_paths_are_available_but_not_spawnable() {
+    fn non_executable_paths_are_not_available_or_spawnable() {
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = temp.path().join("plain-script");
         std::fs::write(&command_path, "#!/bin/sh\nexit 0\n").expect("write plain script");
@@ -1325,10 +1323,6 @@ mod tests {
         std::fs::set_permissions(&command_path, permissions).expect("chmod plain script");
 
         let command_path_string = command_path.to_string_lossy().into_owned();
-        assert!(command_available(&command_path_string));
-        assert!(command_available_os(command_path.as_os_str()));
-        assert!(!command_path_exists(&command_path));
-
         let args = Vec::new();
         let request = HostCommandRequest {
             program: command_path.as_os_str(),
@@ -1337,6 +1331,10 @@ mod tests {
             working_directory: None,
             sudo_mode: HostCommandSudoMode::Never,
         };
+        assert!(!command_available(&command_path_string));
+        assert!(!command_available_os(command_path.as_os_str()));
+        assert!(!command_available_for_request(&request));
+        assert!(!command_path_exists(&command_path));
 
         let error = run_host_command(&request).expect_err("non-executable path should fail");
         match error {
