@@ -13,6 +13,7 @@ use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 use crate::artifact_download::{
     ArtifactDownloadCandidate, ArtifactInstallError, ArtifactInstallErrorDetail,
     candidate_failure_message, download_candidate_to_writer_with_options, failed_candidates_error,
+    no_candidates_error,
 };
 use crate::install_lock::lock_install_destination;
 
@@ -66,6 +67,10 @@ pub async fn download_binary_to_destination(
     candidates: &[ArtifactDownloadCandidate],
     request: &DownloadBinaryRequest<'_>,
 ) -> Result<ArtifactDownloadCandidate, ArtifactInstallError> {
+    if candidates.is_empty() {
+        return Err(no_candidates_error(request.canonical_url));
+    }
+
     let mut errors = Vec::new();
     for candidate in candidates {
         let mut staged = stage_file_atomically_with_name(
@@ -115,6 +120,10 @@ pub async fn download_and_install_binary_from_archive(
     candidates: &[ArtifactDownloadCandidate],
     request: &BinaryArchiveInstallRequest<'_>,
 ) -> Result<InstalledArchiveBinary, ArtifactInstallError> {
+    if candidates.is_empty() {
+        return Err(no_candidates_error(request.canonical_url));
+    }
+
     let mut errors = Vec::new();
     for candidate in candidates {
         let mut staged = stage_file_atomically_with_name(
@@ -560,6 +569,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn direct_binary_download_rejects_empty_candidate_list() -> Result<(), Box<dyn Error>> {
+        let temp = tempfile::tempdir()?;
+        let destination =
+            canonical_test_root(&temp).join(format!("demo{}", std::env::consts::EXE_SUFFIX));
+        let canonical_url = "https://example.invalid/demo";
+        let client = reqwest::Client::builder().build()?;
+
+        let err = download_binary_to_destination(
+            &client,
+            &[],
+            &DownloadBinaryRequest {
+                canonical_url,
+                destination: &destination,
+                asset_name: "demo",
+                expected_sha256: None,
+                max_download_bytes: None,
+            },
+        )
+        .await
+        .expect_err("empty candidate list must fail");
+
+        assert_eq!(err.kind(), ArtifactInstallErrorKind::Download);
+        assert!(
+            err.to_string()
+                .contains("requires at least one download candidate"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn archive_binary_install_serializes_same_destination() -> Result<(), Box<dyn Error>> {
         let asset_name = "demo.zip";
         let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
@@ -631,6 +671,39 @@ mod tests {
         assert_eq!(std::fs::read(&destination)?, b"archive-binary");
 
         handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn archive_binary_download_rejects_empty_candidate_list() -> Result<(), Box<dyn Error>> {
+        let temp = tempfile::tempdir()?;
+        let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let destination = canonical_test_root(&temp).join(&binary_name);
+        let canonical_url = "https://example.invalid/demo.zip";
+        let client = reqwest::Client::builder().build()?;
+
+        let err = download_and_install_binary_from_archive(
+            &client,
+            &[],
+            &BinaryArchiveInstallRequest {
+                canonical_url,
+                destination: &destination,
+                asset_name: "demo.zip",
+                binary_name: &binary_name,
+                archive_binary_hint: None,
+                expected_sha256: None,
+                max_download_bytes: None,
+            },
+        )
+        .await
+        .expect_err("empty candidate list must fail");
+
+        assert_eq!(err.kind(), ArtifactInstallErrorKind::Download);
+        assert!(
+            err.to_string()
+                .contains("requires at least one download candidate"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 }

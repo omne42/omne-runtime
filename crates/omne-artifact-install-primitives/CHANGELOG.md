@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- reject empty artifact candidate lists with an explicit caller-input error instead of claiming that all downloads failed
 - preserve a structured install-error detail when every archive-binary candidate fails for the same runtime reason, so callers can retry without parsing error strings
 - cap ZIP symlink target reads so archive-tree extraction no longer buffers arbitrarily large link payloads into memory before validation
 - clarify aggregated candidate failures so install-phase errors no longer report themselves as pure download failures

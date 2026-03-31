@@ -18,7 +18,7 @@ use zip::ZipArchive;
 
 use crate::artifact_download::{
     ArtifactDownloadCandidate, ArtifactInstallError, candidate_failure_message,
-    download_candidate_to_writer_with_options, failed_candidates_error,
+    download_candidate_to_writer_with_options, failed_candidates_error, no_candidates_error,
 };
 use crate::install_lock::lock_install_destination;
 
@@ -66,6 +66,9 @@ pub async fn download_and_install_archive_tree(
             "archive tree install requires a supported archive asset, got `{}`",
             request.asset_name
         )));
+    }
+    if candidates.is_empty() {
+        return Err(no_candidates_error(request.canonical_url));
     }
 
     let mut errors = Vec::new();
@@ -975,6 +978,38 @@ mod tests {
         assert!(destination.join("LICENSE").exists());
 
         handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn archive_tree_download_rejects_empty_candidate_list() -> Result<(), Box<dyn Error>> {
+        let temp = tempfile::tempdir()?;
+        let destination = canonical_test_root(&temp).join("tree");
+        let client = reqwest::Client::builder().build()?;
+
+        let err = download_and_install_archive_tree(
+            &client,
+            &[],
+            &ArchiveTreeInstallRequest {
+                canonical_url: "https://example.invalid/demo-tree.zip",
+                destination: &destination,
+                asset_name: "demo-tree.zip",
+                expected_sha256: None,
+                max_download_bytes: None,
+            },
+        )
+        .await
+        .expect_err("empty candidate list must fail");
+
+        assert_eq!(
+            err.kind(),
+            crate::artifact_download::ArtifactInstallErrorKind::Download
+        );
+        assert!(
+            err.to_string()
+                .contains("requires at least one download candidate"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 
