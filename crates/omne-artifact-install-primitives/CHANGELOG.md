@@ -9,6 +9,7 @@
 - clarify aggregated candidate failures so install-phase errors no longer report themselves as pure download failures
 - serialize archive tree installs per destination with an advisory lock so concurrent installers cannot race staged directory replacement
 - serialize direct binary installs and archive-binary installs per destination with the same advisory-lock model used by archive-tree replacement
+- bind artifact install advisory-lock roots to the same no-follow destination parent validation as staged writes, so lock namespaces cannot drift through symlinked ancestors
 - remove the unused archive-install `tool_name` request field so product-specific binary selection only flows through exact `archive_binary_hint`
 - replace the hard-coded `ArtifactDownloadCandidateKind` enum with caller-defined `source_label` strings so candidate provenance stays product-agnostic
 - move checksum verification, archive extraction, and staged commit work onto Tokio blocking threads so the async install APIs stop monopolizing runtime workers during heavy local install phases
