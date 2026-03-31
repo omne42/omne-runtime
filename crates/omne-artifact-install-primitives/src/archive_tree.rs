@@ -11,7 +11,7 @@ use omne_archive_primitives::{
 pub use omne_archive_primitives::{
     DEFAULT_MAX_ARCHIVE_TREE_ENTRIES, DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES,
 };
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use omne_archive_primitives::{
     MAX_ZIP_SYMLINK_TARGET_BYTES, walk_tar_archive_tree, walk_zip_archive_tree,
 };
@@ -252,7 +252,7 @@ fn archive_tree_install_lock_file_name(destination: &Path) -> PathBuf {
     crate::install_lock::install_lock_file_name(destination, ARCHIVE_TREE_INSTALL_LOCK_PREFIX)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn extract_zip_tree<R>(
     reader: R,
     destination: &Path,
@@ -266,7 +266,7 @@ where
     writer.finish()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn extract_tar_tree<R>(
     reader: R,
     destination: &Path,
