@@ -693,6 +693,12 @@ fn bind_absolute_program_path(
             detail: "program path must reference a regular file".to_string(),
         });
     }
+    if !is_spawnable_program_path(requested_path) {
+        return Err(ExecError::ProgramPathInvalid {
+            path: requested_path.to_path_buf(),
+            detail: "program path must reference a spawnable executable".to_string(),
+        });
+    }
 
     let identity = SameFileHandle::from_path(requested_path).map_err(|_| {
         ExecError::PathIdentityUnavailable {
@@ -732,6 +738,13 @@ fn revalidate_bound_program(program: &BoundProgram) -> ExecResult<()> {
             kind: "program",
             path: program.path.clone(),
             detail: "path is no longer a regular file".to_string(),
+        });
+    }
+    if !is_spawnable_program_path(&program.path) {
+        return Err(ExecError::RequestPathChanged {
+            kind: "program",
+            path: program.path.clone(),
+            detail: "path is no longer executable".to_string(),
         });
     }
 
@@ -1253,6 +1266,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn preserves_requested_symlink_program_paths_in_events() {
+        use std::os::unix::fs::PermissionsExt;
         use std::os::unix::fs::symlink;
 
         let policy = GatewayPolicy {
@@ -1267,7 +1281,7 @@ mod tests {
         let workspace = tempdir().expect("create temp workspace");
         let target = workspace.path().join("tool");
         let symlink_path = workspace.path().join("tool-link");
-        fs::write(&target, "#!/bin/sh\nexit 0\n").expect("write tool");
+        write_unix_shell_executable(&target, "exit 0\n");
         symlink(&target, &symlink_path).expect("create symlink");
 
         let request = ExecRequest::new(
@@ -1658,7 +1672,7 @@ mod tests {
     fn allows_mutation_for_explicitly_allowlisted_program_path() {
         let program = allowlisted_program_path();
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec![program.to_string()],
+            mutating_program_allowlist: vec![program.display().to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -1733,7 +1747,7 @@ mod tests {
     fn prepared_allowlisted_program_rejects_in_place_content_change() {
         let workspace = tempdir().expect("create temp workspace");
         let program = workspace.path().join("allowlisted.sh");
-        write_unix_executable(&program, "#!/bin/sh\nexit 0\n");
+        write_unix_shell_executable(&program, "exit 0\n");
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             GatewayPolicy {
                 allow_isolation_none: true,
@@ -1754,7 +1768,7 @@ mod tests {
         let (_event, result) = gateway.prepare_command(&request, command);
         let prepared = result.expect("prepare command");
 
-        write_unix_executable(&program, "#!/bin/sh\nexit 1\n");
+        write_unix_shell_executable(&program, "exit 1\n");
 
         let err = prepared
             .spawn()
@@ -1838,7 +1852,7 @@ mod tests {
         );
         let workspace = tempdir().expect("create temp workspace");
         let program = non_allowlisted_program_path(&workspace);
-        fs::write(&program, "placeholder").expect("write program placeholder");
+        write_test_executable_placeholder(&program);
         let request = ExecRequest::new(
             &program,
             Vec::<OsString>::new(),
@@ -1904,7 +1918,7 @@ mod tests {
         let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let program = workspace.path().join("git");
-        fs::write(&program, "placeholder").expect("write program placeholder");
+        write_test_executable_placeholder(&program);
         let request = ExecRequest::new(
             &program,
             vec!["status"],
@@ -1926,7 +1940,17 @@ mod tests {
     fn allows_known_mutating_program_when_declared_and_allowlisted() {
         let workspace = tempdir().expect("create temp workspace");
         let program = workspace.path().join("git");
-        fs::write(&program, "placeholder").expect("write program placeholder");
+        write_test_executable_placeholder(&program);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(&program)
+                .expect("program metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&program, permissions).expect("chmod program");
+        }
         let policy = GatewayPolicy {
             mutating_program_allowlist: vec![program.display().to_string()],
             ..GatewayPolicy::default()
@@ -1995,12 +2019,9 @@ mod tests {
 
     #[test]
     fn allows_opaque_command_launcher_when_explicitly_allowlisted() {
-        #[cfg(windows)]
-        let program = r"C:\Windows\System32\cmd.exe";
-        #[cfg(not(windows))]
-        let program = "/bin/sh";
+        let program = dummy_program_absolute_path();
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec![program.to_string()],
+            mutating_program_allowlist: vec![program.display().to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2009,7 +2030,7 @@ mod tests {
         );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
-            program,
+            &program,
             vec![dummy_shell_flag(), "echo hello"],
             workspace.path(),
             ExecutionIsolation::BestEffort,
@@ -2025,7 +2046,7 @@ mod tests {
     fn denies_explicitly_allowlisted_program_without_declared_mutation() {
         let program = allowlisted_program_path();
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec![program.to_string()],
+            mutating_program_allowlist: vec![program.display().to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2140,8 +2161,9 @@ mod tests {
             ExecutionIsolation::None,
         );
         let workspace = tempdir().expect("create temp workspace");
+        let program = dummy_program_absolute_path();
         let request = ExecRequest::new(
-            "/bin/sh",
+            &program,
             vec![
                 "-c",
                 "test \"$OMNE_GATEWAY_REQUEST\" = expected && test -z \"$OMNE_GATEWAY_AMBIENT\"",
@@ -2171,8 +2193,9 @@ mod tests {
             ExecutionIsolation::None,
         );
         let workspace = tempdir().expect("create temp workspace");
+        let program = dummy_program_absolute_path();
         let request = ExecRequest::new(
-            "/bin/sh",
+            &program,
             vec![
                 "-c",
                 "test \"$OMNE_GATEWAY_REQUEST\" = expected && test -z \"$OMNE_GATEWAY_AMBIENT\"",
@@ -2183,7 +2206,7 @@ mod tests {
         )
         .with_env([("OMNE_GATEWAY_REQUEST", "expected")])
         .with_declared_mutation(false);
-        let mut command = Command::new("/bin/sh");
+        let mut command = Command::new(&program);
         command.args([
             "-c",
             "test \"$OMNE_GATEWAY_REQUEST\" = expected && test -z \"$OMNE_GATEWAY_AMBIENT\"",
@@ -2198,6 +2221,45 @@ mod tests {
             .wait()
             .expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_executable_explicit_program_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("plain-tool");
+        fs::write(&program, "echo hi\n").expect("write plain program");
+        let mut permissions = fs::metadata(&program).expect("metadata").permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&program, permissions).expect("chmod plain program");
+
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("program_path_invalid"));
+        assert!(matches!(
+            result,
+            Err(ExecError::ProgramPathInvalid { ref detail, .. })
+                if detail == "program path must reference a spawnable executable"
+        ));
     }
 
     #[test]
@@ -2249,11 +2311,8 @@ mod tests {
         let workspace = tempdir().expect("create temp workspace");
         let program = workspace.path().join("tool.sh");
         let replacement = workspace.path().join("tool-replacement.sh");
-        fs::write(&program, "#!/bin/sh\nexit 0\n").expect("write program");
-        fs::write(&replacement, "#!/bin/sh\nexit 1\n").expect("write replacement");
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).expect("chmod program");
-        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o755))
-            .expect("chmod replacement");
+        write_unix_shell_executable(&program, "exit 0\n");
+        write_unix_shell_executable(&replacement, "exit 1\n");
 
         let request = ExecRequest::new(
             &program,
@@ -2498,19 +2557,19 @@ mod tests {
     fn execute_status_audit_records_nonzero_exit() {
         let workspace = tempdir().expect("create temp workspace");
         let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
+        let (program, args) = shell_exit_nonzero_command();
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             audit_log_path: Some(audit_path.clone()),
-            mutating_program_allowlist: vec![shell_exit_nonzero_command().0.to_string()],
+            mutating_program_allowlist: vec![program.display().to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             policy,
             host_supported_test_isolation(),
         );
-        let (program, args) = shell_exit_nonzero_command();
         let request = ExecRequest::new(
-            program,
+            &program,
             args,
             workspace.path(),
             host_supported_test_isolation(),
@@ -2594,10 +2653,11 @@ mod tests {
     fn execute_status_fails_when_audit_write_breaks_after_preflight() {
         let workspace = tempdir().expect("create temp workspace");
         let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
+        let (program, args) = audit_breaking_shell_command(&audit_path);
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             audit_log_path: Some(audit_path.clone()),
-            mutating_program_allowlist: vec![audit_breaking_shell_program().to_string()],
+            mutating_program_allowlist: vec![program.display().to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2605,8 +2665,8 @@ mod tests {
             host_supported_test_isolation(),
         );
         let request = ExecRequest::new(
-            audit_breaking_shell_program(),
-            audit_breaking_shell_args(&audit_path),
+            &program,
+            args,
             workspace.path(),
             host_supported_test_isolation(),
             workspace.path(),
@@ -2661,14 +2721,9 @@ mod tests {
             .expect("resolve non-mutating test program")
     }
 
-    #[cfg(windows)]
-    fn dummy_program_absolute_path() -> &'static str {
-        r"C:\Windows\System32\cmd.exe"
-    }
-
-    #[cfg(not(windows))]
-    fn dummy_program_absolute_path() -> &'static str {
-        "/bin/sh"
+    fn dummy_program_absolute_path() -> PathBuf {
+        resolve_bare_program_path(OsStr::new(dummy_program()))
+            .expect("resolve dummy test program to absolute path")
     }
 
     #[cfg(windows)]
@@ -2681,7 +2736,7 @@ mod tests {
         "python3"
     }
 
-    fn allowlisted_program_path() -> &'static str {
+    fn allowlisted_program_path() -> PathBuf {
         dummy_program_absolute_path()
     }
 
@@ -2696,42 +2751,44 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn shell_exit_nonzero_command() -> (&'static str, Vec<&'static str>) {
-        (r"C:\Windows\System32\cmd.exe", vec!["/C", "exit 1"])
+    fn shell_exit_nonzero_command() -> (PathBuf, Vec<OsString>) {
+        (
+            dummy_program_absolute_path(),
+            vec![OsString::from("/C"), OsString::from("exit 1")],
+        )
     }
 
     #[cfg(not(windows))]
-    fn shell_exit_nonzero_command() -> (&'static str, Vec<&'static str>) {
-        ("/bin/sh", vec!["-c", "exit 1"])
+    fn shell_exit_nonzero_command() -> (PathBuf, Vec<OsString>) {
+        (
+            dummy_program_absolute_path(),
+            vec![OsString::from("-c"), OsString::from("exit 1")],
+        )
     }
 
     #[cfg(windows)]
-    fn audit_breaking_shell_program() -> &'static str {
-        r"C:\Windows\System32\cmd.exe"
+    fn audit_breaking_shell_command(audit_path: &Path) -> (PathBuf, Vec<OsString>) {
+        (
+            dummy_program_absolute_path(),
+            vec![
+                OsString::from("/C"),
+                OsString::from(format!(
+                    "del /F /Q \"{0}\" && mkdir \"{0}\"",
+                    audit_path.display()
+                )),
+            ],
+        )
     }
 
     #[cfg(not(windows))]
-    fn audit_breaking_shell_program() -> &'static str {
-        "/bin/sh"
-    }
-
-    #[cfg(windows)]
-    fn audit_breaking_shell_args(audit_path: &Path) -> Vec<OsString> {
-        vec![
-            OsString::from("/C"),
-            OsString::from(format!(
-                "del /F /Q \"{0}\" && mkdir \"{0}\"",
-                audit_path.display()
-            )),
-        ]
-    }
-
-    #[cfg(not(windows))]
-    fn audit_breaking_shell_args(audit_path: &Path) -> Vec<OsString> {
-        vec![
-            OsString::from("-c"),
-            OsString::from(format!("rm \"{0}\" && mkdir \"{0}\"", audit_path.display())),
-        ]
+    fn audit_breaking_shell_command(audit_path: &Path) -> (PathBuf, Vec<OsString>) {
+        (
+            dummy_program_absolute_path(),
+            vec![
+                OsString::from("-c"),
+                OsString::from(format!("rm \"{0}\" && mkdir \"{0}\"", audit_path.display())),
+            ],
+        )
     }
 
     #[cfg(windows)]
@@ -2801,8 +2858,9 @@ mod tests {
             },
             ExecutionIsolation::None,
         );
+        let program = dummy_program_absolute_path();
         let request = ExecRequest::new(
-            "/bin/sh",
+            &program,
             Vec::<OsString>::new(),
             workspace.path(),
             ExecutionIsolation::None,
@@ -2817,7 +2875,7 @@ mod tests {
                 assert!(status.success());
             }
             "prepare" => {
-                let command = Command::new("/bin/sh");
+                let command = Command::new(&program);
                 let (_event, result) = gateway.prepare_command(&request, command);
                 let prepared = result.expect("prepare command");
                 let status = prepared
@@ -2868,5 +2926,44 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_executable_explicit_program_paths() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("plain-script");
+        fs::write(&program, "#!/usr/bin/env sh\nexit 0\n").expect("write plain script");
+        let mut permissions = fs::metadata(&program).expect("metadata").permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&program, permissions).expect("set permissions");
+
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        );
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("program_path_invalid"));
+        assert!(matches!(
+            result,
+            Err(ExecError::ProgramPathInvalid { ref detail, .. })
+                if detail == "program path must reference a spawnable executable"
+        ));
     }
 }
