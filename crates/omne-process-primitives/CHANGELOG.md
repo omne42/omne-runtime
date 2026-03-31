@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- classify post-spawn stdout/stderr collection failures as `HostCommandError::CaptureFailed` instead of `SpawnFailed`, so callers can distinguish startup failures from output-capture failures
 - make Linux process-tree cleanup fail closed when the group leader exits before cleanup can bind a `/proc` identity, instead of arming `killpg` from a bare historical PGID
 - resolve bare direct commands to a concrete executable path before spawn, so request-scoped `PATH`
   probing, execution, and `CommandNotFound` classification stay consistent and missing

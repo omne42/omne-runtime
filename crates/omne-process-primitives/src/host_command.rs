@@ -88,6 +88,11 @@ pub enum HostCommandError {
         execution: HostCommandExecution,
         source: io::Error,
     },
+    CaptureFailed {
+        program: OsString,
+        execution: HostCommandExecution,
+        source: io::Error,
+    },
 }
 
 #[derive(Debug)]
@@ -122,6 +127,22 @@ impl fmt::Display for HostCommandError {
                     )
                 }
             },
+            Self::CaptureFailed {
+                program,
+                execution,
+                source,
+            } => match execution {
+                HostCommandExecution::Direct => write!(
+                    f,
+                    "capture output from {} failed: {source}",
+                    program.to_string_lossy()
+                ),
+                HostCommandExecution::Sudo => write!(
+                    f,
+                    "capture output from sudo -n {} failed: {source}",
+                    program.to_string_lossy()
+                ),
+            },
         }
     }
 }
@@ -130,7 +151,7 @@ impl std::error::Error for HostCommandError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::CommandNotFound { .. } => None,
-            Self::SpawnFailed { source, .. } => Some(source),
+            Self::SpawnFailed { source, .. } | Self::CaptureFailed { source, .. } => Some(source),
         }
     }
 }
@@ -186,7 +207,7 @@ pub fn run_host_command(
         ensure_sudo_target_is_available(request)?;
     }
     let output = run_command_output(request, execution)
-        .map_err(|source| map_spawn_error(request, execution, source))?;
+        .map_err(|source| map_command_output_error(request, execution, source))?;
     Ok(HostCommandOutput { execution, output })
 }
 
@@ -316,7 +337,7 @@ fn append_sudo_target_command(
 fn run_command_output(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
-) -> io::Result<Output> {
+) -> Result<Output, CommandOutputError> {
     #[cfg(unix)]
     {
         const EXECUTABLE_BUSY_RETRIES: usize = 3;
@@ -325,10 +346,7 @@ fn run_command_output(
         for attempt in 0..=EXECUTABLE_BUSY_RETRIES {
             match spawn_and_capture_output(request, execution) {
                 Ok(output) => return Ok(output),
-                Err(err)
-                    if err.kind() == io::ErrorKind::ExecutableFileBusy
-                        && attempt < EXECUTABLE_BUSY_RETRIES =>
-                {
+                Err(err) if err.is_executable_file_busy() && attempt < EXECUTABLE_BUSY_RETRIES => {
                     std::thread::sleep(std::time::Duration::from_millis(
                         EXECUTABLE_BUSY_BACKOFF_MS,
                     ));
@@ -349,18 +367,22 @@ fn run_command_output(
 fn spawn_and_capture_output(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
-) -> io::Result<Output> {
-    let (stdout_capture, stdout_writer) = create_output_capture_file()?;
-    let (stderr_capture, stderr_writer) = create_output_capture_file()?;
+) -> Result<Output, CommandOutputError> {
+    let (stdout_capture, stdout_writer) =
+        create_output_capture_file().map_err(CommandOutputError::Spawn)?;
+    let (stderr_capture, stderr_writer) =
+        create_output_capture_file().map_err(CommandOutputError::Spawn)?;
     let mut command = build_command(request, execution);
     command.stdout(Stdio::from(stdout_writer));
     command.stderr(Stdio::from(stderr_writer));
-    let mut child = command.spawn()?;
-    let status = child.wait()?;
+    let mut child = command.spawn().map_err(CommandOutputError::Spawn)?;
+    let status = child.wait().map_err(CommandOutputError::Spawn)?;
     Ok(Output {
         status,
-        stdout: read_captured_output(stdout_capture, "stdout")?,
-        stderr: read_captured_output(stderr_capture, "stderr")?,
+        stdout: read_captured_output(stdout_capture, "stdout")
+            .map_err(CommandOutputError::Capture)?,
+        stderr: read_captured_output(stderr_capture, "stderr")
+            .map_err(CommandOutputError::Capture)?,
     })
 }
 
@@ -618,23 +640,45 @@ fn env_assignment(name: &OsStr, value: &OsStr) -> OsString {
     assignment
 }
 
-fn map_spawn_error(
+#[derive(Debug)]
+enum CommandOutputError {
+    Spawn(io::Error),
+    Capture(io::Error),
+}
+
+impl CommandOutputError {
+    fn is_executable_file_busy(&self) -> bool {
+        match self {
+            Self::Spawn(source) => source.kind() == io::ErrorKind::ExecutableFileBusy,
+            Self::Capture(_) => false,
+        }
+    }
+}
+
+fn map_command_output_error(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
-    source: io::Error,
+    source: CommandOutputError,
 ) -> HostCommandError {
-    if source.kind() == io::ErrorKind::NotFound
-        && spawn_error_is_missing_program(request, execution)
-    {
-        HostCommandError::CommandNotFound {
-            program: request.program.to_os_string(),
+    match source {
+        CommandOutputError::Spawn(source)
+            if source.kind() == io::ErrorKind::NotFound
+                && spawn_error_is_missing_program(request, execution) =>
+        {
+            HostCommandError::CommandNotFound {
+                program: request.program.to_os_string(),
+            }
         }
-    } else {
-        HostCommandError::SpawnFailed {
+        CommandOutputError::Spawn(source) => HostCommandError::SpawnFailed {
             program: request.program.to_os_string(),
             execution,
             source,
-        }
+        },
+        CommandOutputError::Capture(source) => HostCommandError::CaptureFailed {
+            program: request.program.to_os_string(),
+            execution,
+            source,
+        },
     }
 }
 
@@ -1031,7 +1075,7 @@ mod tests {
 
         let err = run_host_command(&request).expect_err("oversized stdout should fail");
         match err {
-            HostCommandError::SpawnFailed { source, .. } => {
+            HostCommandError::CaptureFailed { source, .. } => {
                 assert!(
                     source.to_string().contains("stdout exceeded capture limit"),
                     "unexpected error: {source}"
@@ -1056,7 +1100,7 @@ mod tests {
 
         let err = run_host_command(&request).expect_err("oversized stdout should fail");
         match err {
-            HostCommandError::SpawnFailed { source, .. } => {
+            HostCommandError::CaptureFailed { source, .. } => {
                 assert!(
                     source.to_string().contains("stdout exceeded capture limit"),
                     "unexpected error: {source}"
@@ -1102,7 +1146,7 @@ mod tests {
 
         let err = run_host_command(&request).expect_err("oversized stderr should fail");
         match err {
-            HostCommandError::SpawnFailed { source, .. } => {
+            HostCommandError::CaptureFailed { source, .. } => {
                 assert!(
                     source.to_string().contains("stderr exceeded capture limit"),
                     "unexpected error: {source}"
@@ -1443,6 +1487,9 @@ mod tests {
             HostCommandError::SpawnFailed { source, .. } => {
                 assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
             }
+            HostCommandError::CaptureFailed { .. } => {
+                panic!("non-executable path must fail before output capture starts");
+            }
         }
     }
 
@@ -1477,6 +1524,9 @@ mod tests {
             }
             HostCommandError::SpawnFailed { source, .. } => {
                 assert_eq!(source.kind(), io::ErrorKind::NotFound);
+            }
+            HostCommandError::CaptureFailed { .. } => {
+                panic!("missing interpreter must fail before output capture starts");
             }
         }
     }
