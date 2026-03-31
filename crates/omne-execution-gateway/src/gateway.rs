@@ -2314,7 +2314,7 @@ mod tests {
             .stderr(Stdio::piped());
 
         let (_event, result) = gateway.prepare_command(&request, command);
-        let child = result
+        let mut child = result
             .expect("prepare command")
             .spawn()
             .expect("spawn prepared command");
@@ -2331,6 +2331,8 @@ mod tests {
             child.stderr.is_none(),
             "prepared command should discard caller stderr override"
         );
+        let status = child.wait().expect("wait prepared command");
+        assert!(status.success(), "unexpected status: {status}");
     }
 
     #[cfg(unix)]
