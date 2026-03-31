@@ -305,21 +305,6 @@ where
     F: Fn(&Path) -> bool,
     G: Fn(&Path, &[&str]) -> Option<LinuxCommandOutput>,
 {
-    let glibc_loader_paths = [
-        "/lib/ld-linux-x86-64.so.2",
-        "/lib64/ld-linux-x86-64.so.2",
-        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
-        "/lib/ld-linux-aarch64.so.1",
-        "/lib64/ld-linux-aarch64.so.1",
-        "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
-    ];
-    if glibc_loader_paths
-        .iter()
-        .any(|path| path_exists(Path::new(path)))
-    {
-        return Some(HostLinuxLibc::Gnu);
-    }
-
     if let Some(output) = run_first_available_linux_probe_command(
         path_exists,
         &["/usr/bin/getconf", "/bin/getconf"],
@@ -658,12 +643,12 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_uses_glibc_loader_paths_when_runtime_commands_fail() {
+    fn detect_host_linux_libc_rejects_loader_markers_without_runtime_evidence() {
         let libc = super::detect_host_linux_libc_with(
             &|path| path == Path::new("/lib64/ld-linux-x86-64.so.2"),
             &|_, _| None,
         );
-        assert_eq!(libc, Some(HostLinuxLibc::Gnu));
+        assert_eq!(libc, None);
     }
 
     #[cfg(target_os = "linux")]
