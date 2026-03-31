@@ -244,19 +244,11 @@ pub fn command_available_os(command: &OsStr) -> bool {
 }
 
 pub fn command_exists_for_request(request: &HostCommandRequest<'_>) -> bool {
-    if is_explicit_command_path(request.program) {
-        return is_spawnable_command_path(&resolve_program_for_direct_spawn(request));
-    }
-    resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
-        .is_some()
+    resolve_program_for_direct_command(request).is_some_and(|path| is_spawnable_command_path(&path))
 }
 
 pub fn command_available_for_request(request: &HostCommandRequest<'_>) -> bool {
-    if is_explicit_command_path(request.program) {
-        return is_spawnable_command_path(&resolve_program_for_direct_spawn(request));
-    }
-    resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
-        .is_some()
+    resolve_program_for_direct_command(request).is_some_and(|path| is_spawnable_command_path(&path))
 }
 
 pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoMode {
@@ -556,14 +548,22 @@ fn effective_path_var(env: &[(OsString, OsString)]) -> Option<OsString> {
         .or_else(|| std::env::var_os("PATH"))
 }
 
-fn resolve_program_for_direct_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
+fn resolve_program_for_direct_command(request: &HostCommandRequest<'_>) -> Option<PathBuf> {
     let program = Path::new(request.program);
     if program.is_absolute() {
-        return program.to_path_buf();
+        return Some(program.to_path_buf());
     }
-    if !is_explicit_command_path(request.program) {
-        return program.to_path_buf();
+    if is_explicit_command_path(request.program) {
+        return Some(resolve_relative_program_against_caller_cwd(program));
     }
+    resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
+}
+
+fn resolve_program_for_direct_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
+    resolve_program_for_direct_command(request).unwrap_or_else(|| PathBuf::from(request.program))
+}
+
+fn resolve_relative_program_against_caller_cwd(program: &Path) -> PathBuf {
     if let Ok(current_directory) = std::env::current_dir() {
         return current_directory.join(program);
     }
@@ -645,11 +645,7 @@ fn spawn_error_is_missing_program(
     match execution {
         HostCommandExecution::Sudo => !is_explicit_command_path(request.program),
         HostCommandExecution::Direct => {
-            if !is_explicit_command_path(request.program) {
-                return true;
-            }
-
-            !resolve_program_for_direct_spawn(request).exists()
+            resolve_program_for_direct_command(request).is_none_or(|path| !path.exists())
         }
     }
 }
@@ -1150,6 +1146,37 @@ mod tests {
         assert!(stdout.contains(&working_directory.path().display().to_string()));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn direct_command_resolves_bare_request_path_before_spawn() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_test_command(temp.path(), "echoenv");
+        let env = vec![
+            (
+                OsString::from("PATH"),
+                temp.path().as_os_str().to_os_string(),
+            ),
+            (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
+        ];
+        let request = HostCommandRequest {
+            program: OsStr::new("echoenv"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let command = build_command(&request, HostCommandExecution::Direct);
+        assert_eq!(Path::new(command.get_program()), command_path.as_path());
+        assert_eq!(
+            command.get_envs().find_map(|(name, value)| {
+                (name == OsStr::new("PATH"))
+                    .then(|| value.expect("PATH value should exist").to_os_string())
+            }),
+            Some(temp.path().as_os_str().to_os_string())
+        );
+    }
+
     #[test]
     fn request_scoped_probe_keeps_relative_program_on_caller_cwd() {
         let current_directory = std::env::current_dir().expect("current dir");
@@ -1415,6 +1442,41 @@ mod tests {
             }
             HostCommandError::SpawnFailed { source, .. } => {
                 assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bare_request_path_shadow_preserves_missing_interpreter_as_spawn_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_unix_executable(
+            temp.path(),
+            "bad-loader",
+            "#!/definitely/missing/interpreter\nexit 0\n",
+        );
+        let env = vec![(
+            OsString::from("PATH"),
+            temp.path().as_os_str().to_os_string(),
+        )];
+        let request = HostCommandRequest {
+            program: OsStr::new("bad-loader"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        assert!(command_available_for_request(&request));
+        assert_eq!(resolve_program_for_direct_spawn(&request), command_path);
+
+        let error = run_host_command(&request).expect_err("missing interpreter should fail spawn");
+        match error {
+            HostCommandError::CommandNotFound { .. } => {
+                panic!("missing interpreter must not be mislabeled as command not found");
+            }
+            HostCommandError::SpawnFailed { source, .. } => {
+                assert_eq!(source.kind(), io::ErrorKind::NotFound);
             }
         }
     }
