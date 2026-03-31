@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- resolve bare direct commands to a concrete executable path before spawn, so request-scoped `PATH`
+  probing, execution, and `CommandNotFound` classification stay consistent and missing
+  interpreters/loaders are not mislabeled as missing commands
 - make Linux process-tree cleanup fail closed when the captured leader PID has already been
   reused by another live process, instead of killing the old PGID based only on surviving group
   members

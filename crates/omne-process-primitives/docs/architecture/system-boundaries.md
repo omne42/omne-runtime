@@ -10,7 +10,7 @@
 - 对宿主命令 request/recipe 维持 `OsStr` / `OsString` 边界，不把 argv/env 先强制收窄成 UTF-8 `String`。
 - 运行宿主机命令并捕获输出；捕获实现以临时文件为边界，因此 direct child 退出后不会再被继续持有 stdout/stderr 的后台后代进程永久卡住；当 stdout/stderr 超过上限时，仍在读取完整捕获后返回超限错误。
 - 对显式相对程序路径保持调用方 cwd 语义，不会因为 request 同时设置了 `working_directory` 就把同一个程序路径重新解释到另一个目录。
-- `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，但对显式相对程序路径仍保持与执行路径相同的调用方 cwd 语义。
+- `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，而 direct bare command 的真正 spawn 也会先绑定到同一条解析出的可执行路径；对显式相对程序路径则继续保持与执行路径相同的调用方 cwd 语义。
 - `command_available` / `command_available_os` / `command_available_for_request` 只会把真正可执行的命令视为 available，不会把普通文件或缺少执行位的路径伪装成“已可运行”。
 - direct 显式路径 spawn 如果返回 `ENOENT`，只有在解析后的目标路径确实不存在时才会折叠成 `CommandNotFound`；如果目标文件仍在，本 crate 会保留原始 spawn 失败，让缺失 shebang 解释器或动态 loader 这类问题不会被误报成“命令不存在”。
 - 当命中 `sudo` 路径时，把调用方显式提供的环境变量改写成 `env -- KEY=VALUE ...` 形式并放到提权后的目标命令边界内，但 request `PATH` override 会在 sudo 边界被丢弃，避免在 root 目标命令上重新引入调用方的搜索路径。
