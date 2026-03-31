@@ -1,6 +1,8 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
+#[cfg(target_os = "macos")]
+use std::path::Component;
 use std::path::{Path, PathBuf};
 
 use crate::{MissingRootPolicy, open_root};
