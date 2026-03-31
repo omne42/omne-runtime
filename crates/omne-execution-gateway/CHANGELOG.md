@@ -27,3 +27,4 @@
 - reject unknown `omne-execution` request JSON fields fail-closed
 - stabilize oversized JSON fixture coverage so request/policy size-limit tests do not depend on free disk space
 - keep mutation allowlist, opaque-launcher, and known-mutator gates on native `OsStr` / `Path` inputs so non-UTF-8 program paths fail closed without lossy string coercion
+- stabilize gateway full-workspace test coverage by making audit-log execution fixtures use an explicit `exit 0` shell command and giving nested noninteractive-stdin helpers enough timeout headroom under heavy test load
