@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- make Linux process-tree cleanup fail closed when the captured leader PID has already been
+  reused by another live process, instead of killing the old PGID based only on surviving group
+  members
 - make Unix host-command tests resolve an available shell and prebuilt payload files instead of
   assuming `/bin/sh` and `python3`, so `cargo test -p omne-process-primitives` stays portable
 - stop formatting full host recipe `stdout`/`stderr` into `HostRecipeError::Display`; surface only exit status and captured byte counts while preserving raw `Output` for callers

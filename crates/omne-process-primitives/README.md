@@ -27,7 +27,9 @@ Low-level host-command and process-tree primitives shared across callers.
 - process-tree cleanup setup and best-effort termination
 - fail-closed process-tree capture on Unix unless the child was spawned into its own dedicated process group via `configure_command_for_process_tree`
 - Windows `taskkill` cleanup that waits for command success before skipping descendant fallback
-- Unix process-group cleanup that still fails closed on leader-PID reuse, while Linux can keep reaping same-session orphaned descendants both when the leader already exited before cleanup capture finished and when it exits shortly after capture
+- Unix process-group cleanup that fails closed once the captured leader PID has been reused by a
+  different live process, while Linux can still reap same-session orphaned descendants after the
+  original leader has actually exited
 
 ## Non-Goals
 

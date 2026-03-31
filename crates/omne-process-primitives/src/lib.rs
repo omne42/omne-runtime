@@ -218,12 +218,10 @@ where
     F: FnOnce() -> bool,
 {
     match current {
-        Ok(current) => {
-            identity.leader_start_ticks.is_some_and(|start_ticks| {
-                current.start_ticks == start_ticks
-                    && current.process_group_id == identity.process_group_id.as_raw_pid()
-            }) || (identity.leader_start_ticks.is_some() && group_exists())
-        }
+        Ok(current) => identity.leader_start_ticks.is_some_and(|start_ticks| {
+            current.start_ticks == start_ticks
+                && current.process_group_id == identity.process_group_id.as_raw_pid()
+        }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => group_exists(),
         Err(_) => false,
     }
@@ -594,7 +592,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn reused_leader_pid_still_allows_killing_surviving_linux_process_group() {
+    fn reused_leader_pid_fails_closed_even_if_surviving_group_members_remain() {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
             process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
@@ -602,7 +600,7 @@ mod tests {
             leader_session_id: Some(7),
         };
 
-        assert!(should_kill_linux_process_group_with_group_probe(
+        assert!(!should_kill_linux_process_group_with_group_probe(
             identity,
             Ok(LinuxProcessIdentity {
                 process_group_id: 9999,
