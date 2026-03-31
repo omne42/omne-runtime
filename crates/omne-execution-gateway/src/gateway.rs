@@ -477,7 +477,9 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
     program_basename_ascii(program).is_some_and(|normalized| {
         matches!(
             normalized.as_str(),
-            "sh" | "bash"
+            "env"
+                | "sh"
+                | "bash"
                 | "dash"
                 | "zsh"
                 | "fish"
@@ -1890,6 +1892,33 @@ mod tests {
         let request = ExecRequest::new(
             dummy_program(),
             vec![dummy_shell_flag(), "echo hello"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("opaque_command_requires_declared_mutation")
+        );
+    }
+
+    #[test]
+    fn detects_env_as_opaque_command_launcher() {
+        assert!(uses_opaque_command_launcher(OsStr::new("env")));
+        assert!(uses_opaque_command_launcher(OsStr::new("/usr/bin/env")));
+    }
+
+    #[test]
+    fn denies_env_launcher_without_allowlist() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "/usr/bin/env",
+            vec!["sh", "-c", "echo hello"],
             workspace.path(),
             ExecutionIsolation::BestEffort,
             workspace.path(),
