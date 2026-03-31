@@ -566,8 +566,8 @@ mod tests {
     }
 
     #[test]
-    fn archive_binary_install_requires_exact_hint_for_product_specific_layout(
-    ) -> Result<(), Box<dyn Error>> {
+    fn archive_binary_install_requires_exact_hint_for_product_specific_layout()
+    -> Result<(), Box<dyn Error>> {
         let asset_name = "MinGit-1.2.3-64-bit.zip";
         let archive = make_zip_archive(&[("PortableGit/cmd/git.exe", b"MZ", 0o755)])?;
         let temp = tempfile::tempdir()?;
@@ -586,8 +586,8 @@ mod tests {
     }
 
     #[test]
-    fn archive_binary_install_accepts_exact_hint_for_product_specific_layout(
-    ) -> Result<(), Box<dyn Error>> {
+    fn archive_binary_install_accepts_exact_hint_for_product_specific_layout()
+    -> Result<(), Box<dyn Error>> {
         let asset_name = "MinGit-1.2.3-64-bit.zip";
         let archive = make_zip_archive(&[("PortableGit/cmd/git.exe", b"MZ", 0o755)])?;
         let temp = tempfile::tempdir()?;
