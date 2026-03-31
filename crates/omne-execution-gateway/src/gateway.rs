@@ -2843,6 +2843,11 @@ mod tests {
 
     #[cfg(windows)]
     fn write_test_executable_placeholder(path: &Path) {
+        fs::write(path, "placeholder").expect("write test executable placeholder");
+    }
+
+    #[cfg(windows)]
+    fn write_test_executable_placeholder(path: &Path) {
         fs::write(path, "@echo off\r\nexit /b 0\r\n").expect("write executable placeholder");
     }
 
