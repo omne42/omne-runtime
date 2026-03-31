@@ -11,6 +11,7 @@
 - 以受限响应体流式下载 artifact。
 - 对下载结果执行可选的 SHA-256 校验。
 - 把直接二进制资产原子安装到目标路径，并在 install/commit 阶段按目标路径做 advisory lock 串行化。
+- install 阶段使用的 advisory lock root 也遵循和 staged destination 相同的 no-follow 祖先校验，不能沿 symlink 祖先把锁建到目标边界之外。
 - 从受支持的 archive 中按精确 `archive_binary_hint` 或约定 `bin/<binary>` 布局提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束。
 - 把受支持的 archive 目录树解到 `omne-fs-primitives` 提供的 staged 目录，并在默认 extracted-byte / entry-count 预算内成功后替换目标目录。
 - `async` 下载入口只把网络阶段留在 Tokio worker 上；SHA 校验、archive 解压和 staged commit 这类重本地 I/O / CPU 阶段切到 blocking 线程，避免把 runtime worker 长时间占满。
