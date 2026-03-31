@@ -12,10 +12,11 @@
 - 对显式相对程序路径保持调用方 cwd 语义，不会因为 request 同时设置了 `working_directory` 就把同一个程序路径重新解释到另一个目录。
 - `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，但对显式相对程序路径仍保持与执行路径相同的调用方 cwd 语义。
 - `command_available` / `command_available_os` / `command_available_for_request` 只会把真正可执行的命令视为 available，不会把普通文件或缺少执行位的路径伪装成“已可运行”。
+- direct 显式路径 spawn 如果返回 `ENOENT`，只有在解析后的目标路径确实不存在时才会折叠成 `CommandNotFound`；如果目标文件仍在，本 crate 会保留原始 spawn 失败，让缺失 shebang 解释器或动态 loader 这类问题不会被误报成“命令不存在”。
 - 当命中 `sudo` 路径时，把调用方显式提供的环境变量改写成 `env -- KEY=VALUE ...` 形式并放到提权后的目标命令边界内，但 request `PATH` override 会在 sudo 边界被丢弃，避免在 root 目标命令上重新引入调用方的搜索路径。
-- `sudo` 可用性判定、`sudo` 可执行路径选择以及提权后的 bare target 解析都不使用 request 里显式覆盖的 `PATH` 来决定提权边界；auto-sudo 只允许 canonical system package manager 命令，并且 bare target 只能从可信系统目录解析。
-- 对需要走 `sudo` 的 bare command，如果目标命令在可信系统目录中不存在，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
-- 对 `/usr/bin/apt-get` 这类显式系统路径，仍保留 `IfNonRootSystemCommand` 语义；相对路径、词法逃逸路径、`/usr/local/bin` 这类非可信前缀，或指向系统目录外真实目标的 symlink 别名都不会被误判成系统命令。
+- `sudo` 可用性判定、`sudo` 可执行路径选择以及提权后的 bare target 解析都不使用 request 里显式覆盖的 `PATH` 来决定提权边界；auto-sudo 只允许 canonical system package manager 命令，并且 bare target 必须能从宿主机环境解析到对应 manager 二进制。
+- 对需要走 `sudo` 的 bare command，如果宿主机环境里解析不到对应的 canonical manager 二进制，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
+- 对显式 package-manager 路径，只有它与宿主机对该 manager 名称解析到的 canonical 二进制是同一个文件时，才保留 `IfNonRootSystemCommand` 语义；相对路径、别名到不同目标的 symlink，或名字相同但不是宿主机 canonical manager 的其他可执行体都不会被误判成系统命令。
 - 运行 host recipe，并把非零退出统一建模成结构化错误。
 - `HostRecipeError::Display` 只输出退出状态和捕获字节数，不把完整 stdout/stderr 直接拼进错误字符串；需要原始输出的调用方仍可从结构化 `Output` 读取。
 - 基于 `omne-system-package-primitives` 的 canonical manager 目录为系统包命令提供默认 `sudo` 模式选择，避免并行维护两份 manager 名称表。

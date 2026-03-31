@@ -19,8 +19,9 @@ Low-level host-command and process-tree primitives shared across callers.
 - non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
 - explicit relative program paths that keep caller-cwd semantics even when the child process runs under a different `working_directory`
 - sudo-style escalation that applies explicit request env inside the elevated target command via `env -- KEY=VALUE ...`, except for request `PATH` overrides that are dropped at the sudo boundary instead of being reintroduced under root
-- fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved in trusted system command directories
-- sudo resolution that ignores request-scoped `PATH` overrides when choosing the `sudo` binary or the elevated bare-command target, and that only auto-escalates canonical system package manager commands
+- fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved from the host environment as a canonical system package manager command
+- direct explicit-path spawns only collapse `ENOENT` into `CommandNotFound` when the resolved target path itself is gone; if the file still exists, interpreter/loader failures remain structured spawn errors
+- sudo resolution that ignores request-scoped `PATH` overrides when choosing the `sudo` binary or the elevated bare-command target, and only auto-escalates canonical system package manager commands whose explicit paths match the same binary identity the host resolves for that manager name
 - default sudo-mode selection driven by the canonical `omne-system-package-primitives` manager catalog
 - optional `sudo -n` probing on Unix
 - process-tree cleanup setup and best-effort termination

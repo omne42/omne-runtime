@@ -186,7 +186,7 @@ pub fn run_host_command(
         ensure_sudo_target_is_available(request)?;
     }
     let output = run_command_output(request, execution)
-        .map_err(|source| map_spawn_error(request.program, execution, source))?;
+        .map_err(|source| map_spawn_error(request, execution, source))?;
     Ok(HostCommandOutput { execution, output })
 }
 
@@ -468,7 +468,7 @@ fn sudo_eligible_program(program: &OsStr) -> bool {
     if !is_explicit_command_path(program) {
         return true;
     }
-    explicit_system_command_path(Path::new(program))
+    explicit_system_package_manager_path(Path::new(program))
 }
 
 fn sudo_mode_program_name(program: &OsStr) -> Option<&str> {
@@ -477,7 +477,7 @@ fn sudo_mode_program_name(program: &OsStr) -> Option<&str> {
     }
 
     let path = Path::new(program);
-    explicit_system_command_path(path)
+    explicit_system_package_manager_path(path)
         .then_some(path.file_name()?.to_str())
         .flatten()
 }
@@ -486,49 +486,40 @@ fn sudo_mode_system_package_manager(program: &OsStr) -> Option<SystemPackageMana
     sudo_mode_program_name(program).and_then(SystemPackageManager::parse)
 }
 
-fn explicit_system_command_path(path: &Path) -> bool {
+fn explicit_system_package_manager_path(path: &Path) -> bool {
     if !path.is_absolute() {
         return false;
     }
 
-    #[cfg(unix)]
-    {
-        explicit_system_command_path_with_trusted_dirs(path, &trusted_system_command_directories())
-    }
-
-    #[cfg(not(unix))]
-    {
-        false
-    }
-}
-
-#[cfg(unix)]
-fn explicit_system_command_path_with_trusted_dirs(path: &Path, trusted_dirs: &[PathBuf]) -> bool {
     if !is_spawnable_command_path(path) {
         return false;
     }
 
-    let Ok(canonical_path) = std::fs::canonicalize(path) else {
+    let Some(file_name) = path.file_name() else {
         return false;
     };
-    let Some(parent) = canonical_path.parent() else {
+    explicit_system_package_manager_path_with_resolved(
+        path,
+        resolve_host_system_package_manager_path(file_name),
+    )
+}
+
+fn explicit_system_package_manager_path_with_resolved(
+    path: &Path,
+    resolved_path: Option<PathBuf>,
+) -> bool {
+    let Some(host_path) = resolved_path else {
         return false;
     };
 
-    trusted_dirs.iter().any(|dir| dir == parent)
-}
+    let Ok(path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let Ok(host_path) = std::fs::canonicalize(host_path) else {
+        return false;
+    };
 
-#[cfg(unix)]
-fn trusted_system_command_directories() -> Vec<PathBuf> {
-    ["/usr/bin", "/usr/sbin", "/bin", "/sbin"]
-        .iter()
-        .filter_map(|dir| std::fs::canonicalize(dir).ok())
-        .collect()
-}
-
-#[cfg(not(unix))]
-fn trusted_system_command_directories() -> Vec<PathBuf> {
-    Vec::new()
+    path == host_path
 }
 
 #[cfg(windows)]
@@ -584,26 +575,19 @@ fn resolve_program_for_sudo_target(request: &HostCommandRequest<'_>) -> PathBuf 
         return resolve_program_for_direct_spawn(request);
     }
 
-    resolve_trusted_system_command_path(request.program)
+    resolve_host_system_package_manager_path(request.program)
         .unwrap_or_else(|| PathBuf::from(request.program))
 }
 
-fn resolve_trusted_system_command_path(program: &OsStr) -> Option<PathBuf> {
-    resolve_trusted_system_command_path_with_dirs(program, &trusted_system_command_directories())
-}
-
-fn resolve_trusted_system_command_path_with_dirs(
-    program: &OsStr,
-    trusted_dirs: &[PathBuf],
-) -> Option<PathBuf> {
+fn resolve_host_system_package_manager_path(program: &OsStr) -> Option<PathBuf> {
     if is_explicit_command_path(program) {
         return None;
     }
-
-    trusted_dirs.iter().find_map(|dir| {
-        let candidate = dir.join(program);
-        is_spawnable_command_path(&candidate).then_some(candidate)
-    })
+    let manager = SystemPackageManager::parse(program.to_str()?)?;
+    manager
+        .requires_privileged_install()
+        .then_some(resolve_command_path_os(program))
+        .flatten()
 }
 
 fn ensure_sudo_target_is_available(
@@ -613,7 +597,7 @@ fn ensure_sudo_target_is_available(
         return Ok(());
     }
 
-    if resolve_trusted_system_command_path(request.program).is_some() {
+    if resolve_host_system_package_manager_path(request.program).is_some() {
         return Ok(());
     }
 
@@ -635,19 +619,37 @@ fn env_assignment(name: &OsStr, value: &OsStr) -> OsString {
 }
 
 fn map_spawn_error(
-    program: &OsStr,
+    request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
     source: io::Error,
 ) -> HostCommandError {
-    if source.kind() == io::ErrorKind::NotFound {
+    if source.kind() == io::ErrorKind::NotFound
+        && spawn_error_is_missing_program(request, execution)
+    {
         HostCommandError::CommandNotFound {
-            program: program.to_os_string(),
+            program: request.program.to_os_string(),
         }
     } else {
         HostCommandError::SpawnFailed {
-            program: program.to_os_string(),
+            program: request.program.to_os_string(),
             execution,
             source,
+        }
+    }
+}
+
+fn spawn_error_is_missing_program(
+    request: &HostCommandRequest<'_>,
+    execution: HostCommandExecution,
+) -> bool {
+    match execution {
+        HostCommandExecution::Sudo => !is_explicit_command_path(request.program),
+        HostCommandExecution::Direct => {
+            if !is_explicit_command_path(request.program) {
+                return true;
+            }
+
+            !resolve_program_for_direct_spawn(request).exists()
         }
     }
 }
@@ -669,10 +671,10 @@ mod tests {
     #[cfg(unix)]
     use super::ensure_sudo_target_is_available;
     #[cfg(unix)]
-    use super::explicit_system_command_path_with_trusted_dirs;
+    use super::explicit_system_package_manager_path_with_resolved;
     use super::resolve_env_program;
     #[cfg(unix)]
-    use super::resolve_trusted_system_command_path_with_dirs;
+    use super::resolve_host_system_package_manager_path;
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
     use super::{
@@ -1142,17 +1144,20 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn trusted_sudo_target_resolution_ignores_request_path_assignments() {
+    fn explicit_system_package_manager_path_requires_same_binary_as_host_resolution() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let shadowed_program = write_test_command(temp.path(), "sh");
+        let host_program = write_test_command(temp.path(), "apt-get");
+        let alias = temp.path().join("apt-get-alias");
+        symlink(&host_program, &alias).expect("symlink alias");
 
-        let resolved = resolve_trusted_system_command_path_with_dirs(
-            OsStr::new("sh"),
-            &[PathBuf::from("/bin"), PathBuf::from("/usr/bin")],
-        )
-        .expect("resolve trusted shell path");
-
-        assert_ne!(resolved, shadowed_program);
+        assert!(explicit_system_package_manager_path_with_resolved(
+            &host_program,
+            Some(host_program.clone()),
+        ));
+        assert!(explicit_system_package_manager_path_with_resolved(
+            &alias,
+            Some(host_program),
+        ));
     }
 
     #[test]
@@ -1315,7 +1320,11 @@ mod tests {
     fn non_executable_paths_are_not_available_or_spawnable() {
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = temp.path().join("plain-script");
-        std::fs::write(&command_path, "#!/bin/sh\nexit 0\n").expect("write plain script");
+        std::fs::write(
+            &command_path,
+            format!("#!{}\nexit 0\n", unix_test_shell_path().display()),
+        )
+        .expect("write plain script");
         let mut permissions = std::fs::metadata(&command_path)
             .expect("stat plain script")
             .permissions();
@@ -1349,131 +1358,122 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_eligibility_rejects_canonical_path_escape_from_trusted_directory() {
+    fn explicit_system_package_manager_path_rejects_different_binary() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let trusted_dir = temp.path().join("usr/bin");
-        let escaped_dir = temp.path().join("tmp");
-        std::fs::create_dir_all(&trusted_dir).expect("create trusted dir");
-        std::fs::create_dir_all(&escaped_dir).expect("create escaped dir");
+        let host_program = write_test_command(temp.path(), "apt-get");
+        let other_program = write_test_command(temp.path(), "apt-get-other");
 
-        let escaped_program = write_test_command(&escaped_dir, "apt-get");
-        let trusted_dirs = vec![std::fs::canonicalize(&trusted_dir).expect("canonical trusted")];
-
-        assert!(!explicit_system_command_path_with_trusted_dirs(
-            &trusted_dir.join("../tmp/apt-get"),
-            &trusted_dirs,
-        ));
-        assert!(explicit_system_command_path_with_trusted_dirs(
-            &escaped_program,
-            &[std::fs::canonicalize(&escaped_dir).expect("canonical escaped")],
+        assert!(!explicit_system_package_manager_path_with_resolved(
+            &other_program,
+            Some(host_program),
         ));
     }
 
     #[cfg(unix)]
     #[test]
-    fn sudo_eligibility_rejects_trusted_path_symlink_to_untrusted_target() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let trusted_dir = temp.path().join("usr/bin");
-        let untrusted_dir = temp.path().join("tmp");
-        std::fs::create_dir_all(&trusted_dir).expect("create trusted dir");
-        std::fs::create_dir_all(&untrusted_dir).expect("create untrusted dir");
-
-        let untrusted_program = write_test_command(&untrusted_dir, "apt-get");
-        let trusted_alias = trusted_dir.join("apt-get");
-        symlink(&untrusted_program, &trusted_alias).expect("symlink trusted alias");
-
-        assert!(!explicit_system_command_path_with_trusted_dirs(
-            &trusted_alias,
-            &[std::fs::canonicalize(&trusted_dir).expect("canonical trusted")],
-        ));
+    fn resolve_host_system_package_manager_path_ignores_non_package_managers() {
+        assert!(resolve_host_system_package_manager_path(OsStr::new("sh")).is_none());
     }
 
     #[cfg(unix)]
     #[test]
-    fn sudo_eligibility_rejects_user_local_prefixes() {
-        assert!(!super::explicit_system_command_path(Path::new(
-            "/usr/local/bin/apt-get"
-        )));
-        assert!(!super::explicit_system_command_path(Path::new(
-            "/opt/homebrew/bin/apt-get"
-        )));
+    fn explicit_system_package_manager_path_rejects_non_matching_explicit_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let host_program = write_test_command(temp.path(), "apt-get");
+        let mismatched_name = write_test_command(temp.path(), "dnf");
+
+        assert!(!explicit_system_package_manager_path_with_resolved(
+            &mismatched_name,
+            Some(host_program),
+        ));
     }
 
     #[cfg(unix)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
+        write_shell_executable(
             dir,
             name,
-            "#!/bin/sh\nprintf 'arg=%s\\n' \"$1\"\nprintf 'env=%s\\n' \"$OMNE_TEST_VALUE\"\n",
+            "printf 'arg=%s\\n' \"$1\"\nprintf 'env=%s\\n' \"$OMNE_TEST_VALUE\"\n",
         )
     }
 
     #[cfg(unix)]
     fn write_pwd_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(dir, name, "#!/bin/sh\npwd\n")
+        write_shell_executable(dir, name, "pwd\n")
     }
 
     #[cfg(unix)]
     fn write_count_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
-            dir,
-            name,
-            "#!/bin/sh\nprintf 'run\\n' >> \"$OMNE_COUNT_FILE\"\n",
-        )
+        write_shell_executable(dir, name, "printf 'run\\n' >> \"$OMNE_COUNT_FILE\"\n")
     }
 
     #[cfg(unix)]
     fn write_failing_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
+        write_shell_executable(
             dir,
             name,
-            "#!/bin/sh\nprintf 'stdout-message'\nprintf 'stderr-message' >&2\nexit 7\n",
+            "printf 'stdout-message'\nprintf 'stderr-message' >&2\nexit 7\n",
         )
     }
 
     #[cfg(unix)]
     fn write_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
-            dir,
-            name,
-            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (8 * 1024 * 1024 + 1))\nPY\n",
-        )
+        write_payload_cat_command(dir, name, "stdout", 8 * 1024 * 1024 + 1)
     }
 
     #[cfg(unix)]
     fn write_background_writer_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
+        write_shell_executable(
             dir,
             name,
-            "#!/bin/sh\n(sleep 2; printf 'late-child\\n') &\nprintf 'parent-ready\\n'\n",
+            "(sleep 2; printf 'late-child\\n') &\nprintf 'parent-ready\\n'\n",
         )
     }
 
     #[cfg(unix)]
     fn write_very_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
-            dir,
-            name,
-            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (32 * 1024 * 1024))\nPY\n",
-        )
+        write_payload_cat_command(dir, name, "stdout", 32 * 1024 * 1024)
     }
 
     #[cfg(unix)]
     fn write_exact_limit_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
-            dir,
-            name,
-            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (8 * 1024 * 1024))\nPY\n",
-        )
+        write_payload_cat_command(dir, name, "stdout", 8 * 1024 * 1024)
     }
 
     #[cfg(unix)]
     fn write_large_stderr_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
-            dir,
-            name,
-            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stderr.write('x' * (8 * 1024 * 1024 + 1))\nPY\n",
-        )
+        write_payload_cat_command(dir, name, "stderr", 8 * 1024 * 1024 + 1)
+    }
+
+    #[cfg(unix)]
+    fn write_payload_cat_command(dir: &Path, name: &str, stream: &str, size: usize) -> PathBuf {
+        let payload_path = dir.join(format!("{name}.payload"));
+        std::fs::write(&payload_path, vec![b'x'; size]).expect("write payload");
+        let payload = shell_quote_path(&payload_path);
+        let body = match stream {
+            "stdout" => format!("cat {payload}\n"),
+            "stderr" => format!("cat {payload} >&2\n"),
+            other => panic!("unexpected payload stream: {other}"),
+        };
+        write_shell_executable(dir, name, &body)
+    }
+
+    #[cfg(unix)]
+    fn write_shell_executable(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let shell = unix_test_shell_path();
+        write_unix_executable(dir, name, &format!("#!{}\n{body}", shell.display()))
+    }
+
+    #[cfg(unix)]
+    fn unix_test_shell_path() -> PathBuf {
+        super::resolve_command_path_or_standard_location_os(OsStr::new("sh"))
+            .expect("resolve test shell")
+    }
+
+    #[cfg(unix)]
+    fn shell_quote_path(path: &Path) -> String {
+        let escaped = path.display().to_string().replace('\'', "'\"'\"'");
+        format!("'{escaped}'")
     }
 
     #[cfg(unix)]
