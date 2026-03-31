@@ -23,6 +23,8 @@
   - 执行事件、决策和 runtime 观测模型。
 - `src/audit_log.rs`
   - 审计日志输出辅助。
+- `src/os_serialization.rs`
+  - audit/CLI 的 exact OS-string JSON 编码与解码辅助。
 
 ## 平台模块
 

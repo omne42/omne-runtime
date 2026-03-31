@@ -5,11 +5,14 @@ use std::process::ExitStatus;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
+use omne_fs_primitives::{
+    open_appendable_regular_file_in_ambient_root_nofollow,
+    validate_appendable_regular_file_in_ambient_root_nofollow,
+};
 use serde::Serialize;
 
 use crate::audit::ExecEvent;
 use crate::error::{ExecError, ExecResult};
-use crate::path_guard;
 
 const APPENDABLE_OPEN_NOT_FOUND_RETRIES: usize = 4;
 
@@ -54,7 +57,7 @@ impl AuditLogger {
     }
 
     pub(crate) fn validate_ready_without_side_effects(&self) -> ExecResult<()> {
-        path_guard::validate_appendable_regular_file_nofollow(&self.path, "audit log").map_err(
+        validate_appendable_regular_file_in_ambient_root_nofollow(&self.path, "audit log").map_err(
             |err| ExecError::AuditLogUnavailable {
                 path: self.path.clone(),
                 detail: err.to_string(),
@@ -87,7 +90,7 @@ impl AuditLogger {
     fn try_open_appendable_file(&self) -> Result<std::fs::File, Box<dyn std::error::Error>> {
         let mut last_not_found = None;
         for attempt in 0..APPENDABLE_OPEN_NOT_FOUND_RETRIES {
-            match path_guard::open_appendable_regular_file_nofollow(&self.path, "audit log") {
+            match open_appendable_regular_file_in_ambient_root_nofollow(&self.path, "audit log") {
                 Ok(file) => return Ok(file),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     last_not_found = Some(err);

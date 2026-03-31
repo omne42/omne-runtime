@@ -2,10 +2,9 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-
-use crate::path_guard;
+use omne_fs_primitives::read_utf8_regular_file_in_ambient_root_nofollow;
 use policy_meta::ExecutionIsolation;
+use serde::{Deserialize, Serialize};
 
 const MAX_POLICY_JSON_BYTES: usize = 1024 * 1024;
 
@@ -60,7 +59,7 @@ impl GatewayPolicy {
     }
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
-        let content = path_guard::read_utf8_regular_file_nofollow(
+        let content = read_utf8_regular_file_in_ambient_root_nofollow(
             path.as_ref(),
             MAX_POLICY_JSON_BYTES,
             "policy file",

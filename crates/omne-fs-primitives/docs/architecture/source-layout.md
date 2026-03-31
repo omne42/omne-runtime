@@ -7,6 +7,8 @@
 
 ## 主要模块
 
+- `src/ambient_file.rs`
+  - 基于 ambient root 的 no-follow regular-file read/append helper。
 - `src/cap_root.rs`
   - root 打开、目录访问和 capability 风格路径操作。
 - `src/platform_open.rs`

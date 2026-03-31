@@ -41,6 +41,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `prepare_command()` now requires the caller-supplied `Command` to already point at the same resolved executable path that the gateway bound during preflight; handing it an unresolved bare command name is rejected fail-closed as a prepared-command mismatch.
 - allowlist matching binds explicit paths to executable identity; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
 - JSON surfaces keep readable lossy `program` / `args` fields and also emit `program_exact` / `args_exact`, so audit consumers can reconstruct non-UTF-8 argv exactly instead of guessing from replacement characters.
+- the CLI request adapter accepts either plain strings or the same exact OS-string JSON objects for `program`, `args`, and explicit `env` entries, so non-UTF-8 values do not have to be downgraded before they cross the gateway boundary.
 - `GatewayPolicy::load_json()` only accepts no-follow regular files and fail-closed ancestor directory walks, so symlinks/reparse points cannot silently stand in for trusted policy input.
 - `ExecRequest` now carries explicit environment entries; `execute()` and `prepare_command()` clear inherited process state and apply only that audited environment before spawn.
 - the CLI request adapter also rejects unknown JSON fields fail-closed, so misspelled request keys cannot silently degrade execution boundaries.

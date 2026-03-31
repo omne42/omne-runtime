@@ -7,7 +7,7 @@
 ## 负责什么
 
 - root materialization 与 capability 风格目录访问。
-- no-follow 打开和 regular-file 校验。
+- no-follow 打开、ambient-root regular-file 校验，以及 append/read 这类需要祖先 no-follow walk 的文件 guard。
 - symlink/reparse point 错误分类。
 - bounded read helper。
 - staged atomic file/directory replace 与 advisory lock。

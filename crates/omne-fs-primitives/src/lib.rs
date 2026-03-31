@@ -10,6 +10,7 @@
 //! - atomic file writes with staged temp files, validation, and replace semantics
 
 mod advisory_lock;
+mod ambient_file;
 mod atomic_write;
 mod cap_root;
 mod path_identity;
@@ -17,6 +18,11 @@ mod platform_open;
 mod read_limited;
 
 pub use advisory_lock::{AdvisoryLockGuard, lock_advisory_file_in_ambient_root};
+pub use ambient_file::{
+    open_appendable_regular_file_in_ambient_root_nofollow,
+    read_utf8_regular_file_in_ambient_root_nofollow,
+    validate_appendable_regular_file_in_ambient_root_nofollow,
+};
 pub use atomic_write::{
     AtomicDirectoryError, AtomicDirectoryOptions, AtomicWriteError, AtomicWriteOptions,
     StagedAtomicDirectory, StagedAtomicFile, stage_directory_atomically, stage_file_atomically,

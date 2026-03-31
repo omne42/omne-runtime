@@ -38,6 +38,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 `requested_isolation_source = policy_default` and `required_isolation = policy.default_isolation`.
 `declared_mutation` is required in `request.json`; the CLI no longer defaults it to `false`.
 Unknown request fields are rejected fail-closed instead of being ignored.
+`program`, each `args` entry, and each explicit `env.name` / `env.value` may be either a plain JSON string or the exact OS-string object form shown in output (`{"encoding":"utf8","value":"..."}` on UTF-8 inputs, plus platform-specific exact encodings such as `unix_bytes_hex`).
 `request.json` must be a bounded regular file; symlink, special-file, and oversized inputs are rejected fail-closed.
 When `program` matches `mutating_program_allowlist`, the gateway requires
 `declared_mutation = true`; declared mutations still must use an allowlisted explicit path.

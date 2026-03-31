@@ -44,6 +44,9 @@ intentionally delegating isolation selection to `GatewayPolicy::default_isolatio
 When `GatewayPolicy::enforce_allowlisted_program_for_mutation` remains enabled, callers must still
 finish request construction with `.with_declared_mutation(true/false)` before evaluation or
 execution; otherwise the gateway denies the request with `MutationDeclarationRequired`.
+The `omne-execution` CLI preserves this native `OsString` contract on input too: `program`, each
+`args` entry, and each explicit `env` name/value may be passed either as a plain JSON string or as
+an exact OS-string object with `encoding` + `value`.
 
 ## RequestResolution
 
