@@ -26,7 +26,7 @@ impl SandboxMonitor {
         self.observation
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn with_observation(observation: Option<SandboxRuntimeObservation>) -> Self {
         Self { observation }
     }
