@@ -97,6 +97,11 @@ annotations. In `omne-fs` they are descriptive only and do not override
 
 - Default: `glob`, `grep`, `patch`
 - Optional: `policy-io`
+- Optional: `git-permissions`
+  - Enables the fallback that checks tracked/clean Git state for otherwise-disallowed `edit` and
+    non-recursive `delete` operations.
+  - The fallback shells out through `omne-process-primitives`, so host-command execution stays on
+    the shared runtime boundary instead of open-coding `git` process spawning inside `omne-fs`.
 
 If a feature is disabled, the operation API remains available but returns `Error::NotPermitted`.
 
@@ -106,8 +111,10 @@ If a feature is disabled, the operation API remains available but returns `Error
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo check -p omne-fs --all-targets --no-default-features
+cargo check -p omne-fs --all-targets --features git-permissions
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo test -p omne-fs --features git-permissions
 ./scripts/gate.sh
 ```
 

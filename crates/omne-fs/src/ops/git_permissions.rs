@@ -5,7 +5,14 @@ use crate::error::{Error, Result};
 use super::Context;
 
 #[cfg(feature = "git-permissions")]
-use std::process::Command;
+use omne_process_primitives::{
+    HostCommandError, HostCommandRequest, HostCommandSudoMode,
+    resolve_command_path_or_standard_location_os, run_host_command,
+};
+#[cfg(feature = "git-permissions")]
+use std::ffi::{OsStr, OsString};
+#[cfg(feature = "git-permissions")]
+use std::path::PathBuf;
 
 #[cfg(feature = "git-permissions")]
 const GIT_BINARY_MISSING_HINT: &str =
@@ -18,49 +25,14 @@ fn run_git_status(
     op: &str,
     args: &[&str],
 ) -> Result<std::process::ExitStatus> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(canonical_root);
-    cmd.args(args);
-    cmd.arg("--");
-    cmd.arg(relative_path);
-    let status = match cmd.status() {
-        Ok(status) => status,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(Error::NotPermitted(format!(
-                "{op} is disabled by policy: {GIT_BINARY_MISSING_HINT}"
-            )));
-        }
-        Err(err) => {
-            return Err(Error::IoPath {
-                op: "spawn_git",
-                path: relative_path.to_path_buf(),
-                source: err,
-            });
-        }
-    };
-    Ok(status)
+    let args = git_args_with_path(canonical_root, args, relative_path);
+    run_git_command(op, relative_path, &args).map(|output| output.status)
 }
 
 #[cfg(feature = "git-permissions")]
 fn run_git_output_no_path(canonical_root: &Path, op: &str, args: &[&str]) -> Result<String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(canonical_root);
-    cmd.args(args);
-    let output = match cmd.output() {
-        Ok(output) => output,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(Error::NotPermitted(format!(
-                "{op} is disabled by policy: {GIT_BINARY_MISSING_HINT}"
-            )));
-        }
-        Err(err) => {
-            return Err(Error::IoPath {
-                op: "spawn_git",
-                path: canonical_root.to_path_buf(),
-                source: err,
-            });
-        }
-    };
+    let args = git_args_no_path(canonical_root, args);
+    let output = run_git_command(op, canonical_root, &args)?;
     if !output.status.success() {
         return Err(Error::NotPermitted(format!(
             "{op} is disabled by policy: git check failed at {}",
@@ -68,6 +40,62 @@ fn run_git_output_no_path(canonical_root: &Path, op: &str, args: &[&str]) -> Res
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(feature = "git-permissions")]
+fn run_git_command(op: &str, path: &Path, args: &[OsString]) -> Result<std::process::Output> {
+    let git_path = resolve_git_program_path(op)?;
+    let request = HostCommandRequest {
+        program: git_path.as_os_str(),
+        args,
+        env: &[],
+        working_directory: None,
+        sudo_mode: HostCommandSudoMode::Never,
+    };
+    run_host_command(&request)
+        .map(|output| output.output)
+        .map_err(|err| map_git_command_error(op, path, err))
+}
+
+#[cfg(feature = "git-permissions")]
+fn resolve_git_program_path(op: &str) -> Result<PathBuf> {
+    resolve_command_path_or_standard_location_os(OsStr::new("git")).ok_or_else(|| {
+        Error::NotPermitted(format!(
+            "{op} is disabled by policy: {GIT_BINARY_MISSING_HINT}"
+        ))
+    })
+}
+
+#[cfg(feature = "git-permissions")]
+fn map_git_command_error(op: &str, path: &Path, err: HostCommandError) -> Error {
+    match err {
+        HostCommandError::CommandNotFound { .. } => Error::NotPermitted(format!(
+            "{op} is disabled by policy: {GIT_BINARY_MISSING_HINT}"
+        )),
+        HostCommandError::SpawnFailed { source, .. }
+        | HostCommandError::CaptureFailed { source, .. } => Error::IoPath {
+            op: "spawn_git",
+            path: path.to_path_buf(),
+            source,
+        },
+    }
+}
+
+#[cfg(feature = "git-permissions")]
+fn git_args_no_path(canonical_root: &Path, args: &[&str]) -> Vec<OsString> {
+    let mut git_args = Vec::with_capacity(args.len() + 2);
+    git_args.push(OsString::from("-C"));
+    git_args.push(canonical_root.as_os_str().to_os_string());
+    git_args.extend(args.iter().map(OsString::from));
+    git_args
+}
+
+#[cfg(feature = "git-permissions")]
+fn git_args_with_path(canonical_root: &Path, args: &[&str], relative_path: &Path) -> Vec<OsString> {
+    let mut git_args = git_args_no_path(canonical_root, args);
+    git_args.push(OsString::from("--"));
+    git_args.push(relative_path.as_os_str().to_os_string());
+    git_args
 }
 
 #[cfg(feature = "git-permissions")]

@@ -80,10 +80,12 @@ package 名保持一致。
 
 ## 当前依赖方向
 
-- `omne-fs` 依赖 `omne-fs-primitives`。
+- `omne-fs` 依赖 `omne-fs-primitives`，并在 `git-permissions` feature 下额外依赖
+  `omne-process-primitives` 的宿主机命令原语。
   证据见 `crates/omne-fs/Cargo.toml`、
   `crates/omne-fs/src/platform_open.rs`、
-  `crates/omne-fs/src/ops/io.rs`。
+  `crates/omne-fs/src/ops/io.rs`、
+  `crates/omne-fs/src/ops/git_permissions.rs`。
 - `omne-fs-cli` 依赖 `omne-fs` 与 `omne-fs-primitives`，但它只是 `omne-fs` 边界的
   二进制入口 package，不把文件系统策略层拆成新的 sibling crate。
 - `omne-artifact-install-primitives` 依赖 `omne-archive-primitives`、
@@ -113,7 +115,7 @@ package 名保持一致。
 | `omne-artifact-install-primitives` | 无产品策略的 artifact 安装管道：下载候选执行、可选 SHA-256 校验、direct binary 原子落盘、binary-from-archive 安装、以及基于 shared archive walker 的 staged directory replace 编排 | GitHub release 元数据、候选顺序策略、产品目录布局、领域错误码、CLI |
 | `omne-archive-primitives` | 无策略的 archive/compression 能力：`.tar.gz`、`.tar.xz`、`.zip` 识别，归档条目遍历，按精确 hint 或约定布局匹配目标二进制，提取目标二进制字节，以及 archive tree walker 的路径/link/预算硬化 | 文件写入、权限设置、原子替换、下载、来源校验、领域错误映射、CLI |
 | `omne-execution-gateway` | 执行请求模型、隔离级别校验、`policy_default` 来源校验、执行时的 `workspace/cwd` 校验、声明式变更命令门控、sandbox 应用、审计事件与日志 | 文件系统操作策略、通用文件 API、`omne-fs` CLI 语义解析、超时/取消策略、stdout/stderr 保密策略、通用进程树清理原语 |
-| `omne-fs` | 文件系统 `SandboxPolicy`、root/path/permission/limit/secret 语义、redaction、高层文件操作、CLI、policy I/O | 描述符级 no-follow open、通用 bounded-read 原语、进程清理、OS sandbox |
+| `omne-fs` | 文件系统 `SandboxPolicy`、root/path/permission/limit/secret 语义、redaction、高层文件操作、CLI、policy I/O，以及 `git-permissions` feature 下对 Git tracked/clean fallback 的策略解释 | 描述符级 no-follow open、通用 bounded-read 原语、宿主机命令 spawn 原语、进程清理、OS sandbox |
 | `omne-fs-cli` | `omne-fs` 的 CLI 二进制入口、参数接线和输出适配；它复用 `omne-fs` 的文件系统策略边界，而不是重新定义一套文件系统能力 | 新的 runtime capability 边界、低层文件系统原语、独立 policy 模型 |
 | `omne-fs-primitives` | 无策略的文件系统原语：root materialization、capability 风格目录访问、no-follow open、symlink/reparse 分类、bounded read、staged atomic file/directory replace、advisory lock | `SandboxPolicy`、alias-root 语义、权限决策、secret 处理、redaction、CLI |
 | `omne-host-info-primitives` | 无策略的宿主信息原语：宿主 OS/arch 识别、canonical target triple 映射、target override 归一化、home 目录解析、目标可执行后缀推断 | `OMNE_DATA_DIR`/产品目录策略、包管理器适配、安装编排、CLI |

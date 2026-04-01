@@ -12,6 +12,7 @@
 - policy I/O、CLI 和相关集成测试。
 - 输出 redaction 与 secret deny 逻辑。
 - 对会创建、替换或删除路径的写操作，重校验父目录/源对象身份；无法可靠验证时 fail-closed，而不是降级成 best-effort 成功。
+- `git-permissions` feature 下的 Git tracked/clean fallback 策略解释；真正的宿主机命令执行仍委托给 `omne-process-primitives`。
 
 ## 不负责什么
 
@@ -26,6 +27,7 @@
   - 持有低层文件系统原语。
 - `omne-process-primitives`
   - 持有宿主机命令与进程树原语，不属于 `omne-fs`。
+  - `git-permissions` feature 只复用这里的 host-command primitive，不在 `omne-fs` 内直接 `spawn git`。
 - workspace 根 docs
   - 持有跨 crate 的边界规则，而不是 `omne-fs` 自己的行为事实。
 
