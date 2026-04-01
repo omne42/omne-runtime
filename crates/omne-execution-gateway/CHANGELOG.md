@@ -40,7 +40,7 @@
 - reject symlinked, ancestor-symlinked, and special-file audit log destinations so audit logging fails closed on unsafe sinks
 - reject symlinked, special-file, and oversized `omne-execution` request JSON inputs fail-closed
 - require callers to declare mutation intent explicitly before gateway evaluation when mutation enforcement is enabled
-- deny shell-like and interpreter launchers such as `python`, `node`, and `perl` unless callers allowlist an explicit executable path
+- deny shell-like and interpreter launchers such as `sh`, `cmd`, `python`, `node`, and `perl` even when callers allowlist an explicit executable path, because the gateway cannot safely authorize arbitrary script or subcommand payloads behind one launcher binary
 - bind mutating allowlist checks to the resolved executable identity behind explicit program paths instead of basename text
 - surface missing, inaccessible, and non-directory working directories as `cwd_invalid` instead of `cwd_outside_workspace`
 - make `resolve_request()` and CLI `request_resolution` reuse the gateway's validated canonical path view

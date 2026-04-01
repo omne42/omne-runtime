@@ -341,6 +341,15 @@ impl ExecGateway {
                     )),
                 ));
             }
+            if uses_opaque_command_launcher(&request.program) {
+                return Err(self.deny_preflight(
+                    event,
+                    "opaque_command_forbidden",
+                    ExecError::PolicyDenied(
+                        "opaque command launchers cannot be authorized by policy".to_string(),
+                    ),
+                ));
+            }
             let program_path = Path::new(&request.program);
             let mutating_allowlisted = self
                 .policy
@@ -367,15 +376,6 @@ impl ExecGateway {
                         "allowlisted_program_requires_declared_mutation",
                         ExecError::PolicyDenied(
                             "allowlisted mutating program must declare mutation".to_string(),
-                        ),
-                    ));
-                }
-                if uses_opaque_command_launcher(&request.program) {
-                    return Err(self.deny_preflight(
-                        event,
-                        "opaque_command_requires_declared_mutation",
-                        ExecError::PolicyDenied(
-                            "opaque command launchers must declare mutation".to_string(),
                         ),
                     ));
                 }
@@ -1938,8 +1938,10 @@ mod tests {
     fn denies_mutation_for_non_allowlisted_program() {
         let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
+        let program = non_allowlisted_program_path(&workspace);
+        write_test_executable_placeholder(&program);
         let request = ExecRequest::new(
-            dummy_program(),
+            &program,
             Vec::<OsString>::new(),
             workspace.path(),
             ExecutionIsolation::BestEffort,
@@ -1980,7 +1982,9 @@ mod tests {
 
     #[test]
     fn allows_mutation_for_explicitly_allowlisted_program_path() {
-        let program = allowlisted_program_path();
+        let workspace = tempdir().expect("create temp workspace");
+        let program = allowlisted_program_path(&workspace);
+        write_test_executable_placeholder(&program);
         let policy = GatewayPolicy {
             mutating_program_allowlist: vec![program.display().to_string()],
             ..GatewayPolicy::default()
@@ -1989,9 +1993,8 @@ mod tests {
             policy,
             ExecutionIsolation::BestEffort,
         );
-        let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
-            program,
+            &program,
             Vec::<OsString>::new(),
             workspace.path(),
             ExecutionIsolation::BestEffort,
@@ -2291,10 +2294,7 @@ mod tests {
 
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(
-            event.reason.as_deref(),
-            Some("opaque_command_requires_declared_mutation")
-        );
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
     }
 
     #[test]
@@ -2318,10 +2318,7 @@ mod tests {
 
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(
-            event.reason.as_deref(),
-            Some("opaque_command_requires_declared_mutation")
-        );
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
     }
 
     #[test]
@@ -2444,14 +2441,11 @@ mod tests {
 
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(
-            event.reason.as_deref(),
-            Some("opaque_command_requires_declared_mutation")
-        );
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
     }
 
     #[test]
-    fn allows_opaque_command_launcher_when_explicitly_allowlisted() {
+    fn denies_opaque_command_launcher_when_explicitly_allowlisted_for_mutation() {
         let program = dummy_program_absolute_path();
         let policy = GatewayPolicy {
             mutating_program_allowlist: vec![program.display().to_string()],
@@ -2472,14 +2466,15 @@ mod tests {
         .with_declared_mutation(true);
 
         let event = gateway.evaluate(&request);
-        assert_eq!(event.decision, ExecDecision::Run);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
     }
 
     #[test]
-    fn denies_explicitly_allowlisted_program_without_declared_mutation() {
-        let program = allowlisted_program_path();
+    fn denies_opaque_command_launcher_when_explicitly_allowlisted_for_non_mutation() {
+        let program = dummy_program_absolute_path();
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec![program.display().to_string()],
+            non_mutating_program_allowlist: vec![program.display().to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2488,7 +2483,34 @@ mod tests {
         );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
-            program,
+            &program,
+            vec![dummy_shell_flag(), "echo hello"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
+    }
+
+    #[test]
+    fn denies_explicitly_allowlisted_program_without_declared_mutation() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = allowlisted_program_path(&workspace);
+        write_test_executable_placeholder(&program);
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &program,
             Vec::<OsString>::new(),
             workspace.path(),
             ExecutionIsolation::BestEffort,
@@ -3339,7 +3361,7 @@ mod tests {
     fn execute_status_audit_records_nonzero_exit() {
         let workspace = tempdir().expect("create temp workspace");
         let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
-        let (program, args) = shell_exit_nonzero_command();
+        let (program, args) = shell_exit_nonzero_command(&workspace);
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             audit_log_path: Some(audit_path.clone()),
@@ -3437,7 +3459,8 @@ mod tests {
         let workspace = tempdir().expect("create temp workspace");
         let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
         let moved_audit_path = canonical_test_root(&workspace).join("audit.moved.jsonl");
-        let (program, args) = audit_rebinding_shell_command(&audit_path, &moved_audit_path);
+        let (program, args) =
+            audit_rebinding_shell_command(&workspace, &audit_path, &moved_audit_path);
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             audit_log_path: Some(audit_path.clone()),
@@ -3538,52 +3561,44 @@ mod tests {
         "python3"
     }
 
-    fn allowlisted_program_path() -> PathBuf {
-        dummy_program_absolute_path()
+    fn non_allowlisted_program_path(workspace: &tempfile::TempDir) -> PathBuf {
+        test_program_path(workspace, "other")
+    }
+
+    fn allowlisted_program_path(workspace: &tempfile::TempDir) -> PathBuf {
+        test_program_path(workspace, "allowlisted-tool")
     }
 
     #[cfg(windows)]
-    fn non_allowlisted_program_path(workspace: &tempfile::TempDir) -> PathBuf {
-        workspace.path().join("other.exe")
+    fn shell_exit_nonzero_command(workspace: &tempfile::TempDir) -> (PathBuf, Vec<OsString>) {
+        let program = test_program_path(workspace, "exit-one");
+        write_windows_script_executable(&program, "exit /b 1\r\n");
+        (program, Vec::new())
     }
 
     #[cfg(not(windows))]
-    fn non_allowlisted_program_path(workspace: &tempfile::TempDir) -> PathBuf {
-        workspace.path().join("other")
-    }
-
-    #[cfg(windows)]
-    fn shell_exit_nonzero_command() -> (PathBuf, Vec<OsString>) {
-        (
-            dummy_program_absolute_path(),
-            vec![OsString::from("/C"), OsString::from("exit 1")],
-        )
-    }
-
-    #[cfg(not(windows))]
-    fn shell_exit_nonzero_command() -> (PathBuf, Vec<OsString>) {
-        (
-            dummy_program_absolute_path(),
-            vec![OsString::from("-c"), OsString::from("exit 1")],
-        )
+    fn shell_exit_nonzero_command(workspace: &tempfile::TempDir) -> (PathBuf, Vec<OsString>) {
+        let program = test_program_path(workspace, "exit-one");
+        write_unix_shell_executable(&program, "exit 1\n");
+        (program, Vec::new())
     }
 
     #[cfg(not(windows))]
     fn audit_rebinding_shell_command(
+        workspace: &tempfile::TempDir,
         audit_path: &Path,
         moved_path: &Path,
     ) -> (PathBuf, Vec<OsString>) {
-        (
-            dummy_program_absolute_path(),
-            vec![
-                OsString::from("-c"),
-                OsString::from(format!(
-                    "mv \"{0}\" \"{1}\" && mkdir \"{0}\"",
-                    audit_path.display(),
-                    moved_path.display()
-                )),
-            ],
-        )
+        let program = test_program_path(workspace, "audit-rebind");
+        write_unix_shell_executable(
+            &program,
+            &format!(
+                "mv \"{0}\" \"{1}\" && mkdir \"{0}\"\n",
+                audit_path.display(),
+                moved_path.display()
+            ),
+        );
+        (program, Vec::new())
     }
 
     #[cfg(windows)]
@@ -3641,7 +3656,22 @@ mod tests {
 
     #[cfg(windows)]
     fn write_test_executable_placeholder(path: &Path) {
-        fs::write(path, "@echo off\r\nexit /b 0\r\n").expect("write executable placeholder");
+        write_windows_script_executable(path, "exit /b 0\r\n");
+    }
+
+    #[cfg(windows)]
+    fn write_windows_script_executable(path: &Path, body: &str) {
+        fs::write(path, format!("@echo off\r\n{body}")).expect("write executable placeholder");
+    }
+
+    #[cfg(windows)]
+    fn test_program_path(workspace: &tempfile::TempDir, stem: &str) -> PathBuf {
+        workspace.path().join(format!("{stem}.cmd"))
+    }
+
+    #[cfg(not(windows))]
+    fn test_program_path(workspace: &tempfile::TempDir, stem: &str) -> PathBuf {
+        workspace.path().join(stem)
     }
 
     fn host_supported_test_isolation() -> ExecutionIsolation {
