@@ -1030,21 +1030,22 @@ fn validate_prepared_command_matches_request(
     }
 
     if let Some(actual_cwd) = command.get_current_dir() {
-        let actual_cwd = actual_cwd
-            .canonicalize()
-            .map_err(|err| ExecError::PreparedCommandMismatch {
-                requested_program: requested_program.to_string_lossy().into_owned(),
-                requested_args: requested_args
-                    .iter()
-                    .map(|arg| arg.to_string_lossy().into_owned())
-                    .collect(),
-                actual_program: actual_program.to_string_lossy().into_owned(),
-                actual_args: actual_args
-                    .iter()
-                    .map(|arg| arg.to_string_lossy().into_owned())
-                    .collect(),
-                detail: format!("explicit current_dir is invalid: {err}"),
-            })?;
+        let actual_cwd =
+            actual_cwd
+                .canonicalize()
+                .map_err(|err| ExecError::PreparedCommandMismatch {
+                    requested_program: requested_program.to_string_lossy().into_owned(),
+                    requested_args: requested_args
+                        .iter()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect(),
+                    actual_program: actual_program.to_string_lossy().into_owned(),
+                    actual_args: actual_args
+                        .iter()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect(),
+                    detail: format!("explicit current_dir is invalid: {err}"),
+                })?;
         if !path_equals(&actual_cwd, requested_cwd) {
             return Err(ExecError::PreparedCommandMismatch {
                 requested_program: requested_program.to_string_lossy().into_owned(),
