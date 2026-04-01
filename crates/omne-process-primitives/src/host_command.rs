@@ -314,21 +314,8 @@ fn append_sudo_target_command(
     program: &Path,
     request: &HostCommandRequest<'_>,
 ) {
-    let forwarded_env = request
-        .env
-        .iter()
-        .filter(|(name, _)| !is_path_env_name(name))
-        .collect::<Vec<_>>();
-    if forwarded_env.is_empty() {
-        command.arg(program);
-    } else {
-        command.arg(resolve_env_program());
-        command.arg("--");
-        for (name, value) in forwarded_env {
-            command.arg(env_assignment(name, value));
-        }
-        command.arg(program);
-    }
+    let _ = request;
+    command.arg(program);
     for arg in request.args {
         command.arg(arg);
     }
@@ -550,11 +537,6 @@ fn resolve_sudo_program() -> PathBuf {
     resolve_sudo_path().unwrap_or_else(|| PathBuf::from("sudo"))
 }
 
-fn resolve_env_program() -> PathBuf {
-    resolve_command_path_in_standard_locations_os(OsStr::new("env"))
-        .unwrap_or_else(|| PathBuf::from("env"))
-}
-
 fn sudo_available() -> bool {
     resolve_sudo_path().is_some()
 }
@@ -632,14 +614,6 @@ fn is_explicit_command_path(command: &OsStr) -> bool {
     has_path_separator(command) || Path::new(command).is_absolute()
 }
 
-fn env_assignment(name: &OsStr, value: &OsStr) -> OsString {
-    let mut assignment = OsString::new();
-    assignment.push(name);
-    assignment.push(OsStr::new("="));
-    assignment.push(value);
-    assignment
-}
-
 #[derive(Debug)]
 enum CommandOutputError {
     Spawn(io::Error),
@@ -715,7 +689,6 @@ mod tests {
     use super::explicit_system_package_manager_path_with_resolved;
     #[cfg(unix)]
     use super::resolve_command_path_in_standard_locations_os;
-    use super::resolve_env_program;
     #[cfg(unix)]
     use super::resolve_host_system_package_manager_path;
     #[cfg(unix)]
@@ -845,18 +818,8 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn resolve_env_program_uses_trusted_standard_location() {
-        let resolved = resolve_env_program();
-        assert_eq!(
-            Some(resolved.clone()),
-            resolve_command_path_in_standard_locations_os(OsStr::new("env"))
-        );
-    }
-
-    #[test]
-    fn sudo_command_wraps_target_with_env_assignments() {
+    fn sudo_command_drops_request_environment_at_privilege_boundary() {
         let explicit_program = std::env::current_exe().expect("current exe");
         let args = vec![OsString::from("-c"), OsString::from("exit 0")];
         let env = vec![
@@ -881,16 +844,12 @@ mod tests {
             .map(|arg: &OsStr| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert_eq!(collected_args[0], "-n");
-        assert_eq!(collected_args[1], resolve_env_program().to_string_lossy());
-        assert_eq!(collected_args[2], "--");
-        assert_eq!(collected_args[3], "OMNE_TEST_VALUE=world");
-        assert_eq!(collected_args[4], "OMNE_SECOND=value");
-        assert_eq!(Path::new(&collected_args[5]), explicit_program.as_path());
-        assert_eq!(collected_args[6], "-c");
-        assert_eq!(collected_args[7], "exit 0");
+        assert_eq!(Path::new(&collected_args[1]), explicit_program.as_path());
+        assert_eq!(collected_args[2], "-c");
+        assert_eq!(collected_args[3], "exit 0");
         assert!(
-            collected_args.iter().all(|arg| !arg.starts_with("PATH=")),
-            "sudo target env must not inherit request PATH: {collected_args:?}"
+            collected_args.iter().all(|arg| !arg.contains('=')),
+            "sudo target must not receive request env assignments: {collected_args:?}"
         );
 
         let collected_env = command
@@ -1461,7 +1420,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_keeps_non_utf8_environment_values_in_target_assignments() {
+    fn sudo_discards_non_utf8_request_environment_values() {
         let non_utf8_value = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
         let env = vec![(OsString::from("OMNE_TEST_VALUE"), non_utf8_value)];
         let explicit_program = std::env::current_exe().expect("current exe");
@@ -1480,16 +1439,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(collected_args[0], OsString::from("-n"));
-        assert_eq!(collected_args[1], resolve_env_program().into_os_string());
-        assert_eq!(collected_args[2], OsString::from("--"));
-        assert_eq!(
-            collected_args[3],
-            OsString::from_vec(vec![
-                0x4f, 0x4d, 0x4e, 0x45, 0x5f, 0x54, 0x45, 0x53, 0x54, 0x5f, 0x56, 0x41, 0x4c, 0x55,
-                0x45, 0x3d, 0x66, 0x6f, 0x80,
-            ])
-        );
-        assert_eq!(collected_args[4], explicit_program.into_os_string());
+        assert_eq!(collected_args[1], explicit_program.into_os_string());
+        assert_eq!(collected_args.len(), 2);
     }
 
     #[cfg(unix)]
