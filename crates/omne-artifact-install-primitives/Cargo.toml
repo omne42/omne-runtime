@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+cap-std = "4"
 http-kit = { path = "../../../omne_foundation/crates/http-kit" }
 omne-archive-primitives = { path = "../omne-archive-primitives" }
 omne-fs-primitives = { path = "../omne-fs-primitives" }

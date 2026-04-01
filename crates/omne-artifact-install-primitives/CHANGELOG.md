@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- route archive-tree entry materialization through capability-backed staging-directory handles
+  instead of ambient path-based `create_dir` / `File::create` / `hard_link`, so symlink ancestor
+  checks stay bound to the staged tree boundary during extraction
 - move archive-tree tar/zip/xz traversal onto `omne-archive-primitives`, so this crate keeps only staged-directory materialization and destination-boundary enforcement
 - reject empty artifact candidate lists with an explicit caller-input error instead of claiming that all downloads failed
 - preserve a structured install-error detail when every archive-binary candidate fails for the same runtime reason, so callers can retry without parsing error strings

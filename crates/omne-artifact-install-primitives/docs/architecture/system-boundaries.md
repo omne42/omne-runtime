@@ -15,6 +15,7 @@
 - install 阶段使用的 advisory lock root 也遵循和 staged destination 相同的 no-follow 祖先校验，不能沿 symlink 祖先把锁建到目标边界之外。
 - 从受支持的 archive 中按精确 `archive_binary_hint` 或约定 `bin/<binary>` 布局提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束。
 - 把受支持的 archive 目录树解到 `omne-fs-primitives` 提供的 staged 目录，并在默认 extracted-byte / entry-count 预算内成功后替换目标目录。
+- archive tree 在 staged 目录里的目录、regular file、symlink 和 hard link 物化继续绑定在 capability-backed directory handle 上，不回退成 ambient path-based `create_dir` / `File::create` / `hard_link` 流程。
 - `async` 下载入口只把网络阶段留在 Tokio worker 上；SHA 校验、archive 解压和 staged commit 这类重本地 I/O / CPU 阶段切到 blocking 线程，避免把 runtime worker 长时间占满。
 - 对同一个 binary / archive-binary / archive-tree 目标，安装阶段按目标做 advisory lock 串行化，避免并发 staged commit / directory replace 互相踩坏目标状态。
 - 对 archive tree 中会物化目录项的条目，要求落点父目录链必须是 staging 目录下的真实目录；命中 symlink 祖先时 fail-closed，不能借由已创建链接把后续 regular file 写出到 staging 目录之外。
