@@ -35,6 +35,7 @@
 - `omne-execution` CLI 的 `request.json` 也只接受同样的 bounded no-follow regular file 输入，避免通过祖先 symlink、特殊文件或超大输入把 CLI 边界退化成非确定性文件读取；其中 `program` / `args` / `env` 既可以用普通 UTF-8 JSON string，也可以用 exact OS-string 编码对象保留非 UTF-8 输入。
 - 缺失、不可访问或不是目录的 `cwd` 会被报告为 `cwd_invalid`，避免把普通输入/环境错误误记成 workspace 越界。
 - `ExecRequest` 的显式环境变量现在属于 request/audit 契约的一部分；`execute()` 和 `prepare_command()` 在 spawn 前都会清空继承环境，只注入 request 声明过的 env，避免调用方用未审计的 `PATH`、`LD_PRELOAD`、`PYTHONPATH` 等变量偷偷改变执行语义。
+- 当 `enforce_allowlisted_program_for_mutation=true` 时，allowlisted execution 还会额外拒绝 startup-sensitive env 覆盖，例如 `PATH`、`LD_*`、`DYLD_*`、`BASH_ENV`、`PYTHONPATH`、`RUBYOPT` 和 `NODE_OPTIONS`；这些变量会改变 loader、解释器或子命令解析语义，因此不能在“已绑定执行体身份”的边界外重新放宽。
 - 配置了 `audit_log_path` 时，`evaluate()` / `resolve_request()` / `preflight()` 保持纯评估，不提前创建日志目录或文件；真正的 audit sink 准备只在 `execute()` / `prepare_command()` 前发生，并继续通过 descriptor-backed no-follow walk 拒绝祖先 symlink/reparse point 或其他不安全路径。最终 JSONL 记录会继续写入这次准备阶段已打开的 appendable file handle，而不是在命令执行后重新按路径 reopen，减少 post-preflight path swap 的竞态窗口。
 - mutating allowlist 对显式程序路径除了 file identity 绑定外，还会在 preflight 记录内容指纹，并在真正 spawn 前再次校验，防止同 inode 的原地改写绕过 allowlist。
 - 如果 preflight 之后的最终审计写入失败，gateway 会把结果显式返回给调用方，而不是只在 stderr 打印失败后继续返回成功。

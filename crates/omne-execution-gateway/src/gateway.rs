@@ -315,6 +315,15 @@ impl ExecGateway {
                     ExecError::MutationDeclarationRequired,
                 ));
             }
+            if let Some(name) = first_startup_sensitive_env_name(&request.env) {
+                return Err(self.deny_preflight(
+                    event,
+                    "startup_sensitive_env_forbidden",
+                    ExecError::PolicyDenied(format!(
+                        "allowlisted execution forbids startup-sensitive environment variable `{name}`"
+                    )),
+                ));
+            }
             let program_path = Path::new(&request.program);
             let mutating_allowlisted = self
                 .policy
@@ -604,6 +613,72 @@ fn ascii_program_name_from_bytes(bytes: &[u8]) -> Option<String> {
 
 fn strip_windows_exe_suffix_owned(value: String) -> String {
     value.strip_suffix(".exe").unwrap_or(&value).to_string()
+}
+
+fn first_startup_sensitive_env_name(env: &[(OsString, OsString)]) -> Option<String> {
+    env.iter().find_map(|(name, _)| {
+        is_startup_sensitive_env_name(name).then(|| name.to_string_lossy().into_owned())
+    })
+}
+
+fn is_startup_sensitive_env_name(name: &OsStr) -> bool {
+    let Some(normalized) = normalized_env_name_ascii(name) else {
+        return true;
+    };
+
+    matches!(
+        normalized.as_str(),
+        "PATH"
+            | "ENV"
+            | "BASH_ENV"
+            | "CDPATH"
+            | "GIT_EXEC_PATH"
+            | "NODE_OPTIONS"
+            | "NODE_PATH"
+            | "PERL5LIB"
+            | "PERLLIB"
+            | "PERL5OPT"
+            | "PYTHONHOME"
+            | "PYTHONPATH"
+            | "PYTHONSTARTUP"
+            | "RUBYLIB"
+            | "RUBYOPT"
+    ) || normalized.starts_with("LD_")
+        || normalized.starts_with("DYLD_")
+}
+
+#[cfg(unix)]
+fn normalized_env_name_ascii(name: &OsStr) -> Option<String> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = name.as_bytes();
+    bytes.is_ascii().then(|| {
+        bytes
+            .iter()
+            .map(|byte| char::from(byte.to_ascii_uppercase()))
+            .collect()
+    })
+}
+
+#[cfg(windows)]
+fn normalized_env_name_ascii(name: &OsStr) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut normalized = String::new();
+    for unit in name.encode_wide() {
+        let byte = u8::try_from(unit).ok()?;
+        if !byte.is_ascii() {
+            return None;
+        }
+        normalized.push(char::from(byte.to_ascii_uppercase()));
+    }
+    Some(normalized)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn normalized_env_name_ascii(name: &OsStr) -> Option<String> {
+    let text = name.to_str()?;
+    text.is_ascii().then(|| text.to_ascii_uppercase())
 }
 
 fn canonicalize_workspace_root(path: &Path) -> ExecResult<PathBuf> {
@@ -1771,6 +1846,102 @@ mod tests {
             ExecutionIsolation::BestEffort,
             workspace.path(),
         )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
+    }
+
+    #[test]
+    fn denies_non_mutating_allowlisted_program_with_startup_sensitive_env() {
+        let program = resolved_non_mutating_program_path();
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                non_mutating_program_allowlist: vec![program.display().to_string()],
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_env([("PATH", "/tmp/shadow")])
+        .with_declared_mutation(false);
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("startup_sensitive_env_forbidden")
+        );
+        assert!(matches!(
+            result,
+            Err(ExecError::PolicyDenied(detail))
+                if detail.contains("startup-sensitive environment variable `PATH`")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn denies_mutating_allowlisted_program_with_loader_env() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("allowlisted.sh");
+        write_unix_shell_executable(&program, "exit 0\n");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                mutating_program_allowlist: vec![program.display().to_string()],
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_env([("LD_PRELOAD", "/tmp/evil.so")])
+        .with_declared_mutation(true);
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("startup_sensitive_env_forbidden")
+        );
+        assert!(matches!(
+            result,
+            Err(ExecError::PolicyDenied(detail))
+                if detail.contains("startup-sensitive environment variable `LD_PRELOAD`")
+        ));
+    }
+
+    #[test]
+    fn allows_benign_env_for_allowlisted_non_mutating_program() {
+        let program = resolved_non_mutating_program_path();
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                non_mutating_program_allowlist: vec![program.display().to_string()],
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_env([("LANG", "C")])
         .with_declared_mutation(false);
 
         let event = gateway.evaluate(&request);
