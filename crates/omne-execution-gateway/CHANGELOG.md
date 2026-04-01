@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- fail closed when request `cwd` or `workspace_root` traverses a symlink/reparse-point ancestor, so canonical path binding does not silently re-authorize aliased directories
+- add regression coverage proving explicit-path detection and request path validation keep non-UTF-8 / symlink-sensitive checks on native OS-string and filesystem boundaries
 - return `PreparedChild` from `PreparedCommand::spawn()` so prepared spawns preserve the
   post-spawn sandbox observation instead of silently dropping monitor metadata after preflight
 - require `prepare_command()` callers to match the request's explicit env and any caller-supplied
