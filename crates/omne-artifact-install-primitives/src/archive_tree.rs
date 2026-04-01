@@ -16,9 +16,9 @@ use omne_archive_primitives::{
     MAX_ZIP_SYMLINK_TARGET_BYTES, walk_tar_archive_tree, walk_zip_archive_tree,
 };
 use omne_fs_primitives::{
-    AtomicDirectoryOptions, AtomicWriteOptions, Dir, MissingRootPolicy,
-    create_directory_component, create_regular_file_at, open_directory_component, open_root,
-    stage_directory_atomically, stage_file_atomically_with_name,
+    AtomicDirectoryOptions, AtomicWriteOptions, Dir, MissingRootPolicy, create_directory_component,
+    create_regular_file_at, open_directory_component, open_root, stage_directory_atomically,
+    stage_file_atomically_with_name,
 };
 use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 
@@ -234,10 +234,8 @@ impl ArchiveTreeVisitor for FilesystemArchiveTreeWriter<'_> {
     }
 
     fn visit_hard_link(&mut self, path: &Path, target: &Path) -> Result<(), Self::Error> {
-        self.pending_hard_links.push(prepare_archive_hard_link(
-            path,
-            target,
-        )?);
+        self.pending_hard_links
+            .push(prepare_archive_hard_link(path, target)?);
         Ok(())
     }
 }
@@ -447,7 +445,7 @@ where
         file.set_permissions(cap_std::fs::Permissions::from_std(
             fs::Permissions::from_mode(mode),
         ))
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     }
     Ok(())
 }
@@ -548,12 +546,12 @@ fn open_archive_directory(
                             current_path.display()
                         )))
                     }
-                    Ok(metadata) if !metadata.is_dir() => Err(ArtifactInstallError::install(
-                        format!(
+                    Ok(metadata) if !metadata.is_dir() => {
+                        Err(ArtifactInstallError::install(format!(
                             "unsafe archive parent component `{}` is not a directory",
                             current_path.display()
-                        ),
-                    )),
+                        )))
+                    }
                     Ok(_) => Err(ArtifactInstallError::install(err.to_string())),
                     Err(_) => Err(ArtifactInstallError::install(err.to_string())),
                 };
