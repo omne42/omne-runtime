@@ -52,7 +52,8 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - allowlisted mutating and non-mutating programs bind both file identity and a preflight content fingerprint, and spawn revalidation rejects in-place executable rewrites before launch.
 - if audit append succeeds during preflight but the final record write later fails, the execution result is surfaced as an explicit audit-log write failure instead of silently degrading to stderr-only reporting. When the command had already failed for another reason, the returned audit error now also includes that original execution error summary.
 - `prepare_command` returns a spawn-only `PreparedCommand` wrapper instead of handing a mutable validated `Command` back to callers.
-- `prepare_command` only emits the preflight `prepared`/`prepare_error` audit record. Final exit-status auditing and runtime sandbox observation remain part of `execute()`, because handing back a spawn-only wrapper transfers child-lifecycle ownership to the caller.
+- `PreparedCommand::spawn()` returns a `PreparedChild` that carries the post-spawn sandbox observation alongside the owned child handle, so prepared spawns do not silently drop runtime sandbox metadata after preflight.
+- `prepare_command` only emits the preflight `prepared`/`prepare_error` audit record. Final exit-status auditing still remains part of `execute()`, because handing back a spawn-only wrapper transfers child-lifecycle ownership to the caller.
 - `execute()` and `PreparedCommand::spawn()` both revalidate bound `cwd` / `workspace_root` identities immediately before spawn.
 - missing, inaccessible, or non-directory `cwd` values are reported as `cwd_invalid` instead of being mislabeled as workspace boundary violations.
 - `execute()` and `PreparedCommand::spawn()` bind `stdin/stdout/stderr` to null handles; callers that need interactive or captured stdio should use a different process primitive.
