@@ -25,6 +25,11 @@ impl SandboxMonitor {
     pub(crate) fn observe_after_spawn(self) -> Option<SandboxRuntimeObservation> {
         self.observation
     }
+
+    #[cfg(test)]
+    pub(crate) fn with_observation(observation: Option<SandboxRuntimeObservation>) -> Self {
+        Self { observation }
+    }
 }
 
 pub(crate) fn detect_supported_isolation() -> ExecutionIsolation {

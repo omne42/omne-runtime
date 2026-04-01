@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- return `PreparedChild` from `PreparedCommand::spawn()` so prepared spawns preserve the
+  post-spawn sandbox observation instead of silently dropping monitor metadata after preflight
 - require `prepare_command()` callers to match the request's explicit env and any caller-supplied
   `current_dir`, so prepared-command validation cannot silently discard a different execution
   identity before the gateway rebuilds the final spawn command

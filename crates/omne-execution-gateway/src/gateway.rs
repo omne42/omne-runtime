@@ -3,7 +3,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use crate::audit::{ExecDecision, ExecEvent, requested_policy_meta};
+use crate::audit::{ExecDecision, ExecEvent, SandboxRuntimeObservation, requested_policy_meta};
 use crate::audit_log::{AuditLogger, PreparedAuditSink};
 use crate::error::{ExecError, ExecResult};
 use crate::policy::GatewayPolicy;
@@ -74,6 +74,13 @@ pub struct ExecutionOutcome {
 }
 
 #[derive(Debug)]
+#[must_use = "prepared spawn outcomes carry child ownership and sandbox metadata"]
+pub struct PreparedChild {
+    pub child: std::process::Child,
+    pub sandbox_runtime: Option<SandboxRuntimeObservation>,
+}
+
+#[derive(Debug)]
 #[must_use = "prepared commands must be spawned to apply validated cwd and sandbox state"]
 pub struct PreparedCommand {
     command: Command,
@@ -86,15 +93,21 @@ impl ExecutionOutcome {
     }
 }
 
+impl PreparedChild {
+    pub fn into_parts(self) -> (std::process::Child, Option<SandboxRuntimeObservation>) {
+        (self.child, self.sandbox_runtime)
+    }
+}
+
 impl PreparedCommand {
     pub fn current_dir(&self) -> Option<&Path> {
         self.command.get_current_dir()
     }
 
-    pub fn spawn(mut self) -> ExecResult<std::process::Child> {
+    pub fn spawn(mut self) -> ExecResult<PreparedChild> {
         configure_noninteractive_stdio(&mut self.command);
         apply_prepared_request(&self.prepared, &mut self.command)
-            .and_then(|_monitor| self.command.spawn().map_err(ExecError::Spawn))
+            .and_then(|monitor| spawn_command_with_monitor(&mut self.command, monitor))
     }
 }
 
@@ -177,8 +190,8 @@ impl ExecGateway {
                     configure_noninteractive_stdio(&mut command);
                     let result =
                         apply_prepared_request(&prepared, &mut command).and_then(|monitor| {
-                            let mut child = command.spawn().map_err(ExecError::Spawn)?;
-                            let sandbox_runtime = monitor.observe_after_spawn();
+                            let prepared_child = spawn_command_with_monitor(&mut command, monitor)?;
+                            let (mut child, sandbox_runtime) = prepared_child.into_parts();
                             let status = child.wait().map_err(ExecError::Spawn)?;
                             Ok((sandbox_runtime, status))
                         });
@@ -928,6 +941,17 @@ fn apply_prepared_request(
         prepared.required_isolation,
         &prepared.resolved_paths.workspace_root.path,
     )
+}
+
+fn spawn_command_with_monitor(
+    command: &mut Command,
+    monitor: sandbox::SandboxMonitor,
+) -> ExecResult<PreparedChild> {
+    let child = command.spawn().map_err(ExecError::Spawn)?;
+    Ok(PreparedChild {
+        child,
+        sandbox_runtime: monitor.observe_after_spawn(),
+    })
 }
 
 fn build_prepared_spawn_command(prepared: &PreparedExecRequest, args: &[OsString]) -> Command {
@@ -2520,6 +2544,7 @@ mod tests {
             .expect("prepare command")
             .spawn()
             .expect("spawn prepared command")
+            .child
             .wait()
             .expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
@@ -2554,24 +2579,24 @@ mod tests {
             .stderr(Stdio::piped());
 
         let (_event, result) = gateway.prepare_command(&request, command);
-        let mut child = result
+        let mut prepared_child = result
             .expect("prepare command")
             .spawn()
             .expect("spawn prepared command");
 
         assert!(
-            child.stdin.is_none(),
+            prepared_child.child.stdin.is_none(),
             "prepared command should discard caller stdin override"
         );
         assert!(
-            child.stdout.is_none(),
+            prepared_child.child.stdout.is_none(),
             "prepared command should discard caller stdout override"
         );
         assert!(
-            child.stderr.is_none(),
+            prepared_child.child.stderr.is_none(),
             "prepared command should discard caller stderr override"
         );
-        let status = child.wait().expect("wait prepared command");
+        let status = prepared_child.child.wait().expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
     }
 
@@ -2607,6 +2632,7 @@ mod tests {
             .expect("prepare command")
             .spawn()
             .expect("spawn prepared command without leaked argv0")
+            .child
             .wait()
             .expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
@@ -2650,6 +2676,7 @@ mod tests {
             .expect("prepare command")
             .spawn()
             .expect("spawn prepared command without inherited process-group override")
+            .child
             .wait()
             .expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
@@ -2684,23 +2711,23 @@ mod tests {
             .stderr(Stdio::piped());
 
         let (_event, result) = gateway.prepare_command(&request, command);
-        let mut child = result
+        let mut prepared_child = result
             .expect("prepare command")
             .spawn()
             .expect("spawn prepared command");
         assert!(
-            child.stdin.is_none(),
+            prepared_child.child.stdin.is_none(),
             "prepared command should not inherit stdin"
         );
         assert!(
-            child.stdout.is_none(),
+            prepared_child.child.stdout.is_none(),
             "prepared command should not expose stdout capture handles"
         );
         assert!(
-            child.stderr.is_none(),
+            prepared_child.child.stderr.is_none(),
             "prepared command should not expose stderr capture handles"
         );
-        let status = child.wait().expect("wait prepared command");
+        let status = prepared_child.child.wait().expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
     }
 
@@ -3276,6 +3303,28 @@ mod tests {
         run_noninteractive_stdin_helper("prepare");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn spawn_command_with_monitor_returns_sandbox_runtime_observation() {
+        let observation = crate::audit::SandboxRuntimeObservation {
+            mechanism: crate::audit::SandboxRuntimeMechanism::Landlock,
+            outcome: crate::audit::SandboxRuntimeOutcome::NotEnforced,
+            detail: Some("test observation".to_string()),
+        };
+        let mut command = Command::new(dummy_program_absolute_path());
+        command.arg(dummy_shell_flag()).arg("exit 0");
+
+        let mut prepared_child = spawn_command_with_monitor(
+            &mut command,
+            sandbox::SandboxMonitor::with_observation(Some(observation.clone())),
+        )
+        .expect("spawn command with test monitor");
+
+        assert_eq!(prepared_child.sandbox_runtime, Some(observation));
+        let status = prepared_child.child.wait().expect("wait for spawned child");
+        assert!(status.success());
+    }
+
     #[cfg(windows)]
     fn dummy_program() -> &'static str {
         "cmd"
@@ -3467,9 +3516,9 @@ mod tests {
                 let command = Command::new(&program);
                 let (_event, result) = gateway.prepare_command(&request, command);
                 let prepared = result.expect("prepare command");
-                let status = prepared
-                    .spawn()
-                    .expect("prepared command should spawn")
+                let mut prepared_child = prepared.spawn().expect("prepared command should spawn");
+                let status = prepared_child
+                    .child
                     .wait()
                     .expect("wait for prepared command");
                 assert!(status.success());
