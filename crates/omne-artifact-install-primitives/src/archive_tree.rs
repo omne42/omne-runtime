@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::fs;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 #[cfg(unix)]
