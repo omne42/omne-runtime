@@ -16,7 +16,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
   "enforce_allowlisted_program_for_mutation": true,
   "mutating_program_allowlist": ["/usr/local/bin/omne-fs"],
   "non_mutating_program_allowlist": ["/usr/bin/echo"],
-  "default_isolation": "best_effort",
+  "default_isolation": "none",
   "audit_log_path": "/tmp/omne_exec_audit.jsonl"
 }
 ```
@@ -52,9 +52,9 @@ preflight; if lookup cannot be bound to a concrete executable, the request fails
 passing an unresolved name through to `spawn()`.
 Allowlisted explicit paths are compared by resolved executable identity, so a symlink alias is only
 authorized while it still points at the same executable file.
-Shell-like opaque launchers such as `sh`, `cmd`, `powershell`, and `pwsh` are denied unless
-their full executable paths are explicitly allowlisted. The gateway does not parse `omne-fs` subcommands to infer
-mutation intent.
+Shell-like opaque launchers such as `sh`, `cmd`, `powershell`, `pwsh`, `python`, and `node` are denied even if
+their full executable paths appear in an allowlist. The gateway does not parse `omne-fs` subcommands, shell scripts,
+or interpreter payloads to infer mutation intent.
 Known mutating tool families such as `git`, `make`, package managers, and core file-mutating
 utilities are also denied when callers set `"declared_mutation": false`; to run them, callers must
 declare mutation and use an explicitly allowlisted executable path.
@@ -97,7 +97,7 @@ Example output fragment:
       "version": 1,
       "execution_isolation": "none"
     },
-    "policy_default_isolation": "best_effort"
+    "policy_default_isolation": "none"
   },
   "event": {
     "decision": "run",
