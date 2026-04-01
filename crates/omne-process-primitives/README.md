@@ -31,7 +31,9 @@ Low-level host-command and process-tree primitives shared across callers.
 - Unix process-group cleanup that fails closed once the captured leader PID has been reused by a
   different live process, and on Linux also fails closed when the leader exits before cleanup can
   still bind the original `/proc` identity; only leaders captured successfully may later reap
-  same-session orphaned descendants after the original leader has actually exited
+  same-session orphaned descendants after the original leader has actually exited, and the
+  captured process-group id, `start_ticks`, and `session_id` all come from the same
+  `/proc/<pid>/stat` snapshot so cleanup never mixes fields from different process lifetimes
 
 ## Non-Goals
 

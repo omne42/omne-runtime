@@ -125,33 +125,52 @@ fn capture_unix_process_group_identity(
     let leader_pid = child_process_pid(child).ok_or_else(|| {
         io::Error::other("cannot capture process-tree identity for a child without a pid")
     })?;
-    let process_group_id = match rustix::process::getpgid(Some(leader_pid)) {
-        Ok(process_group_id) => process_group_id,
-        #[cfg(target_os = "linux")]
-        // `configure_command_for_process_tree(process_group(0))` makes the child its own process
-        // group leader, so the leader PID still names the historical process group even after the
-        // leader exits. We keep that PGID only when `/proc/<pid>/stat` can still bind the
-        // original leader identity; otherwise cleanup fails closed instead of trusting a bare PGID.
-        Err(rustix::io::Errno::SRCH) => leader_pid,
-        #[cfg(not(target_os = "linux"))]
-        Err(rustix::io::Errno::SRCH) => return Ok(None),
-        Err(error) => return Err(io::Error::from(error)),
-    };
-    ensure_unix_process_group_is_dedicated(leader_pid, process_group_id)?;
     #[cfg(target_os = "linux")]
+    {
+        capture_linux_process_group_identity(leader_pid)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let process_group_id = match rustix::process::getpgid(Some(leader_pid)) {
+            Ok(process_group_id) => process_group_id,
+            Err(rustix::io::Errno::SRCH) => return Ok(None),
+            Err(error) => return Err(io::Error::from(error)),
+        };
+        ensure_unix_process_group_is_dedicated(leader_pid, process_group_id)?;
+        Ok(Some(UnixProcessGroupIdentity {
+            leader_pid,
+            process_group_id,
+        }))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn capture_linux_process_group_identity(
+    leader_pid: rustix::process::Pid,
+) -> io::Result<Option<UnixProcessGroupIdentity>> {
     let leader_identity = match read_linux_process_identity(leader_pid) {
         Ok(identity) => identity,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    Ok(Some(UnixProcessGroupIdentity {
+    build_linux_process_group_identity(leader_pid, leader_identity).map(Some)
+}
+
+#[cfg(target_os = "linux")]
+fn build_linux_process_group_identity(
+    leader_pid: rustix::process::Pid,
+    leader_identity: LinuxProcessIdentity,
+) -> io::Result<UnixProcessGroupIdentity> {
+    let process_group_id = rustix::process::Pid::from_raw(leader_identity.process_group_id)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid proc group id"))?;
+    ensure_unix_process_group_is_dedicated(leader_pid, process_group_id)?;
+    Ok(UnixProcessGroupIdentity {
         leader_pid,
         process_group_id,
-        #[cfg(target_os = "linux")]
         leader_start_ticks: Some(leader_identity.start_ticks),
-        #[cfg(target_os = "linux")]
         leader_session_id: Some(leader_identity.session_id),
-    }))
+    })
 }
 
 #[cfg(unix)]
@@ -224,12 +243,18 @@ where
     }
 
     match current {
-        Ok(current) => identity.leader_start_ticks.is_some_and(|start_ticks| {
-            current.start_ticks == start_ticks
-                && current.process_group_id == identity.process_group_id.as_raw_pid()
-        }),
+        Ok(current) => identity
+            .leader_start_ticks
+            .zip(identity.leader_session_id)
+            .is_some_and(|(start_ticks, session_id)| {
+                current.start_ticks == start_ticks
+                    && current.session_id == session_id
+                    && current.process_group_id == identity.process_group_id.as_raw_pid()
+            }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            identity.leader_start_ticks.is_some() && group_exists()
+            identity.leader_start_ticks.is_some()
+                && identity.leader_session_id.is_some()
+                && group_exists()
         }
         Err(_) => false,
     }
@@ -588,8 +613,8 @@ const WINDOWS_ERROR_NOT_SUPPORTED: i32 = 50;
 mod tests {
     use super::{
         CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
-        configure_command_for_process_tree, ensure_unix_process_group_is_dedicated,
-        should_kill_linux_process_group_with_group_probe,
+        build_linux_process_group_identity, configure_command_for_process_tree,
+        ensure_unix_process_group_is_dedicated, should_kill_linux_process_group_with_group_probe,
     };
     use rustix::process::Pid;
     use std::io;
@@ -670,6 +695,26 @@ mod tests {
     }
 
     #[test]
+    fn leader_session_mismatch_fails_closed_even_when_group_and_ticks_match() {
+        let identity = UnixProcessGroupIdentity {
+            leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
+            process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
+            leader_start_ticks: Some(11),
+            leader_session_id: Some(7),
+        };
+
+        assert!(!should_kill_linux_process_group_with_group_probe(
+            identity,
+            Ok(LinuxProcessIdentity {
+                process_group_id: 31337,
+                session_id: 99,
+                start_ticks: 11,
+            }),
+            || true,
+        ));
+    }
+
+    #[test]
     fn leader_exit_after_capture_still_allows_killing_surviving_linux_process_group() {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
@@ -698,6 +743,25 @@ mod tests {
                 .contains("configure_command_for_process_tree"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn linux_capture_identity_uses_single_snapshot_for_group_and_leader_identity() {
+        let leader_pid = Pid::from_raw(4242).expect("leader pid must be non-zero");
+        let identity = build_linux_process_group_identity(
+            leader_pid,
+            LinuxProcessIdentity {
+                process_group_id: 4242,
+                session_id: 7,
+                start_ticks: 11,
+            },
+        )
+        .expect("dedicated process group snapshot should be accepted");
+
+        assert_eq!(identity.leader_pid, leader_pid);
+        assert_eq!(identity.process_group_id, leader_pid);
+        assert_eq!(identity.leader_session_id, Some(7));
+        assert_eq!(identity.leader_start_ticks, Some(11));
     }
 
     fn process_terminated_or_zombie(pid: u32) -> bool {

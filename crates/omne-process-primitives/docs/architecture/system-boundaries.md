@@ -25,7 +25,7 @@
 - 配置子进程以支持进程树清理；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
 - 捕获进程树清理标识并执行 best-effort 终止。
 - Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 descendant sweep。
-- Unix 上一旦无法重新验证原始 leader 身份，默认停止继续对该 process-group 做 `killpg`；Linux 只有在 cleanup capture 时已经成功绑定过 leader 的 `/proc` 身份、且之后确认原 leader 已真实退出时，才会通过 `/proc` 回扫同 session 的残留成员来清理 orphan descendants。对“cleanup 时 leader PID 已被复用成另一个活进程”或“leader 在 cleanup capture 前就已退出，导致无法再绑定 `/proc` 身份”这两类情况，本 crate 都会继续 fail closed。leader 的 `start_ticks` 和 `session_id` 也必须来自同一次 `/proc/<pid>/stat` 读取，避免把不同进程生命周期的字段拼成伪身份。
+- Unix 上一旦无法重新验证原始 leader 身份，默认停止继续对该 process-group 做 `killpg`；Linux 只有在 cleanup capture 时已经成功绑定过 leader 的 `/proc` 身份、且之后确认原 leader 已真实退出时，才会通过 `/proc` 回扫同 session 的残留成员来清理 orphan descendants。对“cleanup 时 leader PID 已被复用成另一个活进程”或“leader 在 cleanup capture 前就已退出，导致无法再绑定 `/proc` 身份”这两类情况，本 crate 都会继续 fail closed。leader 的 process-group id、`start_ticks` 和 `session_id` 也必须来自同一次 `/proc/<pid>/stat` 读取，避免把不同进程生命周期的字段拼成伪身份。
 
 ## 不负责什么
 
