@@ -231,6 +231,8 @@ impl ExecGateway {
                 Ok(mut audit_sink) => match validate_prepared_command_matches_request(
                     prepared.bound_program.path.as_os_str(),
                     &request.args,
+                    &request.env,
+                    &prepared.resolved_paths.cwd.path,
                     &command,
                 ) {
                     Ok(()) => {
@@ -271,10 +273,12 @@ impl ExecGateway {
         (event, result)
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn preflight(&self, request: &ExecRequest) -> Result<ExecEvent, PreflightError> {
         self.prepare_request(request).map(|prepared| prepared.event)
     }
 
+    #[allow(clippy::result_large_err)]
     fn prepare_request(
         &self,
         request: &ExecRequest,
@@ -478,6 +482,7 @@ impl ExecGateway {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn prepare_audit_sink(
         &self,
         event: &ExecEvent,
@@ -973,6 +978,8 @@ fn fingerprint_program_contents(path: &Path) -> ExecResult<[u8; 32]> {
 fn validate_prepared_command_matches_request(
     requested_program: &OsStr,
     requested_args: &[OsString],
+    requested_env: &[(OsString, OsString)],
+    requested_cwd: &Path,
     command: &Command,
 ) -> ExecResult<()> {
     let actual_program = command.get_program();
@@ -980,6 +987,14 @@ fn validate_prepared_command_matches_request(
     let requested_args = requested_args
         .iter()
         .map(OsString::as_os_str)
+        .collect::<Vec<_>>();
+    let actual_env = command
+        .get_envs()
+        .map(|(name, value)| (name.to_os_string(), value.map(OsStr::to_os_string)))
+        .collect::<Vec<_>>();
+    let requested_env = requested_env
+        .iter()
+        .map(|(name, value)| (name.clone(), Some(value.clone())))
         .collect::<Vec<_>>();
 
     if !programs_match(actual_program, requested_program) || actual_args != requested_args {
@@ -994,7 +1009,61 @@ fn validate_prepared_command_matches_request(
                 .into_iter()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect(),
+            detail: "program or args differ".to_string(),
         });
+    }
+
+    if actual_env != requested_env {
+        return Err(ExecError::PreparedCommandMismatch {
+            requested_program: requested_program.to_string_lossy().into_owned(),
+            requested_args: requested_args
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+            actual_program: actual_program.to_string_lossy().into_owned(),
+            actual_args: actual_args
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+            detail: "explicit environment differs".to_string(),
+        });
+    }
+
+    if let Some(actual_cwd) = command.get_current_dir() {
+        let actual_cwd =
+            actual_cwd
+                .canonicalize()
+                .map_err(|err| ExecError::PreparedCommandMismatch {
+                    requested_program: requested_program.to_string_lossy().into_owned(),
+                    requested_args: requested_args
+                        .iter()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect(),
+                    actual_program: actual_program.to_string_lossy().into_owned(),
+                    actual_args: actual_args
+                        .iter()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect(),
+                    detail: format!("explicit current_dir is invalid: {err}"),
+                })?;
+        if !path_equals(&actual_cwd, requested_cwd) {
+            return Err(ExecError::PreparedCommandMismatch {
+                requested_program: requested_program.to_string_lossy().into_owned(),
+                requested_args: requested_args
+                    .iter()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect(),
+                actual_program: actual_program.to_string_lossy().into_owned(),
+                actual_args: actual_args
+                    .iter()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect(),
+                detail: format!(
+                    "explicit current_dir {:?} differs from request cwd {:?}",
+                    actual_cwd, requested_cwd
+                ),
+            });
+        }
     }
 
     Ok(())
@@ -2416,7 +2485,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn prepare_command_clears_preconfigured_environment() {
+    fn prepare_command_allows_matching_preconfigured_environment() {
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             GatewayPolicy {
                 allow_isolation_none: true,
@@ -2444,7 +2513,7 @@ mod tests {
             "-c",
             "test \"$OMNE_GATEWAY_REQUEST\" = expected && test -z \"$OMNE_GATEWAY_AMBIENT\"",
         ]);
-        command.env("OMNE_GATEWAY_AMBIENT", "leaked");
+        command.env("OMNE_GATEWAY_REQUEST", "expected");
 
         let (_event, result) = gateway.prepare_command(&request, command);
         let status = result
@@ -2771,6 +2840,77 @@ mod tests {
         .with_declared_mutation(false);
         let mut command = Command::new("printf");
         command.arg("hello");
+
+        let (event, result) = gateway.prepare_command(&request, command);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("prepared_command_mismatch"));
+        assert!(matches!(
+            result,
+            Err(ExecError::PreparedCommandMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn prepare_command_denies_mismatched_command_environment() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            workspace.path(),
+            host_supported_test_isolation(),
+            workspace.path(),
+        )
+        .with_env([("OMNE_GATEWAY_REQUEST", "expected")])
+        .with_declared_mutation(false);
+        let mut command = Command::new("echo");
+        command.arg("hello");
+        command.env("OMNE_GATEWAY_REQUEST", "different");
+
+        let (event, result) = gateway.prepare_command(&request, command);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("prepared_command_mismatch"));
+        assert!(matches!(
+            result,
+            Err(ExecError::PreparedCommandMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn prepare_command_denies_mismatched_command_current_dir() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request_cwd = workspace.path().join("request");
+        let other_cwd = workspace.path().join("other");
+        fs::create_dir_all(&request_cwd).expect("create request cwd");
+        fs::create_dir_all(&other_cwd).expect("create other cwd");
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            &request_cwd,
+            host_supported_test_isolation(),
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+        let mut command = Command::new("echo");
+        command.arg("hello");
+        command.current_dir(&other_cwd);
 
         let (event, result) = gateway.prepare_command(&request, command);
         assert_eq!(event.decision, ExecDecision::Deny);
