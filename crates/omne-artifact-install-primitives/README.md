@@ -18,6 +18,7 @@ Reusable artifact download and install primitives shared by higher-level callers
 - direct binary artifact atomic installation, serialized per destination during the install/commit phase
 - binary-from-archive installation with the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget
 - archive-tree installation via `omne-archive-primitives` shared walker plus `omne-fs-primitives` staged directory replacement and exported extracted-byte / entry-count budgets
+- archive-tree entry materialization stays inside capability-backed handles opened on the staged directory, so regular files, symlinks, and hard links do not fall back to ambient path-based writes during extraction
 - archive-tree link extraction that fails closed if a parent directory chain contains symlink ancestors
 - Unix zip symlink materialization and tar forward hard-link resolution inside the staged tree
 - exact archive-relative `archive_binary_hint` selection for product-specific binary layouts; no separate tool-name fallback remains

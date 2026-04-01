@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -16,8 +16,9 @@ use omne_archive_primitives::{
     MAX_ZIP_SYMLINK_TARGET_BYTES, walk_tar_archive_tree, walk_zip_archive_tree,
 };
 use omne_fs_primitives::{
-    AtomicDirectoryOptions, AtomicWriteOptions, stage_directory_atomically,
-    stage_file_atomically_with_name,
+    AtomicDirectoryOptions, AtomicWriteOptions, Dir, MissingRootPolicy,
+    create_directory_component, create_regular_file_at, open_directory_component, open_root,
+    stage_directory_atomically, stage_file_atomically_with_name,
 };
 use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 
@@ -172,7 +173,7 @@ fn extract_archive_tree<R>(
 where
     R: Read + Seek,
 {
-    let mut writer = FilesystemArchiveTreeWriter::new(destination);
+    let mut writer = FilesystemArchiveTreeWriter::new(destination)?;
     walk_archive_tree(asset_name, reader, limits, &mut writer)
         .map_err(map_walk_archive_tree_error)?;
     writer.finish()
@@ -180,19 +181,35 @@ where
 
 struct FilesystemArchiveTreeWriter<'a> {
     destination: &'a Path,
+    root: Dir,
     pending_hard_links: Vec<PendingArchiveHardLink>,
 }
 
 impl<'a> FilesystemArchiveTreeWriter<'a> {
-    fn new(destination: &'a Path) -> Self {
-        Self {
+    fn new(destination: &'a Path) -> Result<Self, ArtifactInstallError> {
+        let root = open_root(
             destination,
+            "archive tree staging root",
+            MissingRootPolicy::Error,
+            |_, _, _, error| error,
+        )
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?
+        .ok_or_else(|| {
+            ArtifactInstallError::install(format!(
+                "archive tree staging root does not exist: {}",
+                destination.display()
+            ))
+        })?
+        .into_dir();
+        Ok(Self {
+            destination,
+            root,
             pending_hard_links: Vec::new(),
-        }
+        })
     }
 
     fn finish(&mut self) -> Result<(), ArtifactInstallError> {
-        resolve_pending_archive_hard_links(&mut self.pending_hard_links, self.destination)
+        resolve_pending_archive_hard_links(&mut self.pending_hard_links, &self.root)
     }
 }
 
@@ -200,8 +217,7 @@ impl ArchiveTreeVisitor for FilesystemArchiveTreeWriter<'_> {
     type Error = ArtifactInstallError;
 
     fn visit_directory(&mut self, path: &Path) -> Result<(), Self::Error> {
-        let output_path = self.destination.join(path);
-        ensure_archive_directory_chain(path, &output_path, self.destination, true)
+        ensure_archive_directory(path, &self.root, true)
     }
 
     fn visit_regular_file<R: Read>(
@@ -210,22 +226,17 @@ impl ArchiveTreeVisitor for FilesystemArchiveTreeWriter<'_> {
         reader: &mut R,
         unix_mode: Option<u32>,
     ) -> Result<(), Self::Error> {
-        let output_path = self.destination.join(path);
-        write_archive_regular_file(path, &output_path, self.destination, reader, unix_mode)
+        write_archive_regular_file(path, self.destination, &self.root, reader, unix_mode)
     }
 
     fn visit_symlink(&mut self, path: &Path, target: &Path) -> Result<(), Self::Error> {
-        let output_path = self.destination.join(path);
-        create_archive_symlink(path, &output_path, target, self.destination)
+        create_archive_symlink(path, target, self.destination, &self.root)
     }
 
     fn visit_hard_link(&mut self, path: &Path, target: &Path) -> Result<(), Self::Error> {
-        let output_path = self.destination.join(path);
         self.pending_hard_links.push(prepare_archive_hard_link(
             path,
-            &output_path,
             target,
-            self.destination,
         )?);
         Ok(())
     }
@@ -264,7 +275,7 @@ fn extract_zip_tree<R>(
 where
     R: Read + Seek,
 {
-    let mut writer = FilesystemArchiveTreeWriter::new(destination);
+    let mut writer = FilesystemArchiveTreeWriter::new(destination)?;
     walk_zip_archive_tree(reader, limits, &mut writer).map_err(map_walk_archive_tree_error)?;
     writer.finish()
 }
@@ -278,7 +289,7 @@ fn extract_tar_tree<R>(
 where
     R: Read + Seek,
 {
-    let mut writer = FilesystemArchiveTreeWriter::new(destination);
+    let mut writer = FilesystemArchiveTreeWriter::new(destination)?;
     walk_tar_archive_tree(reader, limits, &mut writer).map_err(map_walk_archive_tree_error)?;
     writer.finish()
 }
@@ -286,32 +297,33 @@ where
 #[derive(Debug)]
 struct PendingArchiveHardLink {
     entry_path: PathBuf,
-    output_path: PathBuf,
     link_target: PathBuf,
+    output_path: PathBuf,
     resolved_target: PathBuf,
 }
 
 fn create_archive_symlink(
     entry_path: &Path,
-    output_path: &Path,
     link_target: &Path,
     destination: &Path,
+    root: &Dir,
 ) -> Result<(), ArtifactInstallError> {
+    let location = archive_entry_location(entry_path, root, true)?;
+    let output_path = destination.join(entry_path);
     let parent = output_path.parent().ok_or_else(|| {
         ArtifactInstallError::install(format!(
             "cannot determine symlink parent for tar entry {}",
             entry_path.display()
         ))
     })?;
-    ensure_archive_directory_chain(entry_path, parent, destination, true)?;
     validate_archive_link_target(entry_path, parent, link_target, destination)?;
-    remove_existing_regular_file_leaf(entry_path, output_path)?;
+    remove_existing_regular_file_leaf(entry_path, &location.parent, &location.leaf)?;
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::symlink;
-
-        symlink(link_target, output_path)
+        location
+            .parent
+            .symlink_contents(link_target, &location.leaf)
             .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
         Ok(())
     }
@@ -329,35 +341,27 @@ fn create_archive_symlink(
 
 fn prepare_archive_hard_link(
     entry_path: &Path,
-    output_path: &Path,
     link_target: &Path,
-    destination: &Path,
 ) -> Result<PendingArchiveHardLink, ArtifactInstallError> {
-    let parent = output_path.parent().ok_or_else(|| {
-        ArtifactInstallError::install(format!(
-            "cannot determine hard link parent for tar entry {}",
-            entry_path.display()
-        ))
-    })?;
-    ensure_archive_directory_chain(entry_path, parent, destination, true)?;
-    let resolved_target = validate_archive_hard_link_target(entry_path, link_target, destination)?;
+    let output_path = sanitize_archive_path(entry_path)?;
+    let resolved_target = validate_archive_hard_link_target(entry_path, link_target)?;
     Ok(PendingArchiveHardLink {
         entry_path: entry_path.to_path_buf(),
-        output_path: output_path.to_path_buf(),
         link_target: link_target.to_path_buf(),
+        output_path,
         resolved_target,
     })
 }
 
 fn resolve_pending_archive_hard_links(
     pending_hard_links: &mut Vec<PendingArchiveHardLink>,
-    destination: &Path,
+    root: &Dir,
 ) -> Result<(), ArtifactInstallError> {
     while !pending_hard_links.is_empty() {
         let mut remaining = Vec::new();
         let mut progressed = false;
         for pending in pending_hard_links.drain(..) {
-            if try_create_archive_hard_link(&pending, destination)? {
+            if try_create_archive_hard_link(&pending, root)? {
                 progressed = true;
             } else {
                 remaining.push(pending);
@@ -365,14 +369,6 @@ fn resolve_pending_archive_hard_links(
         }
         if !remaining.is_empty() && !progressed {
             let pending = remaining.remove(0);
-            if let Some(target_parent) = pending.resolved_target.parent() {
-                ensure_archive_directory_chain(
-                    &pending.entry_path,
-                    target_parent,
-                    destination,
-                    false,
-                )?;
-            }
             return Err(ArtifactInstallError::install(format!(
                 "hard link target `{}` does not exist for tar entry {}",
                 pending.link_target.display(),
@@ -386,19 +382,29 @@ fn resolve_pending_archive_hard_links(
 
 fn try_create_archive_hard_link(
     pending: &PendingArchiveHardLink,
-    destination: &Path,
+    root: &Dir,
 ) -> Result<bool, ArtifactInstallError> {
-    let parent = pending.output_path.parent().ok_or_else(|| {
+    let location = archive_entry_location(&pending.output_path, root, false)?;
+    let Some(target_parent) = pending.resolved_target.parent() else {
+        return Err(ArtifactInstallError::install(format!(
+            "cannot determine hard link target parent for tar entry {}",
+            pending.entry_path.display()
+        )));
+    };
+    let target_root = open_archive_directory(target_parent, root, false).map_err(|err| {
         ArtifactInstallError::install(format!(
-            "cannot determine hard link parent for tar entry {}",
+            "cannot open hard link target `{}` for {}: {err}",
+            pending.link_target.display(),
             pending.entry_path.display()
         ))
     })?;
-    ensure_archive_directory_chain(&pending.entry_path, parent, destination, false)?;
-    if let Some(target_parent) = pending.resolved_target.parent() {
-        ensure_archive_directory_chain(&pending.entry_path, target_parent, destination, false)?;
-    }
-    let target_metadata = match fs::symlink_metadata(&pending.resolved_target) {
+    let target_leaf = pending.resolved_target.file_name().ok_or_else(|| {
+        ArtifactInstallError::install(format!(
+            "cannot determine hard link target for tar entry {}",
+            pending.entry_path.display()
+        ))
+    })?;
+    let target_metadata = match target_root.symlink_metadata(target_leaf) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(ArtifactInstallError::install(err.to_string())),
@@ -410,16 +416,17 @@ fn try_create_archive_hard_link(
             pending.entry_path.display()
         )));
     }
-    remove_existing_regular_file_leaf(&pending.entry_path, &pending.output_path)?;
-    fs::hard_link(&pending.resolved_target, &pending.output_path)
+    remove_existing_regular_file_leaf(&pending.entry_path, &location.parent, &location.leaf)?;
+    target_root
+        .hard_link(target_leaf, &location.parent, &location.leaf)
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     Ok(true)
 }
 
 fn write_archive_regular_file<R>(
     entry_path: &Path,
-    output_path: &Path,
     destination: &Path,
+    root: &Dir,
     reader: &mut R,
     unix_mode: Option<u32>,
 ) -> Result<(), ArtifactInstallError>
@@ -428,21 +435,18 @@ where
 {
     #[cfg(not(unix))]
     let _ = unix_mode;
-    let parent = output_path.parent().ok_or_else(|| {
-        ArtifactInstallError::install(format!(
-            "cannot determine parent directory for archive entry {}",
-            entry_path.display()
-        ))
-    })?;
-    ensure_archive_directory_chain(entry_path, parent, destination, true)?;
-    remove_existing_regular_file_leaf(entry_path, output_path)?;
-    let mut file =
-        File::create(output_path).map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    let _ = destination;
+    let location = archive_entry_location(entry_path, root, true)?;
+    remove_existing_regular_file_leaf(entry_path, &location.parent, &location.leaf)?;
+    let mut file = create_regular_file_at(&location.parent, &location.leaf)
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     std::io::copy(reader, &mut file)
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     #[cfg(unix)]
     if let Some(mode) = unix_mode {
-        fs::set_permissions(output_path, fs::Permissions::from_mode(mode))
+        file.set_permissions(cap_std::fs::Permissions::from_std(
+            fs::Permissions::from_mode(mode),
+        ))
             .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     }
     Ok(())
@@ -450,23 +454,25 @@ where
 
 fn remove_existing_regular_file_leaf(
     entry_path: &Path,
-    output_path: &Path,
+    parent: &Dir,
+    leaf: &Path,
 ) -> Result<(), ArtifactInstallError> {
-    match fs::symlink_metadata(output_path) {
+    match parent.symlink_metadata(leaf) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             Err(ArtifactInstallError::install(format!(
                 "unsafe archive output `{}` is a symlink for {}",
-                output_path.display(),
+                leaf.display(),
                 entry_path.display()
             )))
         }
         Ok(metadata) if metadata.is_dir() => Err(ArtifactInstallError::install(format!(
             "unsafe archive output `{}` is a directory for {}",
-            output_path.display(),
+            leaf.display(),
             entry_path.display()
         ))),
         Ok(_) => {
-            fs::remove_file(output_path)
+            parent
+                .remove_file(leaf)
                 .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
             Ok(())
         }
@@ -475,54 +481,86 @@ fn remove_existing_regular_file_leaf(
     }
 }
 
-fn ensure_archive_directory_chain(
+struct ArchiveEntryLocation {
+    parent: Dir,
+    leaf: PathBuf,
+}
+
+fn archive_entry_location(
     entry_path: &Path,
-    directory: &Path,
-    destination: &Path,
+    root: &Dir,
     create_missing: bool,
-) -> Result<(), ArtifactInstallError> {
-    let relative = directory.strip_prefix(destination).map_err(|_| {
+) -> Result<ArchiveEntryLocation, ArtifactInstallError> {
+    let sanitized = sanitize_archive_path(entry_path)?;
+    let leaf = sanitized.file_name().ok_or_else(|| {
         ArtifactInstallError::install(format!(
-            "unsafe archive parent `{}` for {}",
-            directory.display(),
+            "empty tar archive entry path `{}`",
             entry_path.display()
         ))
     })?;
-    let mut current = destination.to_path_buf();
+    let parent = sanitized.parent().unwrap_or_else(|| Path::new(""));
+    let parent_dir = open_archive_directory(parent, root, create_missing)?;
+    Ok(ArchiveEntryLocation {
+        parent: parent_dir,
+        leaf: PathBuf::from(leaf),
+    })
+}
+
+fn ensure_archive_directory(
+    entry_path: &Path,
+    root: &Dir,
+    create_missing: bool,
+) -> Result<(), ArtifactInstallError> {
+    open_archive_directory(&sanitize_archive_path(entry_path)?, root, create_missing).map(|_| ())
+}
+
+fn open_archive_directory(
+    relative: &Path,
+    root: &Dir,
+    create_missing: bool,
+) -> Result<Dir, ArtifactInstallError> {
+    let mut current = root
+        .try_clone()
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    let mut current_path = PathBuf::new();
     for component in relative.components() {
         let Component::Normal(part) = component else {
             return Err(ArtifactInstallError::install(format!(
-                "unsafe archive parent `{}` for {}",
-                directory.display(),
-                entry_path.display()
+                "unsafe archive parent `{}`",
+                relative.display()
             )));
         };
-        current.push(part);
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(ArtifactInstallError::install(format!(
-                    "unsafe archive parent uses symlink ancestor `{}` for {}",
-                    current.display(),
-                    entry_path.display()
-                )));
-            }
-            Ok(metadata) if !metadata.is_dir() => {
-                return Err(ArtifactInstallError::install(format!(
-                    "unsafe archive parent component `{}` is not a directory for {}",
-                    current.display(),
-                    entry_path.display()
-                )));
-            }
-            Ok(_) => {}
+        let component = Path::new(part);
+        current_path.push(part);
+        match open_directory_component(&current, component) {
+            Ok(next) => current = next,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound && create_missing => {
-                fs::create_dir(&current)
+                create_directory_component(&current, component)
                     .map_err(|create_err| ArtifactInstallError::install(create_err.to_string()))?;
+                current = open_directory_component(&current, component)
+                    .map_err(|open_err| ArtifactInstallError::install(open_err.to_string()))?;
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
-            Err(err) => return Err(ArtifactInstallError::install(err.to_string())),
+            Err(err) => {
+                return match current.symlink_metadata(component) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        Err(ArtifactInstallError::install(format!(
+                            "unsafe archive parent uses symlink ancestor `{}`",
+                            current_path.display()
+                        )))
+                    }
+                    Ok(metadata) if !metadata.is_dir() => Err(ArtifactInstallError::install(
+                        format!(
+                            "unsafe archive parent component `{}` is not a directory",
+                            current_path.display()
+                        ),
+                    )),
+                    Ok(_) => Err(ArtifactInstallError::install(err.to_string())),
+                    Err(_) => Err(ArtifactInstallError::install(err.to_string())),
+                };
+            }
         }
     }
-    Ok(())
+    Ok(current)
 }
 
 fn validate_archive_link_target(
@@ -576,7 +614,6 @@ fn validate_archive_link_target(
 fn validate_archive_hard_link_target(
     entry_path: &Path,
     link_target: &Path,
-    destination: &Path,
 ) -> Result<PathBuf, ArtifactInstallError> {
     if link_target.is_absolute() {
         return Err(ArtifactInstallError::install(format!(
@@ -592,7 +629,7 @@ fn validate_archive_hard_link_target(
             entry_path.display()
         ))
     })?;
-    Ok(destination.join(sanitized))
+    Ok(sanitized)
 }
 
 fn sanitize_archive_path(path: &Path) -> Result<PathBuf, ArtifactInstallError> {
