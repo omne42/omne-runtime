@@ -19,6 +19,32 @@ use crate::install_lock::lock_install_destination;
 
 const BINARY_INSTALL_LOCK_PREFIX: &str = ".binary-install-";
 
+pub const DEFAULT_MAX_BINARY_ARCHIVE_EXTRACTED_BYTES: u64 =
+    omne_archive_primitives::DEFAULT_MAX_EXTRACTED_BINARY_BYTES;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryArchiveFormat {
+    TarGz,
+    TarXz,
+    Zip,
+}
+
+impl BinaryArchiveFormat {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::TarGz => "tar.gz",
+            Self::TarXz => "tar.xz",
+            Self::Zip => "zip",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryArchiveMatch {
+    pub archive_format: BinaryArchiveFormat,
+    pub archive_path: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct DownloadBinaryRequest<'a> {
     pub canonical_url: &'a str,
@@ -42,7 +68,11 @@ pub struct BinaryArchiveInstallRequest<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledArchiveBinary {
     pub source: ArtifactDownloadCandidate,
-    pub archive_match: ArchiveBinaryMatch,
+    pub archive_match: BinaryArchiveMatch,
+}
+
+pub fn is_binary_archive_asset_name(asset_name: &str) -> bool {
+    omne_archive_primitives::is_binary_archive_asset_name(asset_name)
 }
 
 pub fn install_binary_from_archive(
@@ -51,7 +81,7 @@ pub fn install_binary_from_archive(
     binary_name: &str,
     destination: &Path,
     archive_binary_hint: Option<&str>,
-) -> Result<ArchiveBinaryMatch, ArtifactInstallError> {
+) -> Result<BinaryArchiveMatch, ArtifactInstallError> {
     let mut reader = Cursor::new(content);
     install_binary_from_archive_reader(
         asset_name,
@@ -197,7 +227,7 @@ fn install_binary_from_archive_reader<R>(
     binary_name: &str,
     destination: &Path,
     archive_binary_hint: Option<&str>,
-) -> Result<ArchiveBinaryMatch, ArtifactInstallError>
+) -> Result<BinaryArchiveMatch, ArtifactInstallError>
 where
     R: Read + Seek + ?Sized,
 {
@@ -217,7 +247,18 @@ where
     staged
         .commit()
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    Ok(matched)
+    Ok(binary_archive_match_from_archive(matched))
+}
+
+fn binary_archive_match_from_archive(archive_match: ArchiveBinaryMatch) -> BinaryArchiveMatch {
+    BinaryArchiveMatch {
+        archive_format: match archive_match.archive_format {
+            omne_archive_primitives::BinaryArchiveFormat::TarGz => BinaryArchiveFormat::TarGz,
+            omne_archive_primitives::BinaryArchiveFormat::TarXz => BinaryArchiveFormat::TarXz,
+            omne_archive_primitives::BinaryArchiveFormat::Zip => BinaryArchiveFormat::Zip,
+        },
+        archive_path: archive_match.archive_path,
+    }
 }
 
 fn artifact_install_error_from_extract_error(
@@ -305,6 +346,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use omne_archive_primitives::ArchiveBinaryMatch;
     use omne_fs_primitives::lock_advisory_file_in_ambient_root;
     use omne_integrity_primitives::hash_sha256;
 
@@ -314,9 +356,11 @@ mod tests {
     };
 
     use super::{
-        BinaryArchiveInstallRequest, DownloadBinaryRequest, binary_install_lock_file_name,
+        BinaryArchiveFormat, BinaryArchiveInstallRequest, BinaryArchiveMatch,
+        DEFAULT_MAX_BINARY_ARCHIVE_EXTRACTED_BYTES, DownloadBinaryRequest,
+        binary_archive_match_from_archive, binary_install_lock_file_name,
         download_and_install_binary_from_archive, download_binary_to_destination,
-        install_binary_from_archive,
+        install_binary_from_archive, is_binary_archive_asset_name,
     };
 
     fn canonical_test_root(dir: &tempfile::TempDir) -> PathBuf {
@@ -602,8 +646,36 @@ mod tests {
         )?;
 
         assert_eq!(matched.archive_path, "PortableGit/cmd/git.exe");
+        assert_eq!(matched.archive_format, BinaryArchiveFormat::Zip);
         assert_eq!(std::fs::read(&destination)?, b"MZ");
         Ok(())
+    }
+
+    #[test]
+    fn binary_archive_public_helpers_stay_local_to_this_crate() {
+        assert_eq!(
+            DEFAULT_MAX_BINARY_ARCHIVE_EXTRACTED_BYTES,
+            omne_archive_primitives::DEFAULT_MAX_EXTRACTED_BINARY_BYTES
+        );
+        assert!(is_binary_archive_asset_name("demo.zip"));
+        assert!(!is_binary_archive_asset_name("demo.tar"));
+    }
+
+    #[test]
+    fn archive_binary_match_conversion_preserves_archive_metadata() {
+        let matched = binary_archive_match_from_archive(ArchiveBinaryMatch {
+            archive_format: omne_archive_primitives::BinaryArchiveFormat::TarXz,
+            archive_path: "demo/bin/tool".to_string(),
+        });
+
+        assert_eq!(
+            matched,
+            BinaryArchiveMatch {
+                archive_format: BinaryArchiveFormat::TarXz,
+                archive_path: "demo/bin/tool".to_string(),
+            }
+        );
+        assert_eq!(matched.archive_format.label(), "tar.xz");
     }
 
     #[tokio::test]
