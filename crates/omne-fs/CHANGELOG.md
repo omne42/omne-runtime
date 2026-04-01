@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `delete` now matches `copy_file` / `move_path` fail-closed semantics when parent or target
   identity cannot be revalidated before removal, instead of degrading unverifiable paths to
   best-effort success.
+- `git-permissions` now routes its `git` subprocesses through `omne-process-primitives` instead of
+  open-coding `Command::new("git")` inside `omne-fs`, and the shared `scripts/gate.sh` now
+  explicitly checks/clippies/tests that feature path.
 - `copy_file` / `move_path` / `create_parents` now fail closed when destination-parent identity
   cannot be revalidated, instead of treating Windows/exotic-filesystem `Unverifiable` results as
   success or falling back to canonical-path-only rechecks.

@@ -13,6 +13,7 @@ globset = "0.4"
 memchr = "2"
 regex = "1"
 omne-fs-primitives = { path = "../omne-fs-primitives" }
+omne-process-primitives = { path = "../omne-process-primitives", optional = true }
 serde = { version = "1", features = ["derive"] }
 same-file = "1"
 tempfile = "3"
@@ -42,4 +43,4 @@ glob = ["dep:walkdir"]
 grep = ["dep:walkdir"]
 patch = ["dep:diffy"]
 policy-io = ["dep:toml", "dep:serde_json"]
-git-permissions = []
+git-permissions = ["dep:omne-process-primitives"]
