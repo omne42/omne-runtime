@@ -26,7 +26,7 @@
 - mutating allowlist 只授权显式程序路径；bare program name 因为无法绑定稳定可执行文件而 fail-closed 拒绝。
 - 对 bare command 的普通执行路径，audit / `request_resolution` / `ExecEvent` 记录的是 gateway 解析并绑定后的绝对执行体路径，而不是原始 bare token。
 - `prepare_command()` 只接受与 gateway 已解析执行体一致的 `Command` 程序路径；如果调用方仍传 bare command name，会以 `prepared_command_mismatch` fail-closed 拒绝。
-- `prepare_command()` 会把调用方传入的 `Command` 只当作 `program + args` 一致性校验输入；真正返回给调用方的是 gateway 重新构造的干净 spawn 命令，因此预置的 `pre_exec`/`before_exec`、额外 stdio、环境或其他隐藏状态都不会越过执行边界。
+- `prepare_command()` 会把调用方传入的 `Command` 当作 request identity 校验输入：至少 `program + args` 必须一致，调用方若显式预置了 env 或 `current_dir`，它们也必须与 audited request 匹配；真正返回给调用方的是 gateway 重新构造的干净 spawn 命令，因此预置的 `pre_exec`/`before_exec`、额外 stdio、环境或其他隐藏状态都不会越过执行边界。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，所有请求都必须显式声明 `declared_mutation`；否则 gateway 会以 `mutation_declaration_required` fail-closed 拒绝。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，`declared_mutation=true` 的请求必须绑定到 `mutating_program_allowlist` 里的显式程序路径；`declared_mutation=false` 的请求也必须绑定到 `non_mutating_program_allowlist` 里的显式程序路径，避免“未知 mutator 只要自称只读就能绕过”。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，已知高风险 mutator/toolchain（例如 `git`、`make`、包管理器和核心文件变更命令）以及 opaque launcher/interpreter（例如 `env`、`sh`、`python`、`node`）不能宣称 `declared_mutation=false`；调用方必须显式声明 mutation 并跨过 mutating allowlist 边界。

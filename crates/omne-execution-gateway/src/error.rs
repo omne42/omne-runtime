@@ -59,13 +59,14 @@ pub enum ExecError {
     },
 
     #[error(
-        "prepared command does not match request identity: requested {requested_program:?} {requested_args:?}, actual {actual_program:?} {actual_args:?}"
+        "prepared command does not match request identity: requested {requested_program:?} {requested_args:?}, actual {actual_program:?} {actual_args:?} ({detail})"
     )]
     PreparedCommandMismatch {
         requested_program: String,
         requested_args: Vec<String>,
         actual_program: String,
         actual_args: Vec<String>,
+        detail: String,
     },
 
     #[error("sandbox backend rejected request: {0}")]

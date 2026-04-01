@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- require `prepare_command()` callers to match the request's explicit env and any caller-supplied
+  `current_dir`, so prepared-command validation cannot silently discard a different execution
+  identity before the gateway rebuilds the final spawn command
 - deny startup-sensitive request env such as `PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`,
   `PYTHONPATH`, `RUBYOPT`, and `NODE_OPTIONS` when mutation enforcement is enabled, so
   allowlisted execution cannot reopen loader/interpreter/search-path control through audited env
