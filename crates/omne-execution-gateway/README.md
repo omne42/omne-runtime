@@ -17,7 +17,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed if `program` is neither a bare command name nor an absolute path
 - explicit absolute `program` paths must already resolve to spawnable executables, are bound as file identities, and are revalidated immediately before spawn; this narrows but cannot eliminate the final OS-level race between the last check and `exec`
 - bare command names are resolved to an absolute executable path during preflight, rebound as an executable identity, and rejected fail-closed if lookup cannot be bound
-- workspace boundary enforcement (`cwd` must stay inside `workspace_root`; `cwd` / `workspace_root` reject symlink or reparse-point ancestors before canonical binding, and execution revalidates the bound directory identities before spawn)
+- workspace boundary enforcement (`cwd` must stay inside `workspace_root`; `cwd` / `workspace_root` reject symlink or reparse-point ancestors before canonical binding, except for macOS root aliases such as `/var` and `/tmp`, and execution revalidates the bound directory identities before spawn)
 - explicit mutation declaration for every request when mutation enforcement is enabled
 - fail-closed denial for shell-like or interpreter launchers such as `sh`, `cmd`, `pwsh`, `python`, and `node` when callers label them `declared_mutation = false`; they must cross the mutating allowlist boundary instead of pretending to be read-only
 - fail-closed denial for known mutating tool families such as `git`, `make`, `cargo`, `go`, package managers, and core file-mutating utilities unless they declare mutation and use an explicitly allowlisted path
@@ -45,7 +45,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - allowlist matching binds explicit paths to executable identity; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
 - JSON surfaces keep readable lossy `program` / `args` fields and also emit `program_exact` / `args_exact`, so audit consumers can reconstruct non-UTF-8 argv exactly instead of guessing from replacement characters.
 - `GatewayPolicy::load_json()` only accepts no-follow regular files and fail-closed ancestor directory walks via `omne-fs-primitives`, so symlinks/reparse points cannot silently stand in for trusted policy input.
-- `cwd` and `workspace_root` fail closed when their input path traverses a symlink or reparse-point ancestor, so request path validation does not silently re-authorize aliased directories during canonicalization.
+- `cwd` and `workspace_root` fail closed when their input path traverses a symlink or reparse-point ancestor, except for macOS system root aliases such as `/var` and `/tmp`, so request path validation does not silently re-authorize caller-controlled aliased directories during canonicalization.
 - `ExecRequest` now carries explicit environment entries; `execute()` and `prepare_command()` clear inherited process state and apply only that audited environment before spawn.
 - when `enforce_allowlisted_program_for_mutation = true`, request env is still audited, but startup-sensitive loader/interpreter/search-path overrides are denied fail-closed before preflight can authorize the execution.
 - the CLI request adapter also rejects unknown JSON fields fail-closed, and `program` / `args` / explicit env entries now accept either plain UTF-8 strings or the exact OS-string JSON object encoding used in gateway output.

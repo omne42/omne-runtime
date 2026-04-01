@@ -784,7 +784,9 @@ fn reject_forbidden_directory_ancestors(path: &Path) -> Result<(), String> {
                 current.push(segment);
                 let metadata =
                     std::fs::symlink_metadata(&current).map_err(|err| err.to_string())?;
-                if file_metadata_has_forbidden_link_ancestor(&metadata) {
+                if file_metadata_has_forbidden_link_ancestor(&metadata)
+                    && !is_permitted_platform_root_alias(&current)
+                {
                     return Err(format!(
                         "path must not traverse symlink or reparse-point ancestors: {}",
                         current.display()
@@ -808,6 +810,20 @@ fn file_metadata_has_forbidden_link_ancestor(metadata: &std::fs::Metadata) -> bo
 #[cfg(not(windows))]
 fn file_metadata_has_forbidden_link_ancestor(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
+}
+
+#[cfg(target_os = "macos")]
+fn is_permitted_platform_root_alias(path: &Path) -> bool {
+    path.parent() == Some(Path::new("/"))
+        && matches!(
+            path.file_name(),
+            Some(name) if name == OsStr::new("var") || name == OsStr::new("tmp")
+        )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_permitted_platform_root_alias(_: &Path) -> bool {
+    false
 }
 
 fn explicit_path_like_os(program: &OsStr) -> bool {
@@ -3116,6 +3132,35 @@ mod tests {
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(event.reason.as_deref(), Some("workspace_root_invalid"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn evaluate_allows_macos_system_temp_root_alias() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let cwd = workspace.path().join("cwd");
+        fs::create_dir_all(&cwd).expect("create cwd");
+
+        let request = ExecRequest::new(
+            non_mutating_program(),
+            Vec::<OsString>::new(),
+            &cwd,
+            host_supported_test_isolation(),
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
     }
 
     #[test]
