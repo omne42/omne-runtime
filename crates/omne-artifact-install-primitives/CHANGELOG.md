@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- replace direct `omne-archive-primitives` re-exports with crate-local binary-archive budget and match types, so artifact-install callers no longer depend on the lower-level archive crate through this public API
 - route archive-tree entry materialization through capability-backed staging-directory handles
   instead of ambient path-based `create_dir` / `File::create` / `hard_link`, so symlink ancestor
   checks stay bound to the staged tree boundary during extraction

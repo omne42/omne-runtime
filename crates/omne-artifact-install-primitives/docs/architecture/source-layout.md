@@ -10,7 +10,7 @@
 - `src/artifact_download.rs`
   - 下载候选模型、下载错误分类和受限响应体下载执行。
 - `src/binary_artifact.rs`
-  - direct binary 原子安装与 binary-from-archive 安装。
+  - direct binary 原子安装、binary-from-archive 安装，以及 crate-local binary-archive public contract。
 - `src/archive_tree.rs`
   - archive tree 目录树安装编排、同目标安装串行化，以及把 `omne-archive-primitives` walker 产出的 entry 物化到 staged 目录。
 

@@ -16,7 +16,7 @@ Reusable artifact download and install primitives shared by higher-level callers
 - download entrypoints are generic over a caller-supplied `ArtifactDownloader`; this crate provides built-in integrations for `reqwest::Client` and `http-kit::HttpClientProfile` without leaking either transport type into the primitive contract
 - optional SHA-256 verification for downloaded artifacts
 - direct binary artifact atomic installation, serialized per destination during the install/commit phase
-- binary-from-archive installation with the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget
+- binary-from-archive installation with the crate-local `DEFAULT_MAX_BINARY_ARCHIVE_EXTRACTED_BYTES` budget and crate-local archive-match metadata types, instead of re-exporting `omne-archive-primitives` symbols directly
 - archive-tree installation via `omne-archive-primitives` shared walker plus `omne-fs-primitives` staged directory replacement and exported extracted-byte / entry-count budgets
 - archive-tree entry materialization stays inside capability-backed handles opened on the staged directory, so regular files, symlinks, and hard links do not fall back to ambient path-based writes during extraction
 - archive-tree link extraction that fails closed if a parent directory chain contains symlink ancestors
