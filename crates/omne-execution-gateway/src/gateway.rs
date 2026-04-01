@@ -700,18 +700,11 @@ fn normalized_env_name_ascii(name: &OsStr) -> Option<String> {
 }
 
 fn canonicalize_workspace_root(path: &Path) -> ExecResult<PathBuf> {
-    let canonical = path
-        .canonicalize()
-        .map_err(|_| ExecError::WorkspaceRootInvalid {
+    canonicalize_directory_without_forbidden_ancestors(path).map_err(|_| {
+        ExecError::WorkspaceRootInvalid {
             path: path.to_path_buf(),
-        })?;
-    if !std::fs::metadata(&canonical)
-        .map(|metadata| metadata.is_dir())
-        .unwrap_or(false)
-    {
-        return Err(ExecError::WorkspaceRootInvalid { path: canonical });
-    }
-    Ok(canonical)
+        }
+    })
 }
 
 fn resolve_request_paths(cwd: &Path, workspace_root: &Path) -> ExecResult<ResolvedRequestPaths> {
@@ -728,20 +721,12 @@ fn resolve_request_paths(cwd: &Path, workspace_root: &Path) -> ExecResult<Resolv
 }
 
 fn canonicalize_cwd_within_workspace(cwd: &Path, workspace_root: &Path) -> ExecResult<PathBuf> {
-    let cwd = cwd.canonicalize().map_err(|err| ExecError::CwdInvalid {
-        cwd: cwd.to_path_buf(),
-        detail: err.to_string(),
+    let cwd = canonicalize_directory_without_forbidden_ancestors(cwd).map_err(|detail| {
+        ExecError::CwdInvalid {
+            cwd: cwd.to_path_buf(),
+            detail,
+        }
     })?;
-    let metadata = std::fs::metadata(&cwd).map_err(|err| ExecError::CwdInvalid {
-        cwd: cwd.clone(),
-        detail: err.to_string(),
-    })?;
-    if !metadata.is_dir() {
-        return Err(ExecError::CwdInvalid {
-            cwd,
-            detail: "path is not a directory".to_string(),
-        });
-    }
     if !path_starts_with(&cwd, workspace_root) {
         return Err(ExecError::CwdOutsideWorkspace {
             cwd,
@@ -750,6 +735,110 @@ fn canonicalize_cwd_within_workspace(cwd: &Path, workspace_root: &Path) -> ExecR
     }
 
     Ok(cwd)
+}
+
+fn canonicalize_directory_without_forbidden_ancestors(path: &Path) -> Result<PathBuf, String> {
+    let absolute = absolute_path_lexical(path)?;
+    reject_forbidden_directory_ancestors(&absolute)?;
+    let canonical = absolute.canonicalize().map_err(|err| err.to_string())?;
+    let metadata = std::fs::metadata(&canonical).map_err(|err| err.to_string())?;
+    if !metadata.is_dir() {
+        return Err("path is not a directory".to_string());
+    }
+    Ok(canonical)
+}
+
+fn absolute_path_lexical(path: &Path) -> Result<PathBuf, String> {
+    let mut absolute = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        std::env::current_dir().map_err(|err| err.to_string())?
+    };
+
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => absolute.push(prefix.as_os_str()),
+            std::path::Component::RootDir => absolute.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                absolute.pop();
+            }
+            std::path::Component::Normal(segment) => absolute.push(segment),
+        }
+    }
+
+    Ok(absolute)
+}
+
+fn reject_forbidden_directory_ancestors(path: &Path) -> Result<(), String> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            std::path::Component::RootDir => current.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                current.pop();
+            }
+            std::path::Component::Normal(segment) => {
+                current.push(segment);
+                let metadata =
+                    std::fs::symlink_metadata(&current).map_err(|err| err.to_string())?;
+                if file_metadata_has_forbidden_link_ancestor(&metadata) {
+                    return Err(format!(
+                        "path must not traverse symlink or reparse-point ancestors: {}",
+                        current.display()
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn file_metadata_has_forbidden_link_ancestor(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn file_metadata_has_forbidden_link_ancestor(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+fn explicit_path_like_os(program: &OsStr) -> bool {
+    let path = Path::new(program);
+    path.is_absolute() || os_str_has_path_separator(program)
+}
+
+#[cfg(unix)]
+fn os_str_has_path_separator(value: &OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    value
+        .as_bytes()
+        .iter()
+        .any(|byte| matches!(byte, b'/' | b'\\'))
+}
+
+#[cfg(windows)]
+fn os_str_has_path_separator(value: &OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    value
+        .encode_wide()
+        .any(|unit| matches!(char::from_u32(u32::from(unit)), Some('/' | '\\')))
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn os_str_has_path_separator(value: &OsStr) -> bool {
+    value
+        .to_str()
+        .is_some_and(|text| text.chars().any(|ch| matches!(ch, '/' | '\\')))
 }
 
 fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<BoundDirectory> {
@@ -1094,12 +1183,7 @@ fn validate_prepared_command_matches_request(
 }
 
 fn is_explicit_program_path(program: &OsStr) -> bool {
-    let path = Path::new(program);
-    path.is_absolute()
-        || program
-            .to_string_lossy()
-            .chars()
-            .any(|ch| ch == '/' || ch == '\\')
+    explicit_path_like_os(program)
 }
 
 fn resolve_bare_program_path(program: &OsStr) -> Option<PathBuf> {
@@ -1333,6 +1417,13 @@ mod tests {
     fn opaque_launcher_detection_rejects_non_utf8_basename() {
         let program = OsString::from_vec(vec![0x70, 0x79, 0x74, 0x68, 0x6f, 0x6e, 0x80]);
         assert!(!uses_opaque_command_launcher(program.as_os_str()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_path_detection_keeps_non_utf8_separator_checks_native() {
+        let program = OsString::from_vec(vec![0x2f, 0x74, 0x6d, 0x70, 0x2f, 0x66, 0x6f, 0x80]);
+        assert!(is_explicit_program_path(program.as_os_str()));
     }
 
     #[test]
@@ -2950,7 +3041,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn prepare_command_canonicalizes_symlink_cwd() {
+    fn prepare_command_rejects_symlink_cwd_ancestor() {
         use std::os::unix::fs::symlink;
 
         let policy = GatewayPolicy {
@@ -2978,10 +3069,53 @@ mod tests {
         .with_declared_mutation(false);
         let command = Command::new(resolved_non_mutating_program_path());
         let (event, result) = gateway.prepare_command(&request, command);
-        let prepared = result.expect("prepare command");
-        let expected_cwd = real_dir.canonicalize().expect("canonicalize real dir");
-        assert_eq!(event.cwd, expected_cwd);
-        assert_eq!(prepared.current_dir(), Some(expected_cwd.as_path()));
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("cwd_invalid"));
+        match result.expect_err("symlink cwd ancestor should fail closed") {
+            ExecError::CwdInvalid { cwd, detail } => {
+                assert_eq!(cwd, link_dir);
+                assert!(
+                    detail.contains("must not traverse symlink"),
+                    "unexpected detail: {detail}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_request_rejects_symlink_workspace_root_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let real_root = workspace.path().join("real");
+        let alias_root = workspace.path().join("alias");
+        let cwd = real_root.join("cwd");
+        fs::create_dir_all(&cwd).expect("create real cwd");
+        symlink(&real_root, &alias_root).expect("create workspace-root symlink");
+
+        let request = ExecRequest::new(
+            non_mutating_program(),
+            Vec::<OsString>::new(),
+            &cwd,
+            host_supported_test_isolation(),
+            &alias_root,
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("workspace_root_invalid"));
     }
 
     #[test]

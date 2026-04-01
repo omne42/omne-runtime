@@ -10,7 +10,7 @@
 - `cwd`、`workspace_root`、隔离级别和 `policy_default` 来源一致性校验。
 - 请求里的 `program` 只能是 bare command name 或绝对路径；像 `./tool`、`bin/tool` 这类相对路径会 fail-closed 拒绝，避免执行语义依赖 gateway 进程自身的工作目录。
 - 对显式绝对 `program` 路径做“必须是可 spawn 的可执行文件”校验、file identity 绑定，并在真正 spawn 前再次校验；bare command name 也会在 preflight 阶段解析成绝对可执行文件路径并绑定 identity，如果无法稳定解析就 fail-closed 拒绝。mutating allowlist 仍按最终可执行文件 identity 匹配，而不是按 basename 或原始路径字面量放行，避免 preflight 通过后被换文件或通过稳定别名漂移到别的可执行文件；但在最终 revalidate 到内核 `spawn/exec` 之间仍存在无法完全消除的 OS 级 TOCTOU 窗口，这里只承诺尽量缩小而不是假装消灭它。
-- 对 `cwd` / `workspace_root` 做 canonical path + 目录 identity 绑定，并在真正 spawn 前重新校验。
+- 对 `cwd` / `workspace_root` 先做“不得穿过 symlink/reparse-point 祖先目录”的 fail-closed 校验，再做 canonical path + 目录 identity 绑定，并在真正 spawn 前重新校验。
 - 声明式变更命令门控，以及显式 mutation declaration、`mutating_program_allowlist` / `non_mutating_program_allowlist`、opaque launcher 和 known mutator 之间的一致性校验。
 - gateway 自己管理的 spawn 路径会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端。
 - 平台 sandbox 编排与 runtime 观测。
@@ -34,6 +34,7 @@
 - Windows 上命令路径和 workspace 边界比较按平台语义做大小写不敏感处理，不要求调用方传入与文件系统完全同大小写的字面量。
 - `GatewayPolicy::load_json()` 只接受通过 descriptor-backed 祖先目录 no-follow walk 打开的 regular file；祖先 symlink/reparse point、目录或其他特殊文件都会 fail-closed 拒绝。
 - `omne-execution` CLI 的 `request.json` 也只接受同样的 bounded no-follow regular file 输入，避免通过祖先 symlink、特殊文件或超大输入把 CLI 边界退化成非确定性文件读取；其中 `program` / `args` / `env` 既可以用普通 UTF-8 JSON string，也可以用 exact OS-string 编码对象保留非 UTF-8 输入。
+- `cwd` / `workspace_root` 自身虽然是 request 里的目录路径而不是单独文件输入，但它们同样会拒绝祖先 symlink/reparse point；gateway 不会先跟随别名目录再把 canonicalized 结果当成可信边界。
 - 缺失、不可访问或不是目录的 `cwd` 会被报告为 `cwd_invalid`，避免把普通输入/环境错误误记成 workspace 越界。
 - `ExecRequest` 的显式环境变量现在属于 request/audit 契约的一部分；`execute()` 和 `prepare_command()` 在 spawn 前都会清空继承环境，只注入 request 声明过的 env，避免调用方用未审计的 `PATH`、`LD_PRELOAD`、`PYTHONPATH` 等变量偷偷改变执行语义。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，allowlisted execution 还会额外拒绝 startup-sensitive env 覆盖，例如 `PATH`、`LD_*`、`DYLD_*`、`BASH_ENV`、`PYTHONPATH`、`RUBYOPT` 和 `NODE_OPTIONS`；这些变量会改变 loader、解释器或子命令解析语义，因此不能在“已绑定执行体身份”的边界外重新放宽。
