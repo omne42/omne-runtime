@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- deny startup-sensitive request env such as `PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`,
+  `PYTHONPATH`, `RUBYOPT`, and `NODE_OPTIONS` when mutation enforcement is enabled, so
+  allowlisted execution cannot reopen loader/interpreter/search-path control through audited env
 - add regression coverage proving `prepare_command()` discards caller-provided `stdin`
   overrides, so hidden input handles cannot leak back across the gateway boundary
 - add regression coverage proving `prepare_command()` discards caller-provided `stdout`/`stderr`
