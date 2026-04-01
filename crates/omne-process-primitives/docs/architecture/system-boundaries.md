@@ -14,8 +14,8 @@
 - `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，而 direct bare command 的真正 spawn 也会先绑定到同一条解析出的可执行路径；对显式相对程序路径则继续保持与执行路径相同的调用方 cwd 语义。
 - `command_available` / `command_available_os` / `command_available_for_request` 只会把真正可执行的命令视为 available，不会把普通文件或缺少执行位的路径伪装成“已可运行”。
 - direct 显式路径 spawn 如果返回 `ENOENT`，只有在解析后的目标路径确实不存在时才会折叠成 `CommandNotFound`；如果目标文件仍在，本 crate 会保留原始 spawn 失败，让缺失 shebang 解释器或动态 loader 这类问题不会被误报成“命令不存在”。
-- 当命中 `sudo` 路径时，把调用方显式提供的环境变量改写成 `env -- KEY=VALUE ...` 形式并放到提权后的目标命令边界内，但 request `PATH` override 会在 sudo 边界被丢弃，避免在 root 目标命令上重新引入调用方的搜索路径。
-- `sudo` 可用性判定、`sudo` 可执行路径选择、`env` wrapper 选择以及提权后的 bare target 解析都不使用 request 里显式覆盖的 `PATH`，也不信任 ambient `PATH` 里的 shadow binary；这些 control-plane 程序只会从受信任的标准安装目录解析。
+- 当命中 `sudo` 路径时，在提权边界内完全丢弃 request env；提权后的目标命令只接收受信任解析出的目标路径和 argv，避免把 request `PATH` 或其他调用方环境变量重新带进 root 侧进程语义。
+- `sudo` 可用性判定、`sudo` 可执行路径选择以及提权后的 bare target 解析都不使用 request 里显式覆盖的 `PATH`，也不信任 ambient `PATH` 里的 shadow binary；这些 control-plane 程序只会从受信任的标准安装目录解析。
 - 对需要走 `sudo` 的 bare command，如果受信任标准目录里解析不到对应的 canonical manager 二进制，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
 - 对显式 package-manager 路径，只有它与受信标准目录对该 manager 名称解析到的 canonical 二进制是同一个文件时，才保留 `IfNonRootSystemCommand` 语义；相对路径、别名到不同目标的 symlink，或名字相同但不是这组 canonical manager 目标的其他可执行体都不会被误判成系统命令。
 - 运行 host recipe，并把非零退出统一建模成结构化错误。
@@ -31,7 +31,7 @@
 
 - 命令 allowlist。
 - 超时、取消或重试策略。
-- 环境变量过滤。
+- general direct-execution 环境变量过滤；这里仍保留 direct command 的宿主原生 env 语义，只在 sudo privilege boundary fail closed 丢弃 request env。
 - stdout/stderr 的产品级脱敏、裁剪或持久化策略；这里仅避免在默认 `Display` 中直接倾倒完整捕获内容。
 - sandbox / isolation 选择。
 - 产品级错误码映射。
