@@ -2,7 +2,7 @@
 
 `omne-fs` is a Rust library and CLI for policy-bounded filesystem operations.
 
-It provides `read`, `list_dir`, `glob`, `grep`, `stat`, `edit`, `patch`, `mkdir`, `write`, `move`, `copy_file`, and `delete` with explicit root boundaries, permission gates, deny rules, and resource limits.
+It provides `read`, `list_dir`, `glob`, `grep`, `stat`, `edit`, `patch`, `mkdir`, `write`, `move`, `copy_file`, and `delete` with explicit root boundaries, permission gates, deny rules, resource limits, and fail-closed post-resolution identity revalidation for mutating paths.
 
 - Library operation names use `snake_case` (`list_dir`, `copy_file`).
 - CLI subcommands use `kebab-case` (`list-dir`, `copy-file`).
