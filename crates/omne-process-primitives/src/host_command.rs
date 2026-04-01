@@ -9,7 +9,7 @@ use omne_system_package_primitives::SystemPackageManager;
 use tempfile::tempfile;
 
 use crate::command_path::{
-    is_spawnable_command_path, resolve_command_path_or_standard_location_os,
+    is_spawnable_command_path, resolve_command_path_in_standard_locations_os,
     resolve_command_path_os, resolve_command_path_os_with_path_var,
 };
 
@@ -551,7 +551,7 @@ fn resolve_sudo_program() -> PathBuf {
 }
 
 fn resolve_env_program() -> PathBuf {
-    resolve_command_path_or_standard_location_os(OsStr::new("env"))
+    resolve_command_path_in_standard_locations_os(OsStr::new("env"))
         .unwrap_or_else(|| PathBuf::from("env"))
 }
 
@@ -560,7 +560,7 @@ fn sudo_available() -> bool {
 }
 
 fn resolve_sudo_path() -> Option<PathBuf> {
-    resolve_command_path_or_standard_location_os(OsStr::new("sudo"))
+    resolve_command_path_in_standard_locations_os(OsStr::new("sudo"))
 }
 
 fn effective_path_var(env: &[(OsString, OsString)]) -> Option<OsString> {
@@ -608,7 +608,7 @@ fn resolve_host_system_package_manager_path(program: &OsStr) -> Option<PathBuf> 
     let manager = SystemPackageManager::parse(program.to_str()?)?;
     manager
         .requires_privileged_install()
-        .then_some(resolve_command_path_os(program))
+        .then_some(resolve_command_path_in_standard_locations_os(program))
         .flatten()
 }
 
@@ -713,9 +713,13 @@ mod tests {
     use super::ensure_sudo_target_is_available;
     #[cfg(unix)]
     use super::explicit_system_package_manager_path_with_resolved;
+    #[cfg(unix)]
+    use super::resolve_command_path_in_standard_locations_os;
     use super::resolve_env_program;
     #[cfg(unix)]
     use super::resolve_host_system_package_manager_path;
+    #[cfg(unix)]
+    use super::resolve_sudo_path;
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
     use super::{
@@ -831,6 +835,26 @@ mod tests {
         assert!(should_try_sudo_for_request_with_status(&request, true) == super::sudo_available());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn resolve_sudo_path_uses_trusted_standard_location() {
+        let resolved = resolve_sudo_path();
+        assert_eq!(
+            resolved,
+            resolve_command_path_in_standard_locations_os(OsStr::new("sudo"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_env_program_uses_trusted_standard_location() {
+        let resolved = resolve_env_program();
+        assert_eq!(
+            Some(resolved.clone()),
+            resolve_command_path_in_standard_locations_os(OsStr::new("env"))
+        );
+    }
+
     #[test]
     fn sudo_command_wraps_target_with_env_assignments() {
         let explicit_program = std::env::current_exe().expect("current exe");
@@ -918,6 +942,24 @@ mod tests {
 
         assert_ne!(Path::new(target), shadowed_program.as_path());
         assert_eq!(Path::new(target), resolved_path.as_path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sudo_target_resolution_uses_trusted_standard_location() {
+        let package_manager = ["apt-get", "dnf", "yum", "apk", "pacman", "zypper"]
+            .into_iter()
+            .find_map(|name| {
+                resolve_command_path_in_standard_locations_os(OsStr::new(name))
+                    .map(|resolved| (name, resolved))
+            });
+        let Some((package_manager, resolved_path)) = package_manager else {
+            return;
+        };
+
+        let resolved = resolve_host_system_package_manager_path(OsStr::new(package_manager));
+
+        assert_eq!(resolved, Some(resolved_path));
     }
 
     #[test]
@@ -1643,7 +1685,7 @@ mod tests {
 
     #[cfg(unix)]
     fn unix_test_shell_path() -> PathBuf {
-        super::resolve_command_path_or_standard_location_os(OsStr::new("sh"))
+        crate::command_path::resolve_command_path_or_standard_location_os(OsStr::new("sh"))
             .expect("resolve test shell")
     }
 

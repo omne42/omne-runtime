@@ -25,3 +25,4 @@
 - capture direct child stdout/stderr through temporary files so daemonized descendants that inherit those handles cannot keep `run_host_command` / `run_host_recipe` blocked after the direct child exits
 - add regression coverage that locks sudo bare-command resolution to trusted host paths and proves daemonized descendants holding `stderr` cannot keep `run_host_command` blocked
 - capture Linux process-group leader identity from a single `/proc/<pid>/stat` snapshot so cleanup never combines `start_ticks` and `session_id` from different process lifetimes
+- stop trusting ambient `PATH` for `sudo`, `env`, and auto-sudo package-manager target resolution; control-plane binaries now bind only to trusted standard install locations while direct bare commands still honor request-scoped `PATH`
