@@ -273,10 +273,12 @@ impl ExecGateway {
         (event, result)
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn preflight(&self, request: &ExecRequest) -> Result<ExecEvent, PreflightError> {
         self.prepare_request(request).map(|prepared| prepared.event)
     }
 
+    #[allow(clippy::result_large_err)]
     fn prepare_request(
         &self,
         request: &ExecRequest,
@@ -480,6 +482,7 @@ impl ExecGateway {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn prepare_audit_sink(
         &self,
         event: &ExecEvent,
