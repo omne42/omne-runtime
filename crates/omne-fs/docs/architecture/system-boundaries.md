@@ -11,7 +11,7 @@
 - `read`、`write`、`edit`、`patch`、`delete`、`list_dir`、`glob`、`grep`、`stat`、`mkdir`、`copy`、`move`。
 - policy I/O、CLI 和相关集成测试。
 - 输出 redaction 与 secret deny 逻辑。
-- 对会创建或替换路径的写操作，重校验父目录/源对象身份；无法可靠验证时 fail-closed，而不是降级成 best-effort 成功。
+- 对会创建、替换或删除路径的写操作，重校验父目录/源对象身份；无法可靠验证时 fail-closed，而不是降级成 best-effort 成功。
 
 ## 不负责什么
 

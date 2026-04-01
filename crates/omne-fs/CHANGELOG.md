@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `delete` now matches `copy_file` / `move_path` fail-closed semantics when parent or target
+  identity cannot be revalidated before removal, instead of degrading unverifiable paths to
+  best-effort success.
 - `copy_file` / `move_path` / `create_parents` now fail closed when destination-parent identity
   cannot be revalidated, instead of treating Windows/exotic-filesystem `Unverifiable` results as
   success or falling back to canonical-path-only rechecks.
