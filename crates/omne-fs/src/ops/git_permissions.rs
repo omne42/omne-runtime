@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 #[cfg(feature = "git-permissions")]
 const GIT_BINARY_MISSING_HINT: &str =
-    "git permission fallback requires `git` to be installed and available in PATH";
+    "git permission fallback requires `git` to be installed in a trusted standard location";
 
 #[cfg(feature = "git-permissions")]
 fn run_git_status(
