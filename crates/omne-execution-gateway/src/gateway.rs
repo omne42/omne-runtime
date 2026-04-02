@@ -379,15 +379,6 @@ impl ExecGateway {
                         ),
                     ));
                 }
-                if uses_known_mutating_program(&request.program) {
-                    return Err(self.deny_preflight(
-                        event,
-                        "known_mutating_program_requires_declared_mutation",
-                        ExecError::PolicyDenied(
-                            "known mutating tools must declare mutation".to_string(),
-                        ),
-                    ));
-                }
                 if !non_mutating_allowlisted {
                     return Err(self.deny_preflight(
                         event,
@@ -535,49 +526,6 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
                 | "perl"
                 | "php"
                 | "lua"
-        )
-    })
-}
-
-fn uses_known_mutating_program(program: &OsStr) -> bool {
-    program_basename_ascii(program).is_some_and(|normalized| {
-        matches!(
-            normalized.as_str(),
-            "git"
-                | "make"
-                | "gmake"
-                | "cargo"
-                | "go"
-                | "npm"
-                | "npx"
-                | "pnpm"
-                | "yarn"
-                | "bun"
-                | "pip"
-                | "pip3"
-                | "uv"
-                | "apt"
-                | "apt-get"
-                | "dnf"
-                | "yum"
-                | "pacman"
-                | "zypper"
-                | "apk"
-                | "brew"
-                | "winget"
-                | "choco"
-                | "scoop"
-                | "rm"
-                | "mv"
-                | "cp"
-                | "install"
-                | "mkdir"
-                | "rmdir"
-                | "touch"
-                | "chmod"
-                | "chown"
-                | "chgrp"
-                | "ln"
         )
     })
 }
@@ -1419,13 +1367,6 @@ mod tests {
         dir.path()
             .canonicalize()
             .unwrap_or_else(|_| dir.path().to_path_buf())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn known_mutating_detection_rejects_non_utf8_basename() {
-        let program = OsString::from_vec(vec![0x67, 0x69, 0x74, 0x80]);
-        assert!(!uses_known_mutating_program(program.as_os_str()));
     }
 
     #[cfg(unix)]
@@ -2322,52 +2263,7 @@ mod tests {
     }
 
     #[test]
-    fn denies_known_mutating_bare_program_without_declared_mutation() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            "git",
-            vec!["status"],
-            workspace.path(),
-            ExecutionIsolation::BestEffort,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let (event, result) = gateway.execute(&request).into_parts();
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(
-            event.reason.as_deref(),
-            Some("known_mutating_program_requires_declared_mutation")
-        );
-        assert!(matches!(result, Err(ExecError::PolicyDenied(_))));
-    }
-
-    #[test]
-    fn denies_known_mutating_explicit_program_without_declared_mutation() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
-        let workspace = tempdir().expect("create temp workspace");
-        let program = workspace.path().join("git");
-        write_test_executable_placeholder(&program);
-        let request = ExecRequest::new(
-            &program,
-            vec!["status"],
-            workspace.path(),
-            ExecutionIsolation::BestEffort,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let event = gateway.evaluate(&request);
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(
-            event.reason.as_deref(),
-            Some("known_mutating_program_requires_declared_mutation")
-        );
-    }
-
-    #[test]
-    fn allows_known_mutating_program_when_declared_and_allowlisted() {
+    fn allows_known_tool_family_when_non_mutating_path_is_explicitly_allowlisted() {
         let workspace = tempdir().expect("create temp workspace");
         let program = workspace.path().join("git");
         write_test_executable_placeholder(&program);
@@ -2382,7 +2278,7 @@ mod tests {
             fs::set_permissions(&program, permissions).expect("chmod program");
         }
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec![program.display().to_string()],
+            non_mutating_program_allowlist: vec![program.display().to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2396,7 +2292,7 @@ mod tests {
             ExecutionIsolation::BestEffort,
             workspace.path(),
         )
-        .with_declared_mutation(true);
+        .with_declared_mutation(false);
 
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Run);

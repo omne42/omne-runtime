@@ -11,10 +11,10 @@
 - 请求里的 `program` 只能是 bare command name 或绝对路径；像 `./tool`、`bin/tool` 这类相对路径会 fail-closed 拒绝，避免执行语义依赖 gateway 进程自身的工作目录。
 - 对显式绝对 `program` 路径做“必须是可 spawn 的可执行文件”校验、file identity 绑定，并在真正 spawn 前再次校验；bare command name 也会在 preflight 阶段解析成绝对可执行文件路径并绑定 identity，如果无法稳定解析就 fail-closed 拒绝。mutating allowlist 仍按最终可执行文件 identity 匹配，而不是按 basename 或原始路径字面量放行，避免 preflight 通过后被换文件或通过稳定别名漂移到别的可执行文件；但在最终 revalidate 到内核 `spawn/exec` 之间仍存在无法完全消除的 OS 级 TOCTOU 窗口，这里只承诺尽量缩小而不是假装消灭它。
 - 对 `cwd` / `workspace_root` 先做“不得穿过 symlink/reparse-point 祖先目录”的 fail-closed 校验，再做 canonical path + 目录 identity 绑定，并在真正 spawn 前重新校验；macOS 只对系统根别名 `/var`、`/tmp` 做最小例外，避免把平台自带 temp/workspace 路径误判成调用方可控别名。
-- 声明式变更命令门控，以及显式 mutation declaration、`mutating_program_allowlist` / `non_mutating_program_allowlist`、opaque launcher 和 known mutator 之间的一致性校验；其中 opaque launcher/interpreter 直接 fail-closed，不能通过 allowlist 获得授权。
+- 声明式变更命令门控，以及显式 mutation declaration、`mutating_program_allowlist` / `non_mutating_program_allowlist` 和 opaque launcher 之间的一致性校验；其中 opaque launcher/interpreter 直接 fail-closed，不能通过 allowlist 获得授权。
 - gateway 自己管理的 spawn 路径会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端。
 - 平台 sandbox 编排与 runtime 观测。
-- 结构化审计事件和日志输出，包括可读的 lossy `program` / `args` / `env` 字段，以及面向机器恢复的 exact OS-string 编码字段。allowlist、opaque launcher 和 known mutator 门控本身继续保持在原生 `OsStr` / `Path` 边界，不先把请求收窄成 lossy UTF-8。
+- 结构化审计事件和日志输出，包括可读的 lossy `program` / `args` / `env` 字段，以及面向机器恢复的 exact OS-string 编码字段。allowlist 和 opaque launcher 门控本身继续保持在原生 `OsStr` / `Path` 边界，不先把请求收窄成 lossy UTF-8。
 - policy / request / audit log 的 bounded regular-file 读取与 appendable-file 校验现在直接复用 `omne-fs-primitives` 的 ambient-root no-follow helper，而不是在 gateway 本地复制一套文件系统原语。
 
 当前平台语义补充：
@@ -30,7 +30,7 @@
 - `PreparedCommand::spawn()` 会把 post-spawn sandbox 观测和子进程句柄一起返回给调用方；prepared 路径虽然仍把 child 生命周期交还给调用方，但不会再把 sandbox monitor 元数据静默丢弃。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，所有请求都必须显式声明 `declared_mutation`；否则 gateway 会以 `mutation_declaration_required` fail-closed 拒绝。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，`declared_mutation=true` 的请求必须绑定到 `mutating_program_allowlist` 里的显式程序路径；`declared_mutation=false` 的请求也必须绑定到 `non_mutating_program_allowlist` 里的显式程序路径，避免“未知 mutator 只要自称只读就能绕过”。
-- 当 `enforce_allowlisted_program_for_mutation=true` 时，已知高风险 mutator/toolchain（例如 `git`、`make`、包管理器和核心文件变更命令）不能宣称 `declared_mutation=false`；opaque launcher/interpreter（例如 `env`、`sh`、`python`、`node`）则会直接 fail-closed，调用方必须改成更具体、可审计的直接执行体。
+- 当 `enforce_allowlisted_program_for_mutation=true` 时，gateway 不再根据 basename 猜测工具族群的读写语义；是否允许只读 `git status`、`cargo metadata` 等调用，必须由调用方通过显式 `non_mutating_program_allowlist` 决定。opaque launcher/interpreter（例如 `env`、`sh`、`python`、`node`）仍会直接 fail-closed，调用方必须改成更具体、可审计的直接执行体。
 - Windows 上命令路径和 workspace 边界比较按平台语义做大小写不敏感处理，不要求调用方传入与文件系统完全同大小写的字面量。
 - `GatewayPolicy::load_json()` 只接受通过 descriptor-backed 祖先目录 no-follow walk 打开的 regular file；祖先 symlink/reparse point、目录或其他特殊文件都会 fail-closed 拒绝。
 - `omne-execution` CLI 的 `request.json` 也只接受同样的 bounded no-follow regular file 输入，避免通过祖先 symlink、特殊文件或超大输入把 CLI 边界退化成非确定性文件读取；其中 `program` / `args` / `env` 既可以用普通 UTF-8 JSON string，也可以用 exact OS-string 编码对象保留非 UTF-8 输入。
