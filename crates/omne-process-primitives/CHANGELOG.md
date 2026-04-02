@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- add request-scoped host-command controls for env removal and hard timeouts without changing the default `run_host_command` / `run_host_recipe` surface; timeout failures now return bounded captured stdout/stderr instead of forcing callers to reimplement subprocess supervision
 - drop all request env at the sudo privilege boundary instead of reapplying non-`PATH` entries inside the elevated target process; direct execution still preserves request env semantics, but privileged package-manager runs no longer inherit caller-controlled loader/runtime variables under root
 - classify post-spawn stdout/stderr collection failures as `HostCommandError::CaptureFailed` instead of `SpawnFailed`, so callers can distinguish startup failures from output-capture failures
 - make Linux process-tree cleanup fail closed when the group leader exits before cleanup can bind a `/proc` identity, instead of arming `killpg` from a bare historical PGID

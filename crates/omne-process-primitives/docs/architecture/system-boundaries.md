@@ -9,7 +9,9 @@
 - 探测命令是否存在和是否可执行。
 - 对宿主命令 request/recipe 维持 `OsStr` / `OsString` 边界，不把 argv/env 先强制收窄成 UTF-8 `String`。
 - 运行宿主机命令并捕获输出；捕获实现以临时文件为边界，因此 direct child 退出后不会再被继续持有 stdout/stderr 的后台后代进程永久卡住；当 stdout/stderr 超过上限时，仍在读取完整捕获后返回超限错误。
+- 在调用方显式声明时，对宿主机命令执行应用 request-scoped env removal 和 hard timeout；timeout 命中后会 best-effort 终止 direct child，并把已捕获的 bounded stdout/stderr 一并回传给上层。
 - 把“命令根本没能启动”与“命令已执行但输出采集失败”区分成不同错误面，避免把 capture-limit/读取失败错误错误归类成 `SpawnFailed`。
+- 把“命令超时被终止”与“命令启动失败/输出采集失败”继续分开建模，避免调用方只能从字符串猜测 timeout。
 - 对显式相对程序路径保持调用方 cwd 语义，不会因为 request 同时设置了 `working_directory` 就把同一个程序路径重新解释到另一个目录。
 - `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，而 direct bare command 的真正 spawn 也会先绑定到同一条解析出的可执行路径；对显式相对程序路径则继续保持与执行路径相同的调用方 cwd 语义。
 - `command_available` / `command_available_os` / `command_available_for_request` 只会把真正可执行的命令视为 available，不会把普通文件或缺少执行位的路径伪装成“已可运行”。
@@ -30,7 +32,7 @@
 ## 不负责什么
 
 - 命令 allowlist。
-- 超时、取消或重试策略。
+- 默认超时、取消或重试策略；这里只执行调用方显式给出的 timeout。
 - general direct-execution 环境变量过滤；这里仍保留 direct command 的宿主原生 env 语义，只在 sudo privilege boundary fail closed 丢弃 request env。
 - stdout/stderr 的产品级脱敏、裁剪或持久化策略；这里仅避免在默认 `Display` 中直接倾倒完整捕获内容。
 - sandbox / isolation 选择。

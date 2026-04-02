@@ -15,7 +15,9 @@ Low-level host-command and process-tree primitives shared across callers.
 - request-scoped command probes that honor request `PATH` overrides for bare direct commands without changing caller-cwd semantics for explicit relative program paths
 - `command_available*` probes that keep the same spawnable contract as execution and do not report non-executable files as available
 - host command execution with captured output that returns after the direct child exits even if daemonized descendants keep inherited stdout/stderr open
+- optional request-scoped env removals and hard timeouts for host command / recipe execution, while leaving timeout selection to the caller
 - distinct host-command capture errors for post-spawn stdout/stderr read failures, so callers can distinguish execution-start failures from output-collection failures
+- distinct timeout errors that preserve bounded captured stdout/stderr for callers that need to render or classify partial output
 - host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
 - non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
 - explicit relative program paths that keep caller-cwd semantics even when the child process runs under a different `working_directory`
@@ -38,7 +40,7 @@ Low-level host-command and process-tree primitives shared across callers.
 ## Non-Goals
 
 - product allowlists
-- timeout policy
+- default timeout policy
 - general direct-execution environment filtering, lossy UTF-8 coercion, or output-log leakage policy
 - sandbox selection
 
