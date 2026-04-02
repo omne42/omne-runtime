@@ -12,6 +12,8 @@ use omne_process_primitives::{
 #[cfg(feature = "git-permissions")]
 use std::ffi::{OsStr, OsString};
 #[cfg(feature = "git-permissions")]
+use std::io;
+#[cfg(feature = "git-permissions")]
 use std::path::PathBuf;
 
 #[cfg(feature = "git-permissions")]
@@ -77,6 +79,11 @@ fn map_git_command_error(op: &str, path: &Path, err: HostCommandError) -> Error 
             op: "spawn_git",
             path: path.to_path_buf(),
             source,
+        },
+        HostCommandError::TimedOut { timeout, .. } => Error::IoPath {
+            op: "spawn_git",
+            path: path.to_path_buf(),
+            source: io::Error::other(format!("git command timed out after {timeout:?}")),
         },
     }
 }

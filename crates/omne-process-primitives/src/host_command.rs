@@ -832,6 +832,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
+    #[cfg(unix)]
     use std::time::Duration;
 
     #[cfg(unix)]
@@ -855,9 +856,10 @@ mod tests {
         build_command_with_options, command_available, command_available_for_request,
         command_exists, command_exists_for_request, command_path_exists,
         default_recipe_sudo_mode_for_program, resolve_program_for_direct_spawn, run_host_command,
-        run_host_command_with_options, run_host_recipe, run_host_recipe_with_options,
-        should_try_sudo_with_status,
+        run_host_recipe, should_try_sudo_with_status,
     };
+    #[cfg(unix)]
+    use super::{run_host_command_with_options, run_host_recipe_with_options};
 
     #[test]
     fn command_probe_reports_missing_command_as_absent() {
