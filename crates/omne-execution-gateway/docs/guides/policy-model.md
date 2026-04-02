@@ -7,8 +7,9 @@
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `allow_isolation_none` | `bool` | `true` | Allows `policy_meta::ExecutionIsolation::None` when true. |
-| `enforce_allowlisted_program_for_mutation` | `bool` | `true` | Requires every request to declare mutation intent explicitly, requires declared mutations to use allowlisted programs, requires allowlisted mutating programs to set `declared_mutation = true`, fail-closes unknown non-mutating tools unless they are explicitly allowlisted, and rejects shell-like opaque launchers outright. |
+| `enforce_allowlisted_program_for_mutation` | `bool` | `true` | Requires every request to declare mutation intent explicitly, requires declared mutations to use allowlisted programs, requires declared non-mutating requests to use explicitly allowlisted executables, and rejects shell-like opaque launchers outright. |
 | `mutating_program_allowlist` | `Vec<String>` | empty | Explicit program paths whose resolved executable identity may authorize declared mutation. Bare program names are not trusted for mutation authorization. |
+| `non_mutating_program_allowlist` | `Vec<String>` | empty | Explicit program paths whose resolved executable identity may authorize a declared non-mutating request. Bare program names are not trusted for non-mutating authorization either. |
 | `default_isolation` | `policy_meta::ExecutionIsolation` | `None` | Fallback isolation for CLI requests when not provided. |
 | `audit_log_path` | `Option<PathBuf>` | `None` | Optional JSONL audit file path. |
 
@@ -19,6 +20,7 @@
   "allow_isolation_none": true,
   "enforce_allowlisted_program_for_mutation": true,
   "mutating_program_allowlist": ["/usr/local/bin/omne-fs"],
+  "non_mutating_program_allowlist": ["/usr/bin/git"],
   "default_isolation": "none",
   "audit_log_path": "/tmp/omne_exec_audit.jsonl"
 }
