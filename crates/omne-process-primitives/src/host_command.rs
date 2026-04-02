@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use omne_system_package_primitives::SystemPackageManager;
 use tempfile::tempfile;
@@ -25,6 +26,28 @@ pub enum HostCommandSudoMode {
 pub enum HostCommandExecution {
     Direct,
     Sudo,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HostCommandRunOptions<'a> {
+    pub env_remove: &'a [OsString],
+    pub timeout: Option<Duration>,
+}
+
+impl<'a> HostCommandRunOptions<'a> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_env_remove(mut self, env_remove: &'a [OsString]) -> Self {
+        self.env_remove = env_remove;
+        self
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -93,6 +116,12 @@ pub enum HostCommandError {
         execution: HostCommandExecution,
         source: io::Error,
     },
+    TimedOut {
+        program: OsString,
+        execution: HostCommandExecution,
+        timeout: Duration,
+        output: Output,
+    },
 }
 
 #[derive(Debug)]
@@ -143,6 +172,29 @@ impl fmt::Display for HostCommandError {
                     program.to_string_lossy()
                 ),
             },
+            Self::TimedOut {
+                program,
+                execution,
+                timeout,
+                output,
+            } => match execution {
+                HostCommandExecution::Direct => write!(
+                    f,
+                    "run {} timed out after {timeout:?}: status={} stderr_bytes={} stdout_bytes={}",
+                    program.to_string_lossy(),
+                    output.status,
+                    output.stderr.len(),
+                    output.stdout.len(),
+                ),
+                HostCommandExecution::Sudo => write!(
+                    f,
+                    "run sudo -n {} timed out after {timeout:?}: status={} stderr_bytes={} stdout_bytes={}",
+                    program.to_string_lossy(),
+                    output.status,
+                    output.stderr.len(),
+                    output.stdout.len(),
+                ),
+            },
         }
     }
 }
@@ -152,6 +204,7 @@ impl std::error::Error for HostCommandError {
         match self {
             Self::CommandNotFound { .. } => None,
             Self::SpawnFailed { source, .. } | Self::CaptureFailed { source, .. } => Some(source),
+            Self::TimedOut { .. } => None,
         }
     }
 }
@@ -198,6 +251,13 @@ impl std::error::Error for HostRecipeError {
 pub fn run_host_command(
     request: &HostCommandRequest<'_>,
 ) -> Result<HostCommandOutput, HostCommandError> {
+    run_host_command_with_options(request, HostCommandRunOptions::default())
+}
+
+pub fn run_host_command_with_options(
+    request: &HostCommandRequest<'_>,
+    options: HostCommandRunOptions<'_>,
+) -> Result<HostCommandOutput, HostCommandError> {
     let execution = if should_try_sudo(request) {
         HostCommandExecution::Sudo
     } else {
@@ -206,7 +266,7 @@ pub fn run_host_command(
     if execution == HostCommandExecution::Sudo {
         ensure_sudo_target_is_available(request)?;
     }
-    let output = run_command_output(request, execution)
+    let output = run_command_output(request, execution, options)
         .map_err(|source| map_command_output_error(request, execution, source))?;
     Ok(HostCommandOutput { execution, output })
 }
@@ -214,13 +274,23 @@ pub fn run_host_command(
 pub fn run_host_recipe(
     request: &HostRecipeRequest<'_>,
 ) -> Result<HostCommandOutput, HostRecipeError> {
-    let output = run_host_command(&HostCommandRequest {
-        program: request.program,
-        args: request.args,
-        env: request.env,
-        working_directory: request.working_directory,
-        sudo_mode: request.sudo_mode,
-    })
+    run_host_recipe_with_options(request, HostCommandRunOptions::default())
+}
+
+pub fn run_host_recipe_with_options(
+    request: &HostRecipeRequest<'_>,
+    options: HostCommandRunOptions<'_>,
+) -> Result<HostCommandOutput, HostRecipeError> {
+    let output = run_host_command_with_options(
+        &HostCommandRequest {
+            program: request.program,
+            args: request.args,
+            env: request.env,
+            working_directory: request.working_directory,
+            sudo_mode: request.sudo_mode,
+        },
+        options,
+    )
     .map_err(HostRecipeError::Command)?;
 
     if output.output.status.success() {
@@ -280,7 +350,16 @@ pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoM
         })
 }
 
+#[cfg(test)]
 fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecution) -> Command {
+    build_command_with_options(request, execution, HostCommandRunOptions::default())
+}
+
+fn build_command_with_options(
+    request: &HostCommandRequest<'_>,
+    execution: HostCommandExecution,
+    options: HostCommandRunOptions<'_>,
+) -> Command {
     let mut cmd = match execution {
         HostCommandExecution::Direct => Command::new(resolve_program_for_direct_spawn(request)),
         HostCommandExecution::Sudo => {
@@ -294,6 +373,9 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
             cmd
         }
     };
+    for name in options.env_remove {
+        cmd.env_remove(name);
+    }
     if execution == HostCommandExecution::Direct {
         for arg in request.args {
             cmd.arg(arg);
@@ -324,6 +406,7 @@ fn append_sudo_target_command(
 fn run_command_output(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
+    options: HostCommandRunOptions<'_>,
 ) -> Result<Output, CommandOutputError> {
     #[cfg(unix)]
     {
@@ -331,7 +414,7 @@ fn run_command_output(
         const EXECUTABLE_BUSY_BACKOFF_MS: u64 = 10;
 
         for attempt in 0..=EXECUTABLE_BUSY_RETRIES {
-            match spawn_and_capture_output(request, execution) {
+            match spawn_and_capture_output(request, execution, options) {
                 Ok(output) => return Ok(output),
                 Err(err) if err.is_executable_file_busy() && attempt < EXECUTABLE_BUSY_RETRIES => {
                     std::thread::sleep(std::time::Duration::from_millis(
@@ -347,23 +430,44 @@ fn run_command_output(
 
     #[cfg(not(unix))]
     {
-        spawn_and_capture_output(request, execution)
+        spawn_and_capture_output(request, execution, options)
     }
 }
 
 fn spawn_and_capture_output(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
+    options: HostCommandRunOptions<'_>,
 ) -> Result<Output, CommandOutputError> {
     let (stdout_capture, stdout_writer) =
         create_output_capture_file().map_err(CommandOutputError::Spawn)?;
     let (stderr_capture, stderr_writer) =
         create_output_capture_file().map_err(CommandOutputError::Spawn)?;
-    let mut command = build_command(request, execution);
+    let mut command = build_command_with_options(request, execution, options);
     command.stdout(Stdio::from(stdout_writer));
     command.stderr(Stdio::from(stderr_writer));
     let mut child = command.spawn().map_err(CommandOutputError::Spawn)?;
-    let status = child.wait().map_err(CommandOutputError::Spawn)?;
+    let status = match wait_for_child(&mut child, options.timeout) {
+        Ok(status) => status,
+        Err(CommandOutputError::TimedOut {
+            timeout,
+            output: timed_out_output,
+        }) => {
+            let stdout = read_captured_output(stdout_capture, "stdout")
+                .map_err(CommandOutputError::Capture)?;
+            let stderr = read_captured_output(stderr_capture, "stderr")
+                .map_err(CommandOutputError::Capture)?;
+            return Err(CommandOutputError::TimedOut {
+                timeout,
+                output: Output {
+                    status: timed_out_output.status,
+                    stdout,
+                    stderr,
+                },
+            });
+        }
+        Err(err) => return Err(err),
+    };
     Ok(Output {
         status,
         stdout: read_captured_output(stdout_capture, "stdout")
@@ -377,6 +481,48 @@ fn create_output_capture_file() -> io::Result<(File, File)> {
     let capture = tempfile()?;
     let writer = capture.try_clone()?;
     Ok((capture, writer))
+}
+
+fn wait_for_child(
+    child: &mut std::process::Child,
+    timeout: Option<Duration>,
+) -> Result<std::process::ExitStatus, CommandOutputError> {
+    match timeout {
+        None => child.wait().map_err(CommandOutputError::Spawn),
+        Some(timeout) => wait_for_child_with_timeout(child, timeout),
+    }
+}
+
+fn wait_for_child_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, CommandOutputError> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
+            Ok(None) => {
+                let _ = child.kill();
+                let status = child.wait().map_err(|source| {
+                    CommandOutputError::Spawn(io::Error::other(format!(
+                        "timed out after {timeout:?} and wait failed: {source}"
+                    )))
+                })?;
+                return Err(CommandOutputError::TimedOut {
+                    timeout,
+                    output: Output {
+                        status,
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                    },
+                });
+            }
+            Err(source) => return Err(CommandOutputError::Spawn(source)),
+        }
+    }
 }
 
 fn read_captured_output(mut capture: File, stream_name: &'static str) -> io::Result<Vec<u8>> {
@@ -618,6 +764,7 @@ fn is_explicit_command_path(command: &OsStr) -> bool {
 enum CommandOutputError {
     Spawn(io::Error),
     Capture(io::Error),
+    TimedOut { timeout: Duration, output: Output },
 }
 
 impl CommandOutputError {
@@ -625,7 +772,7 @@ impl CommandOutputError {
     fn is_executable_file_busy(&self) -> bool {
         match self {
             Self::Spawn(source) => source.kind() == io::ErrorKind::ExecutableFileBusy,
-            Self::Capture(_) => false,
+            Self::Capture(_) | Self::TimedOut { .. } => false,
         }
     }
 }
@@ -654,6 +801,12 @@ fn map_command_output_error(
             execution,
             source,
         },
+        CommandOutputError::TimedOut { timeout, output } => HostCommandError::TimedOut {
+            program: request.program.to_os_string(),
+            execution,
+            timeout,
+            output,
+        },
     }
 }
 
@@ -679,6 +832,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     #[cfg(unix)]
     use super::command_available_os;
@@ -696,11 +850,12 @@ mod tests {
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
     use super::{
-        HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
-        HostRecipeError, HostRecipeRequest, build_command, command_available,
-        command_available_for_request, command_exists, command_exists_for_request,
-        command_path_exists, default_recipe_sudo_mode_for_program,
-        resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
+        HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandRunOptions,
+        HostCommandSudoMode, HostRecipeError, HostRecipeRequest, build_command,
+        build_command_with_options, command_available, command_available_for_request,
+        command_exists, command_exists_for_request, command_path_exists,
+        default_recipe_sudo_mode_for_program, resolve_program_for_direct_spawn, run_host_command,
+        run_host_command_with_options, run_host_recipe, run_host_recipe_with_options,
         should_try_sudo_with_status,
     };
 
@@ -950,6 +1105,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn direct_command_supports_request_scoped_env_removals() {
+        let env = vec![(OsString::from("OMNE_TEST_VALUE"), OsString::from("world"))];
+        let removed = vec![OsString::from("UV_INDEX"), OsString::from("UV_PYTHON")];
+        let request = HostCommandRequest {
+            program: OsStr::new("echo"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let command = build_command_with_options(
+            &request,
+            HostCommandExecution::Direct,
+            HostCommandRunOptions::new().with_env_remove(&removed),
+        );
+        let collected_env = command
+            .get_envs()
+            .map(|(name, value): (&OsStr, Option<&OsStr>)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(collected_env.contains(&("UV_INDEX".to_string(), None)));
+        assert!(collected_env.contains(&("UV_PYTHON".to_string(), None)));
+        assert!(
+            collected_env.contains(&("OMNE_TEST_VALUE".to_string(), Some("world".to_string())))
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn sudo_missing_target_is_classified_as_command_not_found() {
@@ -1158,6 +1346,40 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_host_command_with_options_times_out_and_keeps_captured_output() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_shell_executable(
+            temp.path(),
+            "slow-stdout-stderr",
+            "printf 'stdout-before-timeout'\nprintf 'stderr-before-timeout' >&2\nsleep 5\n",
+        );
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let err = run_host_command_with_options(
+            &request,
+            HostCommandRunOptions::new().with_timeout(Duration::from_millis(50)),
+        )
+        .expect_err("slow command should time out");
+        match err {
+            HostCommandError::TimedOut {
+                timeout, output, ..
+            } => {
+                assert_eq!(timeout, Duration::from_millis(50));
+                assert!(String::from_utf8_lossy(&output.stdout).contains("stdout-before-timeout"));
+                assert!(String::from_utf8_lossy(&output.stderr).contains("stderr-before-timeout"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
     #[test]
     fn run_host_command_resolves_relative_program_against_caller_cwd() {
         let current_directory = std::env::current_dir().expect("current dir");
@@ -1309,6 +1531,34 @@ mod tests {
                 assert!(rendered.contains("stderr_bytes=14"));
                 assert!(!rendered.contains("stdout-message"));
                 assert!(!rendered.contains("stderr-message"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_host_recipe_with_options_surfaces_timeout_as_command_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_shell_executable(
+            temp.path(),
+            "slow-recipe",
+            "printf 'stdout-before-timeout'\nprintf 'stderr-before-timeout' >&2\nsleep 5\n",
+        );
+        let args = Vec::new();
+
+        let err = run_host_recipe_with_options(
+            &HostRecipeRequest::new(command_path.as_os_str(), &args),
+            HostCommandRunOptions::new().with_timeout(Duration::from_millis(50)),
+        )
+        .expect_err("slow recipe should time out");
+        match err {
+            HostRecipeError::Command(HostCommandError::TimedOut {
+                timeout, output, ..
+            }) => {
+                assert_eq!(timeout, Duration::from_millis(50));
+                assert!(String::from_utf8_lossy(&output.stdout).contains("stdout-before-timeout"));
+                assert!(String::from_utf8_lossy(&output.stderr).contains("stderr-before-timeout"));
             }
             other => panic!("unexpected error: {other}"),
         }
@@ -1484,6 +1734,9 @@ mod tests {
             HostCommandError::CaptureFailed { .. } => {
                 panic!("non-executable path must fail before output capture starts");
             }
+            HostCommandError::TimedOut { .. } => {
+                panic!("non-executable path must fail before timeout handling");
+            }
         }
     }
 
@@ -1521,6 +1774,9 @@ mod tests {
             }
             HostCommandError::CaptureFailed { .. } => {
                 panic!("missing interpreter must fail before output capture starts");
+            }
+            HostCommandError::TimedOut { .. } => {
+                panic!("missing interpreter must fail before timeout handling");
             }
         }
     }
