@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - fail closed when request `cwd` or `workspace_root` traverses a symlink/reparse-point ancestor, while preserving macOS root aliases such as `/var` and `/tmp`, so canonical path binding does not silently re-authorize caller-controlled aliased directories
+- stop hard-coding basename-based "known mutator" denials for declared non-mutating requests, so read-only calls such as `git status` or `cargo metadata` can be authorized explicitly through `non_mutating_program_allowlist` instead of product heuristics baked into the shared gateway
 - add regression coverage proving explicit-path detection and request path validation keep non-UTF-8 / symlink-sensitive checks on native OS-string and filesystem boundaries
 - return `PreparedChild` from `PreparedCommand::spawn()` so prepared spawns preserve the
   post-spawn sandbox observation instead of silently dropping monitor metadata after preflight
@@ -34,7 +35,6 @@
 - include explicit request `env` plus exact `env_exact` JSON encodings, and clear inherited process state so `execute()` / `prepare_command()` only spawn with the audited request environment
 - harden audit-log parent creation so missing intermediate directories are created one component at a time with symlink checks instead of ambient `create_dir_all`
 - move policy/request/audit-log file opens onto the same descriptor-backed no-follow parent walk, so ancestor symlinks/reparse points fail closed instead of being trusted between precheck and open
-- deny known-mutating tool families such as `git`, `make`, package managers, and core file-mutating utilities when callers label them `declared_mutation = false`; those tools must now declare mutation and bind an allowlisted explicit path
 - bind allowlisted mutating programs to both executable identity and a preflight content fingerprint, so in-place binary rewrites fail closed before spawn
 - add regression coverage for `cwd_invalid` so missing working directories do not regress back into `cwd_outside_workspace`
 - reject symlinked, ancestor-symlinked, and special-file audit log destinations so audit logging fails closed on unsafe sinks
@@ -46,5 +46,5 @@
 - make `resolve_request()` and CLI `request_resolution` reuse the gateway's validated canonical path view
 - reject unknown `omne-execution` request JSON fields fail-closed
 - stabilize oversized JSON fixture coverage so request/policy size-limit tests do not depend on free disk space
-- keep mutation allowlist, opaque-launcher, and known-mutator gates on native `OsStr` / `Path` inputs so non-UTF-8 program paths fail closed without lossy string coercion
+- keep mutation allowlist and opaque-launcher gates on native `OsStr` / `Path` inputs so non-UTF-8 program paths fail closed without lossy string coercion
 - stabilize gateway full-workspace test coverage by making audit-log execution fixtures use an explicit `exit 0` shell command and giving nested noninteractive-stdin helpers enough timeout headroom under heavy test load

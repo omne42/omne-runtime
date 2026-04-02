@@ -55,9 +55,9 @@ authorized while it still points at the same executable file.
 Shell-like opaque launchers such as `sh`, `cmd`, `powershell`, `pwsh`, `python`, and `node` are denied even if
 their full executable paths appear in an allowlist. The gateway does not parse `omne-fs` subcommands, shell scripts,
 or interpreter payloads to infer mutation intent.
-Known mutating tool families such as `git`, `make`, package managers, and core file-mutating
-utilities are also denied when callers set `"declared_mutation": false`; to run them, callers must
-declare mutation and use an explicitly allowlisted executable path.
+The gateway likewise does not infer read-only vs mutating behavior from executable basenames. If
+you want to authorize a read-only `git status` or `cargo metadata` path, place that exact resolved
+executable in `non_mutating_program_allowlist`.
 `request_resolution`, `event`, and the pure evaluation methods stay side-effect free; the gateway
 only creates the audit parent chain during `execute()` / `prepare_command()`.
 

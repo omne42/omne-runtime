@@ -20,10 +20,9 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - workspace boundary enforcement (`cwd` must stay inside `workspace_root`; `cwd` / `workspace_root` reject symlink or reparse-point ancestors before canonical binding, except for macOS root aliases such as `/var` and `/tmp`, and execution revalidates the bound directory identities before spawn)
 - explicit mutation declaration for every request when mutation enforcement is enabled
 - fail-closed denial for shell-like or interpreter launchers such as `sh`, `cmd`, `pwsh`, `python`, and `node`; policy allowlists cannot authorize them because the gateway cannot bind arbitrary script or subcommand semantics to a stable executable identity
-- fail-closed denial for known mutating tool families such as `git`, `make`, `cargo`, `go`, package managers, and core file-mutating utilities unless they declare mutation and use an explicitly allowlisted path
 - gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
 - structured decision events for audit/logging, including lossy display fields plus exact JSON encodings for `program` / `args` / explicit environment entries when OS strings are not valid UTF-8
-- mutating and non-mutating allowlists, plus opaque-launcher and known-mutator gates, evaluate native `OsStr` / `Path` inputs directly instead of relying on lossy UTF-8 coercion
+- mutating and non-mutating allowlists plus opaque-launcher gates evaluate native `OsStr` / `Path` inputs directly instead of relying on lossy UTF-8 coercion
 
 ## Important Scope Notes
 
@@ -35,7 +34,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - declared mutations must bind to a `mutating_program_allowlist` executable identity via an explicit program path, and declared non-mutating requests must bind to a `non_mutating_program_allowlist` executable identity via an explicit program path.
 - when mutation enforcement is enabled, allowlisted execution also rejects startup-sensitive request env such as `PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, `PYTHONPATH`, `RUBYOPT`, and `NODE_OPTIONS`, so audited program identity cannot be widened again through loader/interpreter hooks.
 - shell-like and interpreter launchers are denied outright because the gateway cannot safely authorize runtimes that can execute arbitrary subcommands or scripts behind a single executable path.
-- known mutating tool families such as `git`, `make`, `cargo`, `go`, package managers, and core file-mutating utilities are also denied by default when callers label them `declared_mutation = false`; the built-in guardrail currently covers commands like `npm`, `pip`, `apt`, `dnf`, `yum`, `pacman`, `brew`, `rm`, `mkdir`, `touch`, `chmod`, and `ln`. To run them, callers must declare mutation and use an explicitly allowlisted path.
+- the gateway does not infer tool-specific read/write semantics from executable basenames. If a caller wants to authorize a read-only `git status` or `cargo metadata` path, that decision must live in the explicit `non_mutating_program_allowlist` policy instead of a built-in basename heuristic.
 - mutation authorization now requires explicit program paths in both the request and the relevant policy allowlist. Bare program names are denied fail-closed because they do not bind to a stable executable, and allowlist checks resolve by executable identity rather than basename text.
 - relative executable paths such as `./tool` or `bin/tool` are denied fail-closed because their spawn semantics can drift with the gateway process context; callers must use a bare command name or absolute path.
 - bare command names remain allowed for `execute()`, but the gateway immediately resolves them to a concrete executable path and audits that resolved path instead of the original bare token.

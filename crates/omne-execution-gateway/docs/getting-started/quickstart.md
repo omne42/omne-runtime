@@ -118,6 +118,6 @@ Example fragment:
 - mutating request with non-allowlisted program -> denied (when policy enforcement is on).
 - request omitted `with_declared_mutation(...)` / `declared_mutation` -> denied as `mutation_declaration_required` (when policy enforcement is on).
 - shell-style launchers and interpreters such as `sh`, `cmd`, `pwsh`, `python`, and `node` -> denied; use a more specific directly auditable executable instead.
-- known mutating tools such as `git`, `make`, `cargo`, `go`, package managers (`npm`, `pip`, `apt`, `dnf`, `yum`, `pacman`, `brew`) and core file-mutating utilities like `rm`, `mv`, `mkdir`, `touch`, `chmod`, or `ln` -> denied when declared non-mutating; to run them, declare mutation and use an allowlisted explicit path.
+- non-mutating requests still need an explicit path from `non_mutating_program_allowlist`; if you want to authorize a read-only `git status` or `cargo metadata` path, make that decision explicitly in policy instead of relying on gateway basename heuristics.
 - `request_resolution` now reports the same validated canonical `cwd` / `workspace_root` view that appears in `event` when preflight reaches path validation.
 - `prepare_command` with a mismatched `Command` program/args -> denied.
