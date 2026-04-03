@@ -33,6 +33,7 @@ Fields:
 
 - `program: OsString`
 - `args: Vec<OsString>`
+- `env: Vec<(OsString, OsString)>`
 - `cwd: PathBuf`
 - `required_isolation: policy_meta::ExecutionIsolation`
 - `requested_isolation_source: RequestedIsolationSource`
@@ -55,6 +56,7 @@ Fields:
 
 - `program: OsString`
 - `args: Vec<OsString>`
+- `env: Vec<(OsString, OsString)>`
 - `cwd: PathBuf`
 - `workspace_root: PathBuf`
 - `declared_mutation: bool`
@@ -70,8 +72,8 @@ policy-default provenance. When preflight reaches path validation, `program` / `
 `workspace_root` mirror the authoritative validated view that also appears in `ExecEvent`. For
 bare command-name requests, `program` becomes the resolved absolute executable path that the
 gateway actually bound and will revalidate before spawn.
-Its JSON form also emits `program_exact` / `args_exact` so callers can reconstruct non-UTF-8
-OS strings exactly instead of depending on lossy display fields.
+Its JSON form also emits `program_exact` / `args_exact` / `env_exact` so callers can reconstruct
+non-UTF-8 OS strings exactly instead of depending on lossy display fields.
 
 ## ExecGateway Constructors
 
@@ -96,6 +98,8 @@ cannot mutate program/args/cwd after preflight and silently bypass the gateway d
 When the request uses a bare command name, `execute()` resolves it to a concrete executable path
 before launch; `prepare_command()` likewise expects the caller-provided `Command` to already use
 that resolved executable path, and rejects unresolved bare-command `Command` values fail-closed.
+`execute()` and `prepare_command()` clear inherited process state before spawn and only apply the
+request's audited `env` entries.
 `execute()` and `PreparedCommand::spawn()` bind child `stdin/stdout/stderr` to null handles, so
 they are intentionally non-interactive and do not surface child output.
 `prepare_command()` only records preflight audit state; final exit auditing and runtime sandbox
@@ -116,8 +120,10 @@ Notable fields:
 
 - `program`
 - `args`
+- `env`
 - serialized `program_exact`
 - serialized `args_exact`
+- serialized `env_exact`
 - `requested_isolation`
 - `requested_policy_meta`
 - `supported_isolation`

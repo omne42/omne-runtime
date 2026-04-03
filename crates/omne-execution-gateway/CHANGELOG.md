@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- document `ExecRequest` / `RequestResolution` / `ExecEvent` environment fields more explicitly in
+  the API reference, including `env_exact` and the fact that gateway-managed spawns clear inherited
+  process state before applying only the audited request environment
 - fail closed when request `cwd` or `workspace_root` traverses a symlink/reparse-point ancestor, while preserving macOS root aliases such as `/var` and `/tmp`, so canonical path binding does not silently re-authorize caller-controlled aliased directories
 - stop hard-coding basename-based "known mutator" denials for declared non-mutating requests, so read-only calls such as `git status` or `cargo metadata` can be authorized explicitly through `non_mutating_program_allowlist` instead of product heuristics baked into the shared gateway
 - add regression coverage proving explicit-path detection and request path validation keep non-UTF-8 / symlink-sensitive checks on native OS-string and filesystem boundaries
