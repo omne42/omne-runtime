@@ -12,11 +12,10 @@ Low-level host platform and target-triple primitives shared across callers.
 ## Scope
 
 - host OS and architecture detection
-- canonical target-triple mapping, including fail-closed Linux `gnu` vs `musl` detection before a
-  default host triple is exposed
-- target override normalization with supported-triple validation
+- canonical target-triple mapping, including Linux `gnu` vs `musl` detection from local ABI markers
+- target override normalization
 - home-directory resolution
-- executable suffix inference from validated canonical target triples
+- executable suffix inference
 
 ## Non-Goals
 
