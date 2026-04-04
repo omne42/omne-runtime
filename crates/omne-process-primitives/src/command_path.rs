@@ -37,7 +37,6 @@ pub fn resolve_command_path_or_standard_location_os(command: &OsStr) -> Option<P
     })
 }
 
-#[cfg(test)]
 pub(crate) fn resolve_command_path_in_standard_locations_os(command: &OsStr) -> Option<PathBuf> {
     resolve_command_path_from_standard_locations(command, is_spawnable_command_path)
 }
