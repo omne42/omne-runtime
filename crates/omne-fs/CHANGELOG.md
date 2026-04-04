@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `git-permissions` now reports the correct fail-closed requirement when trusted `git`
   resolution fails: the fallback depends on standard host locations, not ambient `PATH`.
+- `git-permissions` now clears inherited `GIT_*` state and disables external diff helpers before
+  invoking `git`, so fallback write authorization no longer trusts caller-controlled git-side
+  process hooks.
 - `delete` now matches `copy_file` / `move_path` fail-closed semantics when parent or target
   identity cannot be revalidated before removal, instead of degrading unverifiable paths to
   best-effort success.

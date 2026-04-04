@@ -487,14 +487,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "error-kit"
-version = "0.1.0"
-dependencies = [
- "structured-text-kit",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -771,7 +763,6 @@ name = "http-kit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "error-kit",
  "reqwest",
  "serde",
  "serde_json",
@@ -1225,7 +1216,7 @@ dependencies = [
 name = "omne-artifact-install-primitives"
 version = "0.1.0"
 dependencies = [
- "cap-std",
+ "flate2",
  "http-kit",
  "omne-archive-primitives",
  "omne-fs-primitives",
@@ -1234,6 +1225,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "xz2",
  "zip",
 ]
 
@@ -1264,7 +1256,6 @@ dependencies = [
  "libc",
  "memchr",
  "omne-fs-primitives",
- "omne-process-primitives",
  "policy-meta",
  "regex",
  "same-file",
@@ -1410,8 +1401,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "serde_yaml",
- "thiserror 1.0.69",
  "ts-rs",
 ]
 
@@ -1853,19 +1842,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1942,13 +1918,6 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
-
-[[package]]
-name = "structured-text-kit"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "subtle"
@@ -2329,12 +2298,6 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
-
-[[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"
