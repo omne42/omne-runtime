@@ -41,17 +41,17 @@ pub(crate) fn resolve_command_path_in_standard_locations_os(command: &OsStr) -> 
     resolve_command_path_from_standard_locations(command, is_spawnable_command_path)
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(crate) fn resolve_available_command_path(command: &str) -> Option<PathBuf> {
     resolve_available_command_path_os(OsStr::new(command))
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(crate) fn resolve_available_command_path_os(command: &OsStr) -> Option<PathBuf> {
     resolve_available_command_path_with_path_var(command, std::env::var_os("PATH"))
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(crate) fn resolve_available_command_path_with_path_var(
     command: &OsStr,
     path_var: Option<std::ffi::OsString>,
@@ -87,6 +87,7 @@ pub(crate) fn is_spawnable_command_path(path: &Path) -> bool {
     }
 }
 
+#[cfg(any(test, windows))]
 pub(crate) fn is_regular_command_path(path: &Path) -> bool {
     path.is_file()
 }
