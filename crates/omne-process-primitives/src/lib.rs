@@ -12,8 +12,8 @@
 //! Unix uses per-child process groups. Cleanup capture fails closed unless the spawned child is
 //! the leader of its own dedicated process group, so callers cannot accidentally arm cleanup
 //! against the parent's process group by skipping setup. Linux only proceeds to `killpg` after it
-//! can revalidate the original leader identity, and refuses to arm orphan-group cleanup when that
-//! identity was never captured in the first place, so cleanup does not trust a potentially reused
+//! can revalidate the original leader identity, and refuses orphan-group cleanup once that
+//! identity is missing or no longer revalidates, so cleanup does not trust a potentially reused
 //! PGID. Other Unix targets fail closed and skip `killpg` entirely because this crate cannot
 //! revalidate leader lifetime with Linux-strength evidence there.
 //!
@@ -223,22 +223,14 @@ fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
 
 #[cfg(target_os = "linux")]
 fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
-    should_kill_linux_process_group_with_group_probe(
-        identity,
-        read_linux_process_identity(identity.leader_pid),
-        || linux_process_group_has_matching_member(identity),
-    )
+    should_kill_linux_process_group(identity, read_linux_process_identity(identity.leader_pid))
 }
 
 #[cfg(target_os = "linux")]
-fn should_kill_linux_process_group_with_group_probe<F>(
+fn should_kill_linux_process_group(
     identity: UnixProcessGroupIdentity,
     current: io::Result<LinuxProcessIdentity>,
-    group_exists: F,
-) -> bool
-where
-    F: FnOnce() -> bool,
-{
+) -> bool {
     if identity.leader_start_ticks.is_none() || identity.leader_session_id.is_none() {
         return false;
     }
@@ -252,51 +244,9 @@ where
                     && current.session_id == session_id
                     && current.process_group_id == identity.process_group_id.as_raw_pid()
             }),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            identity.leader_start_ticks.is_some()
-                && identity.leader_session_id.is_some()
-                && group_exists()
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
         Err(_) => false,
     }
-}
-
-#[cfg(all(unix, target_os = "linux"))]
-fn linux_process_group_has_matching_member(identity: UnixProcessGroupIdentity) -> bool {
-    let Some(leader_session_id) = identity.leader_session_id else {
-        return false;
-    };
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return false;
-    };
-    let target_group_id = identity.process_group_id.as_raw_pid();
-
-    for entry in entries {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        let file_name = entry.file_name();
-        let Some(raw_pid) = file_name.to_str() else {
-            continue;
-        };
-        let Ok(raw_pid) = raw_pid.parse::<i32>() else {
-            continue;
-        };
-        let Some(pid) = rustix::process::Pid::from_raw(raw_pid) else {
-            continue;
-        };
-
-        match read_linux_process_identity(pid) {
-            Ok(process) if process.process_group_id == target_group_id => {
-                if process.session_id == leader_session_id && pid != identity.leader_pid {
-                    return true;
-                }
-            }
-            Ok(_) | Err(_) => {}
-        }
-    }
-
-    false
 }
 
 #[cfg(all(unix, target_os = "linux"))]
@@ -615,9 +565,9 @@ mod tests {
     use super::{
         CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
         build_linux_process_group_identity, configure_command_for_process_tree,
-        ensure_unix_process_group_is_dedicated, should_kill_linux_process_group_with_group_probe,
+        ensure_unix_process_group_is_dedicated, should_kill_linux_process_group,
     };
-    use rustix::process::Pid;
+    use rustix::process::{Pid, Signal, kill_process};
     use std::io;
     use std::path::Path;
     use std::process::Stdio;
@@ -632,14 +582,13 @@ mod tests {
             leader_session_id: Some(7),
         };
 
-        assert!(!should_kill_linux_process_group_with_group_probe(
+        assert!(!should_kill_linux_process_group(
             identity,
             Ok(LinuxProcessIdentity {
                 process_group_id: 9999,
                 session_id: 7,
                 start_ticks: 22,
             }),
-            || true,
         ));
     }
 
@@ -652,10 +601,9 @@ mod tests {
             leader_session_id: Some(7),
         };
 
-        assert!(!should_kill_linux_process_group_with_group_probe(
+        assert!(!should_kill_linux_process_group(
             identity,
             Err(io::ErrorKind::NotFound.into()),
-            || false,
         ));
     }
 
@@ -668,10 +616,9 @@ mod tests {
             leader_session_id: None,
         };
 
-        assert!(!should_kill_linux_process_group_with_group_probe(
+        assert!(!should_kill_linux_process_group(
             identity,
             Err(io::ErrorKind::NotFound.into()),
-            || true,
         ));
     }
 
@@ -684,14 +631,13 @@ mod tests {
             leader_session_id: None,
         };
 
-        assert!(!should_kill_linux_process_group_with_group_probe(
+        assert!(!should_kill_linux_process_group(
             identity,
             Ok(LinuxProcessIdentity {
                 process_group_id: 31337,
                 session_id: 7,
                 start_ticks: 22,
             }),
-            || true,
         ));
     }
 
@@ -704,19 +650,18 @@ mod tests {
             leader_session_id: Some(7),
         };
 
-        assert!(!should_kill_linux_process_group_with_group_probe(
+        assert!(!should_kill_linux_process_group(
             identity,
             Ok(LinuxProcessIdentity {
                 process_group_id: 31337,
                 session_id: 99,
                 start_ticks: 11,
             }),
-            || true,
         ));
     }
 
     #[test]
-    fn leader_exit_after_capture_still_allows_killing_surviving_linux_process_group() {
+    fn leader_exit_after_capture_fails_closed() {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
             process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
@@ -724,10 +669,9 @@ mod tests {
             leader_session_id: Some(7),
         };
 
-        assert!(should_kill_linux_process_group_with_group_probe(
+        assert!(!should_kill_linux_process_group(
             identity,
             Err(io::ErrorKind::NotFound.into()),
-            || true,
         ));
     }
 
@@ -833,74 +777,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cleanup_kills_orphaned_process_group_when_leader_exits_after_capture() -> io::Result<()>
-    {
-        let dir = tempfile::tempdir()?;
-        let shell_pid_file = dir.path().join("shell.pid");
-        let bg_pid_file = dir.path().join("background.pid");
-        let script = format!(
-            "echo $$ > '{shell}'; sleep 30 & echo $! > '{background}'; sleep 0.2; exit 0",
-            shell = shell_pid_file.display(),
-            background = bg_pid_file.display()
-        );
-
-        let mut command = tokio::process::Command::new("sh");
-        command
-            .arg("-c")
-            .arg(script)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        configure_command_for_process_tree(&mut command);
-
-        let mut child = command.spawn()?;
-        let mut cleanup = ProcessTreeCleanup::new(&child)?;
-        let shell_pid = wait_for_pid(&shell_pid_file)
-            .await
-            .expect("shell pid file should be written");
-        let bg_pid = wait_for_pid(&bg_pid_file)
-            .await
-            .expect("background pid file should be written");
-
-        let mut leader_exited = false;
-        for _ in 0..1000 {
-            if process_terminated_or_zombie(shell_pid) {
-                leader_exited = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(
-            leader_exited,
-            "shell leader should exit after cleanup capture"
-        );
-
-        assert_eq!(
-            cleanup.start_termination(),
-            CleanupDisposition::DirectChildKillRequired
-        );
-        cleanup.kill_tree();
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-
-        let mut gone = false;
-        for _ in 0..1000 {
-            if process_terminated_or_zombie(bg_pid) {
-                gone = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        assert!(
-            gone,
-            "linux cleanup should still kill orphaned process groups when the leader exits after capture"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cleanup_kills_child_process_group_even_if_leader_dies_before_kill_tree()
+    async fn cleanup_does_not_kill_child_process_group_after_leader_dies_before_kill_tree()
     -> io::Result<()> {
         let dir = tempfile::tempdir()?;
         let pid_file = dir.path().join("background.pid");
@@ -929,18 +806,22 @@ mod tests {
         let _ = child.wait().await;
         cleanup.kill_tree();
 
-        let mut gone = false;
-        for _ in 0..1000 {
+        let mut alive = true;
+        for _ in 0..100 {
             if process_terminated_or_zombie(pid) {
-                gone = true;
+                alive = false;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
         assert!(
-            gone,
-            "background process group should still be terminated after the leader dies before kill_tree"
+            alive,
+            "cleanup must fail closed when the leader is already gone before kill_tree"
+        );
+        let _ = kill_process(
+            Pid::from_raw(pid as i32).expect("background pid should fit i32"),
+            Signal::KILL,
         );
         Ok(())
     }

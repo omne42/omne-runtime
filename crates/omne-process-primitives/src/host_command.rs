@@ -447,7 +447,12 @@ fn spawn_and_capture_output(
     command.stdout(Stdio::from(stdout_writer));
     command.stderr(Stdio::from(stderr_writer));
     let mut child = command.spawn().map_err(CommandOutputError::Spawn)?;
-    let status = match wait_for_child(&mut child, options.timeout) {
+    let status = match wait_for_child(
+        &mut child,
+        options.timeout,
+        &stdout_capture,
+        &stderr_capture,
+    ) {
         Ok(status) => status,
         Err(CommandOutputError::TimedOut {
             timeout,
@@ -486,43 +491,84 @@ fn create_output_capture_file() -> io::Result<(File, File)> {
 fn wait_for_child(
     child: &mut std::process::Child,
     timeout: Option<Duration>,
-) -> Result<std::process::ExitStatus, CommandOutputError> {
-    match timeout {
-        None => child.wait().map_err(CommandOutputError::Spawn),
-        Some(timeout) => wait_for_child_with_timeout(child, timeout),
-    }
-}
-
-fn wait_for_child_with_timeout(
-    child: &mut std::process::Child,
-    timeout: Duration,
+    stdout_capture: &File,
+    stderr_capture: &File,
 ) -> Result<std::process::ExitStatus, CommandOutputError> {
     const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-    let deadline = Instant::now() + timeout;
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
-            Ok(None) => {
-                let _ = child.kill();
-                let status = child.wait().map_err(|source| {
-                    CommandOutputError::Spawn(io::Error::other(format!(
-                        "timed out after {timeout:?} and wait failed: {source}"
-                    )))
-                })?;
-                return Err(CommandOutputError::TimedOut {
-                    timeout,
-                    output: Output {
-                        status,
-                        stdout: Vec::new(),
-                        stderr: Vec::new(),
-                    },
-                });
-            }
+            Ok(None) => {}
             Err(source) => return Err(CommandOutputError::Spawn(source)),
         }
+
+        if let Some(stream_name) = capture_limit_exceeded(stdout_capture, stderr_capture)
+            .map_err(CommandOutputError::Spawn)?
+        {
+            terminate_child_after_capture_limit(child, stream_name)?;
+            return Err(CommandOutputError::Capture(capture_limit_error(
+                stream_name,
+            )));
+        }
+
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            let timeout = timeout.expect("deadline implies timeout");
+            let _ = child.kill();
+            let status = child.wait().map_err(|source| {
+                CommandOutputError::Spawn(io::Error::other(format!(
+                    "timed out after {timeout:?} and wait failed: {source}"
+                )))
+            })?;
+            return Err(CommandOutputError::TimedOut {
+                timeout,
+                output: Output {
+                    status,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                },
+            });
+        }
+
+        std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+fn capture_limit_exceeded(
+    stdout_capture: &File,
+    stderr_capture: &File,
+) -> io::Result<Option<&'static str>> {
+    if capture_file_exceeded_limit(stdout_capture)? {
+        return Ok(Some("stdout"));
+    }
+    if capture_file_exceeded_limit(stderr_capture)? {
+        return Ok(Some("stderr"));
+    }
+    Ok(None)
+}
+
+fn capture_file_exceeded_limit(capture: &File) -> io::Result<bool> {
+    Ok(capture.metadata()?.len() > MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM as u64)
+}
+
+fn terminate_child_after_capture_limit(
+    child: &mut std::process::Child,
+    stream_name: &'static str,
+) -> Result<(), CommandOutputError> {
+    let _ = child.kill();
+    child.wait().map_err(|source| {
+        CommandOutputError::Spawn(io::Error::other(format!(
+            "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes and wait failed: {source}"
+        )))
+    })?;
+    Ok(())
+}
+
+fn capture_limit_error(stream_name: &'static str) -> io::Error {
+    io::Error::other(format!(
+        "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
+    ))
 }
 
 fn read_captured_output(mut capture: File, stream_name: &'static str) -> io::Result<Vec<u8>> {
@@ -550,9 +596,7 @@ where
         }
     }
     if exceeded_capture_limit {
-        return Err(io::Error::other(format!(
-            "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
-        )));
+        return Err(capture_limit_error(stream_name));
     }
     Ok(bytes)
 }
@@ -833,7 +877,7 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
     #[cfg(unix)]
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[cfg(unix)]
     use super::command_available_os;
@@ -1291,6 +1335,37 @@ mod tests {
         };
 
         let err = run_host_command(&request).expect_err("oversized stdout should fail");
+        match err {
+            HostCommandError::CaptureFailed { source, .. } => {
+                assert!(
+                    source.to_string().contains("stdout exceeded capture limit"),
+                    "unexpected error: {source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_host_command_fails_fast_when_stdout_exceeds_limit_before_exit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_oversized_stdout_then_sleep_command(temp.path(), "very-loud-slow");
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let started = Instant::now();
+        let err = run_host_command(&request).expect_err("oversized stdout should fail");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "capture overflow should terminate the child instead of waiting for normal exit"
+        );
         match err {
             HostCommandError::CaptureFailed { source, .. } => {
                 assert!(
@@ -1861,6 +1936,14 @@ mod tests {
     #[cfg(unix)]
     fn write_very_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
         write_payload_cat_command(dir, name, "stdout", 32 * 1024 * 1024)
+    }
+
+    #[cfg(unix)]
+    fn write_oversized_stdout_then_sleep_command(dir: &Path, name: &str) -> PathBuf {
+        let payload_path = dir.join(format!("{name}.payload"));
+        std::fs::write(&payload_path, vec![b'x'; 8 * 1024 * 1024 + 1]).expect("write payload");
+        let payload = shell_quote_path(&payload_path);
+        write_shell_executable(dir, name, &format!("cat {payload}\nsleep 5\n"))
     }
 
     #[cfg(unix)]

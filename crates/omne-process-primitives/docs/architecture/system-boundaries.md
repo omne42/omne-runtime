@@ -10,7 +10,7 @@
 - `resolve_command_path*` 这类 probe helper 对 `./tool`、`subdir/tool` 只按显式路径解释，
   不会继续把它们拿去扫描 `PATH`，以保持与 shell/`exec` 一致的命令解析契约。
 - 对宿主命令 request/recipe 维持 `OsStr` / `OsString` 边界，不把 argv/env 先强制收窄成 UTF-8 `String`。
-- 运行宿主机命令并捕获输出；捕获实现以临时文件为边界，因此 direct child 退出后不会再被继续持有 stdout/stderr 的后台后代进程永久卡住；当 stdout/stderr 超过上限时，仍在读取完整捕获后返回超限错误。
+- 运行宿主机命令并捕获输出；捕获实现以临时文件为边界，因此 direct child 退出后不会再被继续持有 stdout/stderr 的后台后代进程永久卡住；当 stdout/stderr 超过上限且 direct child 仍在运行时，会先 best-effort 终止 child，再返回超限错误。
 - 在调用方显式声明时，对宿主机命令执行应用 request-scoped env removal 和 hard timeout；timeout 命中后会 best-effort 终止 direct child，并把已捕获的 bounded stdout/stderr 一并回传给上层。
 - 把“命令根本没能启动”与“命令已执行但输出采集失败”区分成不同错误面，避免把 capture-limit/读取失败错误错误归类成 `SpawnFailed`。
 - 把“命令超时被终止”与“命令启动失败/输出采集失败”继续分开建模，避免调用方只能从字符串猜测 timeout。
@@ -29,7 +29,7 @@
 - 配置子进程以支持进程树清理；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
 - 捕获进程树清理标识并执行 best-effort 终止。
 - Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 descendant sweep。
-- Unix 上一旦无法重新验证原始 leader 身份，默认停止继续对该 process-group 做 `killpg`；Linux 只有在 cleanup capture 时已经成功绑定过 leader 的 `/proc` 身份、且之后确认原 leader 已真实退出时，才会通过 `/proc` 回扫同 session 的残留成员来清理 orphan descendants。非 Linux Unix 因为当前没有同等级的 leader lifetime 重验能力，所以直接跳过 process-group `killpg`，只保留 direct child kill-on-drop / direct child kill 这层 fail-closed 行为。对“cleanup 时 leader PID 已被复用成另一个活进程”或“leader 在 cleanup capture 前就已退出，导致无法再绑定 `/proc` 身份”这两类情况，本 crate 都会继续 fail closed。leader 的 process-group id、`start_ticks` 和 `session_id` 也必须来自同一次 `/proc/<pid>/stat` 读取，避免把不同进程生命周期的字段拼成伪身份。
+- Unix 上一旦无法重新验证原始 leader 身份，默认停止继续对该 process-group 做 `killpg`；Linux 不再在 leader 退出后仅凭 surviving group members 做 orphan cleanup，而是要求 cleanup 时仍能重验到原 leader 的 `/proc` 身份。非 Linux Unix 因为当前没有同等级的 leader lifetime 重验能力，所以直接跳过 process-group `killpg`，只保留 direct child kill-on-drop / direct child kill 这层 fail-closed 行为。对“cleanup 时 leader PID 已被复用成另一个活进程”“leader 在 cleanup capture 前就已退出，导致无法再绑定 `/proc` 身份”以及“cleanup 时原 leader 已退出、无法继续重验原身份”这几类情况，本 crate 都会继续 fail closed。leader 的 process-group id、`start_ticks` 和 `session_id` 也必须来自同一次 `/proc/<pid>/stat` 读取，避免把不同进程生命周期的字段拼成伪身份。
 
 ## 不负责什么
 
