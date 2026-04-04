@@ -712,9 +712,11 @@ mod recursive_delete_commit_tests {
         let inserted = Arc::new(AtomicBool::new(false));
         let inserted_bg = Arc::clone(&inserted);
         let target = dir.path().join("sub");
-        let target_for_hook = target.clone();
+        let target_for_hook =
+            std::fs::canonicalize(&target).unwrap_or_else(|_| target.to_path_buf());
         install_recursive_delete_hook(Box::new(move |path| {
-            if path == target_for_hook && !inserted_bg.swap(true, Ordering::SeqCst) {
+            let hook_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            if hook_path == target_for_hook && !inserted_bg.swap(true, Ordering::SeqCst) {
                 std::fs::create_dir_all(path.join("secrets")).expect("mkdir secrets");
                 std::fs::write(path.join("secrets").join("token.txt"), "secret")
                     .expect("write secret");
