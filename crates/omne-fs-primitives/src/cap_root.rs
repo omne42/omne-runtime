@@ -196,13 +196,13 @@ pub fn open_regular_file_at(directory: &Dir, component: &Path) -> io::Result<Fil
     let file = match directory.open_with(component, &options) {
         Ok(file) => file,
         Err(error) => {
-            if let Ok(metadata) = directory.symlink_metadata(component)
-                && !metadata.is_file()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "target file must be a regular file",
-                ));
+            if let Ok(metadata) = directory.symlink_metadata(component) {
+                if !metadata.is_file() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "target file must be a regular file",
+                    ));
+                }
             }
             return Err(error);
         }
