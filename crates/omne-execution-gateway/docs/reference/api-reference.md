@@ -167,10 +167,17 @@ check for requests that declare `declared_mutation = false`.
 - `WorkspaceRootInvalid { path }`
 - `CwdInvalid { cwd, detail }`
 - `CwdOutsideWorkspace { cwd, workspace_root }`
+- `RelativeProgramPath { program }`
+- `ProgramPathInvalid { path, detail }`
 - `ProgramLookupFailed { program, detail }`
 - `MutationDeclarationRequired`
+- `PathIdentityUnavailable { kind, path }`
+- `RequestPathChanged { kind, path, detail }`
 - `PolicyDefaultIsolationMismatch { requested, policy_default }`
 - `PreparedCommandMismatch { .. }`
 - `Sandbox(String)`
 - `PolicyDenied(String)`
+- `AuditLogUnavailable { path, detail }`
+- `AuditLogWriteFailed { path, detail }`
+- `AuditLogWriteFailedAfterExecutionError { path, detail, execution_error }`
 - `Spawn(io::Error)`
