@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::audit::ExecEvent;
 use crate::error::{ExecError, ExecResult};
+use crate::path_guard::ensure_existing_ancestors_are_real_directories;
 
 const APPENDABLE_OPEN_NOT_FOUND_RETRIES: usize = 4;
 
@@ -71,6 +72,12 @@ impl AuditLogger {
     }
 
     pub(crate) fn validate_ready_without_side_effects(&self) -> ExecResult<()> {
+        ensure_existing_ancestors_are_real_directories(&self.path).map_err(|err| {
+            ExecError::AuditLogUnavailable {
+                path: self.path.clone(),
+                detail: err.to_string(),
+            }
+        })?;
         validate_appendable_regular_file_in_ambient_root(&self.path, "audit log").map_err(|err| {
             ExecError::AuditLogUnavailable {
                 path: self.path.clone(),
@@ -89,6 +96,7 @@ impl AuditLogger {
     }
 
     fn try_open_sink(&self) -> Result<PreparedAuditSink, Box<dyn std::error::Error>> {
+        ensure_existing_ancestors_are_real_directories(&self.path)?;
         let mut last_not_found = None;
         for attempt in 0..APPENDABLE_OPEN_NOT_FOUND_RETRIES {
             match open_appendable_regular_file_in_ambient_root(&self.path, "audit log") {
@@ -475,6 +483,28 @@ mod tests {
         let err = logger
             .ensure_ready()
             .expect_err("audit path with symlink ancestor must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_ready_rejects_symlink_ancestor_when_nested_directory_exists() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_test_root(&dir);
+        let target_parent = root.join("real-parent");
+        fs::create_dir_all(target_parent.join("existing")).expect("create target parent");
+        let symlink_parent = root.join("linked-parent");
+        symlink(&target_parent, &symlink_parent).expect("create parent symlink");
+        let audit_path = symlink_parent.join("existing").join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .ensure_ready()
+            .expect_err("audit path with existing symlink ancestor must fail");
 
         match err {
             ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
