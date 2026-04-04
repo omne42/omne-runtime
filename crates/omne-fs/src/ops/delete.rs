@@ -61,7 +61,7 @@ fn ensure_recursive_delete_allows_descendants(
     let max_walk = ctx.policy.limits.max_walk_ms.map(Duration::from_millis);
     let started = Instant::now();
     let mut scanned_entries: u64 = 0;
-    delete_directory_checked(
+    scan_directory_descendants(
         ctx,
         target_abs,
         target_relative,
@@ -71,6 +71,69 @@ fn ensure_recursive_delete_allows_descendants(
         max_walk_entries,
         &mut scanned_entries,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_directory_descendants(
+    ctx: &Context,
+    dir_abs: &Path,
+    dir_relative: &Path,
+    ignore_missing: bool,
+    started: &Instant,
+    max_walk: Option<Duration>,
+    max_walk_entries: u64,
+    scanned_entries: &mut u64,
+) -> Result<()> {
+    ensure_recursive_delete_scan_within_budget(
+        dir_relative,
+        *scanned_entries,
+        max_walk_entries,
+        started,
+        max_walk,
+    )?;
+    let entries = match fs::read_dir(dir_abs) {
+        Ok(entries) => entries,
+        Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(());
+        }
+        Err(err) => return Err(Error::io_path("read_dir", dir_relative, err)),
+    };
+
+    for entry in entries {
+        *scanned_entries = scanned_entries.saturating_add(1);
+        ensure_recursive_delete_scan_within_budget(
+            dir_relative,
+            *scanned_entries,
+            max_walk_entries,
+            started,
+            max_walk,
+        )?;
+        let entry = entry.map_err(|err| Error::io_path("read_dir", dir_relative, err))?;
+        let child_name = entry.file_name();
+        let child_relative = dir_relative.join(&child_name);
+        if ctx.redactor.is_path_denied(&child_relative) {
+            return Err(Error::SecretPathDenied(child_relative));
+        }
+
+        if entry
+            .file_type()
+            .map_err(|err| Error::io_path("file_type", &child_relative, err))?
+            .is_dir()
+        {
+            scan_directory_descendants(
+                ctx,
+                &dir_abs.join(&child_name),
+                &child_relative,
+                ignore_missing,
+                started,
+                max_walk,
+                max_walk_entries,
+                scanned_entries,
+            )?;
+        }
+    }
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -542,6 +605,21 @@ pub fn delete(ctx: &Context, request: DeleteRequest) -> Result<DeleteResponse> {
             &target,
             &relative,
             request.ignore_missing,
+        )?;
+        let started = Instant::now();
+        let max_walk = ctx.policy.limits.max_walk_ms.map(Duration::from_millis);
+        let max_walk_entries =
+            u64::try_from(ctx.policy.limits.max_walk_entries).unwrap_or(u64::MAX);
+        let mut scanned_entries: u64 = 0;
+        delete_directory_checked(
+            ctx,
+            &target,
+            &relative,
+            request.ignore_missing,
+            &started,
+            max_walk,
+            max_walk_entries,
+            &mut scanned_entries,
         )?;
     } else {
         if let Some(response) = ensure_parent_stable_or_missing()? {
