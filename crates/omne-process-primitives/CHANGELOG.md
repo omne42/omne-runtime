@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- stop `resolve_command_path*` helpers from reinterpreting explicit relative paths through `PATH`;
+  commands such as `./tool` and `subdir/tool` now resolve only as explicit paths, matching
+  shell/`exec` semantics and keeping probe APIs aligned with execution
 - add request-scoped host-command controls for env removal and hard timeouts without changing the default `run_host_command` / `run_host_recipe` surface; timeout failures now return bounded captured stdout/stderr instead of forcing callers to reimplement subprocess supervision
 - drop all request env at the sudo privilege boundary instead of reapplying non-`PATH` entries inside the elevated target process; direct execution still preserves request env semantics, but privileged package-manager runs no longer inherit caller-controlled loader/runtime variables under root
 - classify post-spawn stdout/stderr collection failures as `HostCommandError::CaptureFailed` instead of `SpawnFailed`, so callers can distinguish startup failures from output-capture failures
@@ -28,3 +31,5 @@
 - add regression coverage that locks sudo bare-command resolution to trusted host paths and proves daemonized descendants holding `stderr` cannot keep `run_host_command` blocked
 - capture the Linux process-group id and leader identity from a single `/proc/<pid>/stat` snapshot so cleanup never combines `pgid`, `start_ticks`, or `session_id` from different process lifetimes
 - stop trusting ambient `PATH` for `sudo`, `env`, and auto-sudo package-manager target resolution; control-plane binaries now bind only to trusted standard install locations while direct bare commands still honor request-scoped `PATH`
+- make non-Linux Unix process-group cleanup fail closed by skipping `killpg` when the crate
+  cannot revalidate the original leader lifetime with Linux-style evidence

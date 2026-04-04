@@ -12,6 +12,8 @@ Low-level host-command and process-tree primitives shared across callers.
 ## Scope
 
 - host command discovery, including `OsStr`-friendly probe/resolve helpers
+- explicit-path command discovery that treats `./tool` and `subdir/tool` as explicit paths instead
+  of continuing to search `PATH`, matching shell/`exec` semantics for probe helpers
 - request-scoped command probes that honor request `PATH` overrides for bare direct commands without changing caller-cwd semantics for explicit relative program paths
 - `command_available*` probes that keep the same spawnable contract as execution and do not report non-executable files as available
 - host command execution with captured output that returns after the direct child exits even if daemonized descendants keep inherited stdout/stderr open
@@ -32,7 +34,8 @@ Low-level host-command and process-tree primitives shared across callers.
 - Windows `taskkill` cleanup that waits for command success before skipping descendant fallback
 - Unix process-group cleanup that fails closed once the captured leader PID has been reused by a
   different live process, and on Linux also fails closed when the leader exits before cleanup can
-  still bind the original `/proc` identity; only leaders captured successfully may later reap
+  still bind the original `/proc` identity; non-Linux Unix skips `killpg` entirely because the
+  crate cannot revalidate leader lifetime with Linux-strength evidence there; only leaders captured successfully may later reap
   same-session orphaned descendants after the original leader has actually exited, and the
   captured process-group id, `start_ticks`, and `session_id` all come from the same
   `/proc/<pid>/stat` snapshot so cleanup never mixes fields from different process lifetimes
