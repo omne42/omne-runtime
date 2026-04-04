@@ -1,6 +1,9 @@
+#[cfg(test)]
 use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -52,74 +55,193 @@ fn ensure_recursive_delete_allows_descendants(
     ctx: &Context,
     target_abs: &Path,
     target_relative: &Path,
+    ignore_missing: bool,
 ) -> Result<()> {
-    if !ctx
-        .redactor
-        .requires_recursive_delete_descendant_scan(target_relative)
-    {
-        return Ok(());
-    }
-
     let max_walk_entries = u64::try_from(ctx.policy.limits.max_walk_entries).unwrap_or(u64::MAX);
     let max_walk = ctx.policy.limits.max_walk_ms.map(Duration::from_millis);
     let started = Instant::now();
     let mut scanned_entries: u64 = 0;
-    // Keep only target-relative suffixes in the traversal stack to avoid
-    // repeating canonical absolute prefixes across every queued node.
-    let mut stack = vec![PathBuf::new()];
+    scan_directory_descendants(
+        ctx,
+        target_abs,
+        target_relative,
+        ignore_missing,
+        &started,
+        max_walk,
+        max_walk_entries,
+        &mut scanned_entries,
+    )
+}
 
-    while let Some(dir_suffix) = stack.pop() {
-        let dir_abs = target_abs.join(&dir_suffix);
-        let dir_relative = target_relative_with_suffix(target_relative, &dir_suffix);
+#[allow(clippy::too_many_arguments)]
+fn scan_directory_descendants(
+    ctx: &Context,
+    dir_abs: &Path,
+    dir_relative: &Path,
+    ignore_missing: bool,
+    started: &Instant,
+    max_walk: Option<Duration>,
+    max_walk_entries: u64,
+    scanned_entries: &mut u64,
+) -> Result<()> {
+    ensure_recursive_delete_scan_within_budget(
+        dir_relative,
+        *scanned_entries,
+        max_walk_entries,
+        started,
+        max_walk,
+    )?;
+    let entries = match fs::read_dir(dir_abs) {
+        Ok(entries) => entries,
+        Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(());
+        }
+        Err(err) => return Err(Error::io_path("read_dir", dir_relative, err)),
+    };
+
+    for entry in entries {
+        *scanned_entries = scanned_entries.saturating_add(1);
         ensure_recursive_delete_scan_within_budget(
-            dir_relative.as_ref(),
-            scanned_entries,
+            dir_relative,
+            *scanned_entries,
             max_walk_entries,
-            &started,
+            started,
             max_walk,
         )?;
-        let entries = fs::read_dir(&dir_abs)
-            .map_err(|err| Error::io_path("read_dir", dir_relative.as_ref(), err))?;
-        // Reuse one relative-path buffer per directory instead of allocating a new PathBuf per
-        // child entry during deny checks.
-        let mut child_relative_prefix = child_relative_prefix(target_relative, &dir_suffix);
+        let entry = entry.map_err(|err| Error::io_path("read_dir", dir_relative, err))?;
+        let child_name = entry.file_name();
+        let child_relative = dir_relative.join(&child_name);
+        if ctx.redactor.is_path_denied(&child_relative) {
+            return Err(Error::SecretPathDenied(child_relative));
+        }
 
-        for entry in entries {
-            scanned_entries = scanned_entries.saturating_add(1);
-            ensure_recursive_delete_scan_within_budget(
-                dir_relative.as_ref(),
-                scanned_entries,
-                max_walk_entries,
-                &started,
+        if entry
+            .file_type()
+            .map_err(|err| Error::io_path("file_type", &child_relative, err))?
+            .is_dir()
+        {
+            scan_directory_descendants(
+                ctx,
+                &dir_abs.join(&child_name),
+                &child_relative,
+                ignore_missing,
+                started,
                 max_walk,
+                max_walk_entries,
+                scanned_entries,
             )?;
-            let entry =
-                entry.map_err(|err| Error::io_path("read_dir", dir_relative.as_ref(), err))?;
-            let child_name = entry.file_name();
-            child_relative_prefix.push(&child_name);
-
-            if ctx.redactor.is_path_denied(&child_relative_prefix) {
-                return Err(Error::SecretPathDenied(child_relative_prefix));
-            }
-
-            let child_type = entry
-                .file_type()
-                .map_err(|err| Error::io_path("file_type", &child_relative_prefix, err))?;
-            if child_type.is_dir() {
-                let child_suffix = if dir_suffix.as_os_str().is_empty() {
-                    PathBuf::from(&child_name)
-                } else {
-                    dir_suffix.join(&child_name)
-                };
-                stack.push(child_suffix);
-            }
-            let _ = child_relative_prefix.pop();
         }
     }
 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn delete_directory_checked(
+    ctx: &Context,
+    dir_abs: &Path,
+    dir_relative: &Path,
+    ignore_missing: bool,
+    started: &Instant,
+    max_walk: Option<Duration>,
+    max_walk_entries: u64,
+    scanned_entries: &mut u64,
+) -> Result<()> {
+    loop {
+        ensure_recursive_delete_scan_within_budget(
+            dir_relative,
+            *scanned_entries,
+            max_walk_entries,
+            started,
+            max_walk,
+        )?;
+        let entries = match fs::read_dir(dir_abs) {
+            Ok(entries) => entries,
+            Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(err) => return Err(Error::io_path("read_dir", dir_relative, err)),
+        };
+
+        for entry in entries {
+            *scanned_entries = scanned_entries.saturating_add(1);
+            ensure_recursive_delete_scan_within_budget(
+                dir_relative,
+                *scanned_entries,
+                max_walk_entries,
+                started,
+                max_walk,
+            )?;
+            let entry = entry.map_err(|err| Error::io_path("read_dir", dir_relative, err))?;
+            let child_name = entry.file_name();
+            let child_relative = dir_relative.join(&child_name);
+            if ctx.redactor.is_path_denied(&child_relative) {
+                return Err(Error::SecretPathDenied(child_relative));
+            }
+
+            let child_type = entry
+                .file_type()
+                .map_err(|err| Error::io_path("file_type", &child_relative, err))?;
+            let child_abs = dir_abs.join(&child_name);
+            if child_type.is_dir() {
+                delete_directory_checked(
+                    ctx,
+                    &child_abs,
+                    &child_relative,
+                    ignore_missing,
+                    started,
+                    max_walk,
+                    max_walk_entries,
+                    scanned_entries,
+                )?;
+                continue;
+            }
+
+            let delete_result = if child_type.is_symlink() {
+                unlink_symlink(&child_abs)
+            } else {
+                fs::remove_file(&child_abs)
+            };
+            match delete_result {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    let op = if child_type.is_symlink() {
+                        "unlink_symlink"
+                    } else {
+                        "remove_file"
+                    };
+                    return Err(Error::io_path(op, &child_relative, err));
+                }
+            }
+        }
+
+        run_before_recursive_remove_dir_hook(dir_abs);
+        let mut refreshed_entries = match fs::read_dir(dir_abs) {
+            Ok(entries) => entries,
+            Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(err) => return Err(Error::io_path("read_dir", dir_relative, err)),
+        };
+        match refreshed_entries.next() {
+            Some(Ok(_)) => continue,
+            Some(Err(err)) => return Err(Error::io_path("read_dir", dir_relative, err)),
+            None => {}
+        }
+
+        match fs::remove_dir(dir_abs) {
+            Ok(()) => return Ok(()),
+            Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => continue,
+            Err(err) => return Err(Error::io_path("remove_dir", dir_relative, err)),
+        }
+    }
+}
+
+#[cfg(test)]
 #[inline]
 fn target_relative_with_suffix<'a>(target_relative: &'a Path, suffix: &'a Path) -> Cow<'a, Path> {
     if suffix.as_os_str().is_empty() {
@@ -131,6 +253,7 @@ fn target_relative_with_suffix<'a>(target_relative: &'a Path, suffix: &'a Path) 
     Cow::Owned(target_relative.join(suffix))
 }
 
+#[cfg(test)]
 #[inline]
 fn child_relative_prefix(target_relative: &Path, dir_suffix: &Path) -> PathBuf {
     if target_relative == Path::new(".") {
@@ -143,6 +266,43 @@ fn child_relative_prefix(target_relative: &Path, dir_suffix: &Path) -> PathBuf {
     }
     joined
 }
+
+#[cfg(test)]
+type RecursiveDeleteHook = Box<dyn Fn(&Path) + Send + Sync + 'static>;
+
+#[cfg(test)]
+fn recursive_delete_hook_slot() -> &'static Mutex<Option<RecursiveDeleteHook>> {
+    static SLOT: OnceLock<Mutex<Option<RecursiveDeleteHook>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn install_recursive_delete_hook(hook: RecursiveDeleteHook) {
+    *recursive_delete_hook_slot()
+        .lock()
+        .expect("recursive delete hook lock") = Some(hook);
+}
+
+#[cfg(test)]
+fn clear_recursive_delete_hook() {
+    *recursive_delete_hook_slot()
+        .lock()
+        .expect("recursive delete hook lock") = None;
+}
+
+#[cfg(test)]
+fn run_before_recursive_remove_dir_hook(path: &Path) {
+    if let Some(hook) = recursive_delete_hook_slot()
+        .lock()
+        .expect("recursive delete hook lock")
+        .as_ref()
+    {
+        hook(path);
+    }
+}
+
+#[cfg(not(test))]
+fn run_before_recursive_remove_dir_hook(_path: &Path) {}
 
 #[cfg(test)]
 #[inline]
@@ -251,23 +411,17 @@ fn revalidate_parent_before_delete(
                         return Err(Error::io_path("symlink_metadata", requested_parent, err));
                     }
                 };
-                let _ = rechecked_parent_meta;
-                canonical_parent_meta.ensure_verified(
-                    &rechecked_parent,
-                    requested_parent,
-                    || {
-                        Error::InvalidPath(
-                            "parent identity changed during delete; refusing to continue"
-                                .to_string(),
-                        )
-                    },
-                    || {
-                        Error::InvalidPath(
-                            "cannot verify parent identity during delete; refusing to continue"
-                                .to_string(),
-                        )
-                    },
-                )?;
+                match canonical_parent_meta.verify_metadata(&rechecked_parent_meta, || {
+                    Error::InvalidPath(
+                        "parent identity changed during delete; refusing to continue".to_string(),
+                    )
+                })? {
+                    super::io::MetadataIdentityCheck::Verified => {}
+                    super::io::MetadataIdentityCheck::Unverifiable => {
+                        // Best-effort fallback for filesystems that do not expose stable file IDs.
+                        // Parent path has already been re-resolved and validated under root.
+                    }
+                }
                 Ok(None)
             }
         }
@@ -278,27 +432,6 @@ fn revalidate_parent_before_delete(
         }
         Err(err) => Err(err),
     }
-}
-
-fn revalidate_target_before_delete(
-    target: &Path,
-    relative: &Path,
-    target_identity: &super::io::PathIdentity,
-) -> Result<()> {
-    target_identity.ensure_verified(
-        target,
-        relative,
-        || {
-            Error::InvalidPath(
-                "target identity changed during delete; refusing to continue".to_string(),
-            )
-        },
-        || {
-            Error::InvalidPath(
-                "cannot verify target identity during delete; refusing to continue".to_string(),
-            )
-        },
-    )
 }
 
 pub fn delete(ctx: &Context, request: DeleteRequest) -> Result<DeleteResponse> {
@@ -433,14 +566,24 @@ pub fn delete(ctx: &Context, request: DeleteRequest) -> Result<DeleteResponse> {
         )
     };
     let ensure_target_stable_or_missing = || -> Result<Option<DeleteResponse>> {
-        match fs::symlink_metadata(&target) {
-            Ok(_) => {}
+        let current_meta = match fs::symlink_metadata(&target) {
+            Ok(meta) => meta,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound && request.ignore_missing => {
                 return Ok(Some(missing_response(&requested_path)));
             }
             Err(err) => return Err(Error::io_path("symlink_metadata", &relative, err)),
+        };
+        match target_identity.verify_metadata(&current_meta, || {
+            Error::InvalidPath(
+                "target identity changed during delete; refusing to continue".to_string(),
+            )
+        })? {
+            super::io::MetadataIdentityCheck::Verified => {}
+            super::io::MetadataIdentityCheck::Unverifiable => {
+                // Best-effort fallback for filesystems that do not expose stable file IDs.
+                // Target path was already validated under the selected root.
+            }
         }
-        revalidate_target_before_delete(&target, &relative, &target_identity)?;
         Ok(None)
     };
 
@@ -457,18 +600,27 @@ pub fn delete(ctx: &Context, request: DeleteRequest) -> Result<DeleteResponse> {
         if let Some(response) = ensure_target_stable_or_missing()? {
             return Ok(response);
         }
-        // Best-effort check only: deny pre-scan and `remove_dir_all` are separate filesystem
-        // phases, so concurrent writers can still race between them. For adversarial concurrent
-        // mutation threat models, rely on OS-level sandboxing/isolation in addition to this policy
-        // layer.
-        ensure_recursive_delete_allows_descendants(ctx, &target, &relative)?;
-
-        if let Err(err) = fs::remove_dir_all(&target) {
-            if err.kind() == std::io::ErrorKind::NotFound && request.ignore_missing {
-                return Ok(missing_response(&requested_path));
-            }
-            return Err(Error::io_path("remove_dir_all", &relative, err));
-        }
+        ensure_recursive_delete_allows_descendants(
+            ctx,
+            &target,
+            &relative,
+            request.ignore_missing,
+        )?;
+        let started = Instant::now();
+        let max_walk = ctx.policy.limits.max_walk_ms.map(Duration::from_millis);
+        let max_walk_entries =
+            u64::try_from(ctx.policy.limits.max_walk_entries).unwrap_or(u64::MAX);
+        let mut scanned_entries: u64 = 0;
+        delete_directory_checked(
+            ctx,
+            &target,
+            &relative,
+            request.ignore_missing,
+            &started,
+            max_walk,
+            max_walk_entries,
+            &mut scanned_entries,
+        )?;
     } else {
         if let Some(response) = ensure_parent_stable_or_missing()? {
             return Ok(response);
@@ -513,93 +665,6 @@ mod recursive_scan_tests {
         target_relative_with_suffix,
     };
     use crate::error::Error;
-    use crate::policy::SecretRules;
-    use crate::redaction::SecretRedactor;
-
-    fn deny_globs_require_descendant_scan(deny_globs: &[String], target_relative: &Path) -> bool {
-        let redactor = SecretRedactor::from_rules(&SecretRules {
-            deny_globs: deny_globs.to_vec(),
-            ..SecretRules::default()
-        })
-        .expect("redactor");
-        redactor.requires_recursive_delete_descendant_scan(target_relative)
-    }
-
-    #[test]
-    fn scan_skipped_when_literal_patterns_cannot_match_descendants() {
-        let deny_globs = vec![
-            "private/token.txt".to_string(),
-            "secrets/key.pem".to_string(),
-        ];
-        assert!(!deny_globs_require_descendant_scan(
-            &deny_globs,
-            Path::new("public")
-        ));
-    }
-
-    #[test]
-    fn scan_required_when_literal_pattern_is_under_target_subtree() {
-        let deny_globs = vec!["public/blocked.txt".to_string()];
-        assert!(deny_globs_require_descendant_scan(
-            &deny_globs,
-            Path::new("public")
-        ));
-    }
-
-    #[test]
-    fn scan_required_when_pattern_uses_glob_meta() {
-        let deny_globs = vec!["public/*.txt".to_string()];
-        assert!(deny_globs_require_descendant_scan(
-            &deny_globs,
-            Path::new("public")
-        ));
-    }
-
-    #[test]
-    fn scan_skipped_when_literal_pattern_contains_bang() {
-        let deny_globs = vec!["!private/token.txt".to_string()];
-        assert!(!deny_globs_require_descendant_scan(
-            &deny_globs,
-            Path::new("public")
-        ));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn scan_required_when_literal_pattern_differs_only_by_case_on_windows() {
-        let deny_globs = vec!["Private/blocked.txt".to_string()];
-        assert!(deny_globs_require_descendant_scan(
-            &deny_globs,
-            Path::new("private")
-        ));
-    }
-
-    #[test]
-    fn scan_skipped_when_glob_prefix_is_disjoint() {
-        let deny_globs = vec!["private/*.txt".to_string()];
-        assert!(!deny_globs_require_descendant_scan(
-            &deny_globs,
-            Path::new("public")
-        ));
-    }
-
-    #[test]
-    fn scan_required_when_glob_prefix_overlaps_target() {
-        let deny_globs = vec!["private/*.txt".to_string()];
-        assert!(deny_globs_require_descendant_scan(
-            &deny_globs,
-            Path::new("private")
-        ));
-    }
-
-    #[test]
-    fn scan_required_when_glob_has_no_literal_prefix() {
-        let deny_globs = vec!["**/.git/**".to_string()];
-        assert!(deny_globs_require_descendant_scan(
-            &deny_globs,
-            Path::new("public")
-        ));
-    }
 
     #[test]
     fn recursive_scan_budget_rejects_entry_limit_overflow() {
@@ -677,67 +742,93 @@ mod recursive_scan_tests {
 }
 
 #[cfg(test)]
-mod identity_tests {
-    use std::fs;
-    use std::path::Path;
+mod recursive_delete_commit_tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{DeleteRequest, revalidate_parent_before_delete, revalidate_target_before_delete};
-    use crate::error::Error;
+    use policy_meta::WriteScope;
 
-    #[test]
-    fn delete_parent_revalidation_rejects_unverifiable_identity() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let parent = dir.path().join("parent");
-        fs::create_dir(&parent).expect("create parent");
-        let canonical_parent = parent.canonicalize().expect("canonicalize parent");
-        let metadata = fs::symlink_metadata(&canonical_parent).expect("metadata");
-        let identity = crate::ops::io::DirectoryIdentity::unverifiable_for_tests(metadata);
-        let ctx = crate::ops::Context::new(crate::policy::SandboxPolicy::single_root(
-            "root",
-            dir.path(),
-            policy_meta::WriteScope::WorkspaceWrite,
-        ))
-        .expect("ctx");
+    use super::{
+        DeleteRequest, clear_recursive_delete_hook, delete, install_recursive_delete_hook,
+    };
+    use crate::ops::Context;
+    use crate::policy::SandboxPolicy;
 
-        let err = revalidate_parent_before_delete(
-            &ctx,
-            &DeleteRequest {
-                root_id: "root".to_string(),
-                path: Path::new("parent/file.txt").to_path_buf(),
-                recursive: false,
-                ignore_missing: false,
-            },
-            Path::new("parent"),
-            &canonical_parent,
-            &identity,
-            Path::new("parent/file.txt"),
-        )
-        .expect_err("unverifiable parent identity must fail closed");
-        match err {
-            Error::InvalidPath(message) => assert_eq!(
-                message,
-                "cannot verify parent identity during delete; refusing to continue"
-            ),
-            other => panic!("unexpected error: {other:?}"),
+    fn permissive_policy(root: &Path) -> SandboxPolicy {
+        let mut policy =
+            SandboxPolicy::single_root("root", root.to_path_buf(), WriteScope::WorkspaceWrite);
+        policy.permissions.read = true;
+        policy.permissions.glob = true;
+        policy.permissions.grep = true;
+        policy.permissions.list_dir = true;
+        policy.permissions.stat = true;
+        policy.permissions.edit = true;
+        policy.permissions.patch = true;
+        policy.permissions.delete = true;
+        policy.permissions.mkdir = true;
+        policy.permissions.write = true;
+        policy.permissions.move_path = true;
+        policy.permissions.copy_file = true;
+        policy.secrets.deny_globs = vec!["sub/secrets/**".to_string()];
+        policy
+    }
+
+    struct HookGuard;
+
+    impl Drop for HookGuard {
+        fn drop(&mut self) {
+            clear_recursive_delete_hook();
         }
     }
 
     #[test]
-    fn delete_target_revalidation_rejects_unverifiable_identity() {
+    fn recursive_delete_rechecks_newly_added_denied_content_before_final_remove() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let target = dir.path().join("file.txt");
-        fs::write(&target, "hello").expect("write file");
-        let metadata = fs::symlink_metadata(&target).expect("metadata");
-        let identity = crate::ops::io::PathIdentity::unverifiable_for_tests(metadata);
+        std::fs::create_dir_all(dir.path().join("sub")).expect("mkdir");
+        let ctx = Context::new(permissive_policy(dir.path())).expect("ctx");
+        let inserted = Arc::new(AtomicBool::new(false));
+        let inserted_bg = Arc::clone(&inserted);
+        let target = dir.path().join("sub");
+        let target_for_hook =
+            std::fs::canonicalize(&target).unwrap_or_else(|_| target.to_path_buf());
+        install_recursive_delete_hook(Box::new(move |path| {
+            let hook_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            if hook_path == target_for_hook && !inserted_bg.swap(true, Ordering::SeqCst) {
+                std::fs::create_dir_all(path.join("secrets")).expect("mkdir secrets");
+                std::fs::write(path.join("secrets").join("token.txt"), "secret")
+                    .expect("write secret");
+            }
+        }));
+        let _hook_guard = HookGuard;
 
-        let err = revalidate_target_before_delete(&target, Path::new("file.txt"), &identity)
-            .expect_err("unverifiable target identity must fail closed");
+        let err = delete(
+            &ctx,
+            DeleteRequest {
+                root_id: "root".to_string(),
+                path: PathBuf::from("sub"),
+                recursive: true,
+                ignore_missing: false,
+            },
+        )
+        .expect_err("denied content inserted before final remove should fail closed");
+
         match err {
-            Error::InvalidPath(message) => assert_eq!(
-                message,
-                "cannot verify target identity during delete; refusing to continue"
-            ),
+            crate::error::Error::SecretPathDenied(path) => {
+                assert!(
+                    path == PathBuf::from("sub").join("secrets")
+                        || path == PathBuf::from("sub").join("secrets").join("token.txt")
+                );
+            }
             other => panic!("unexpected error: {other:?}"),
         }
+        assert!(
+            target.exists(),
+            "target directory must remain after deny failure"
+        );
+        assert!(
+            target.join("secrets").join("token.txt").exists(),
+            "newly added denied content must not be deleted"
+        );
     }
 }

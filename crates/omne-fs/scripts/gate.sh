@@ -38,11 +38,8 @@ echo "gate: rust (fmt/check/clippy/test)" >&2
   # Note: `--workspace --no-default-features` is not enough here because workspace members can
   # enable features on each other (feature unification). Check the library crate explicitly.
   cargo check --locked -p "$core_crate" --all-targets --no-default-features
-  cargo check --locked -p "$core_crate" --all-targets --features git-permissions
   cargo clippy --locked --workspace --all-targets -- -D warnings
   cargo clippy --locked -p "$core_crate" --all-targets --no-default-features -- -D warnings
-  cargo clippy --locked -p "$core_crate" --all-targets --features git-permissions -- -D warnings
   cargo test --locked --workspace
   cargo test --locked -p "$core_crate" --no-default-features
-  cargo test --locked -p "$core_crate" --features git-permissions
 )

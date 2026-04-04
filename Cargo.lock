@@ -487,14 +487,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "error-kit"
-version = "0.1.0"
-dependencies = [
- "structured-text-kit",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -771,7 +763,6 @@ name = "http-kit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "error-kit",
  "reqwest",
  "serde",
  "serde_json",
@@ -1225,7 +1216,7 @@ dependencies = [
 name = "omne-artifact-install-primitives"
 version = "0.1.0"
 dependencies = [
- "cap-std",
+ "flate2",
  "http-kit",
  "omne-archive-primitives",
  "omne-fs-primitives",
@@ -1234,6 +1225,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "xz2",
  "zip",
 ]
 
@@ -1264,7 +1256,6 @@ dependencies = [
  "libc",
  "memchr",
  "omne-fs-primitives",
- "omne-process-primitives",
  "policy-meta",
  "regex",
  "same-file",
@@ -1942,13 +1933,6 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
-
-[[package]]
-name = "structured-text-kit"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "subtle"
