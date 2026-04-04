@@ -154,6 +154,19 @@ fn delete_directory_checked(
         }
 
         run_before_recursive_remove_dir_hook(dir_abs);
+        let mut refreshed_entries = match fs::read_dir(dir_abs) {
+            Ok(entries) => entries,
+            Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(err) => return Err(Error::io_path("read_dir", dir_relative, err)),
+        };
+        match refreshed_entries.next() {
+            Some(Ok(_)) => continue,
+            Some(Err(err)) => return Err(Error::io_path("read_dir", dir_relative, err)),
+            None => {}
+        }
+
         match fs::remove_dir(dir_abs) {
             Ok(()) => return Ok(()),
             Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
