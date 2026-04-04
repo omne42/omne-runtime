@@ -132,6 +132,7 @@ impl RequestResolution {
         Self::from_effective_fields(
             request,
             request.program.clone(),
+            request.env.clone(),
             request.cwd.clone(),
             request.workspace_root.clone(),
             policy_default_isolation,
@@ -146,6 +147,7 @@ impl RequestResolution {
         Self::from_effective_fields(
             request,
             event.program.clone(),
+            event.env.clone(),
             event.cwd.clone(),
             event.workspace_root.clone(),
             policy_default_isolation,
@@ -155,6 +157,7 @@ impl RequestResolution {
     fn from_effective_fields(
         request: &ExecRequest,
         program: OsString,
+        env: Vec<(OsString, OsString)>,
         cwd: PathBuf,
         workspace_root: PathBuf,
         policy_default_isolation: ExecutionIsolation,
@@ -162,7 +165,7 @@ impl RequestResolution {
         Self {
             program,
             args: request.args.clone(),
-            env: request.env.clone(),
+            env,
             cwd,
             workspace_root,
             declared_mutation: request.declared_mutation,
@@ -415,6 +418,6 @@ mod tests {
             PathBuf::from("/canonical/workspace")
         );
         assert_eq!(resolution.program, OsString::from("echo"));
-        assert_eq!(resolution.env, request.env);
+        assert_eq!(resolution.env, event.env);
     }
 }
