@@ -11,10 +11,11 @@
 //!
 //! Unix uses per-child process groups. Cleanup capture fails closed unless the spawned child is
 //! the leader of its own dedicated process group, so callers cannot accidentally arm cleanup
-//! against the parent's process group by skipping setup. Linux and other Unix targets both stop
-//! before `killpg` once the original leader identity can no longer be revalidated, and Linux also
-//! refuses to arm orphan-group cleanup when that identity was never captured in the first place,
-//! so cleanup does not trust a potentially reused PGID.
+//! against the parent's process group by skipping setup. Linux only proceeds to `killpg` after it
+//! can revalidate the original leader identity, and refuses to arm orphan-group cleanup when that
+//! identity was never captured in the first place, so cleanup does not trust a potentially reused
+//! PGID. Other Unix targets fail closed and skip `killpg` entirely because this crate cannot
+//! revalidate leader lifetime with Linux-strength evidence there.
 //!
 //! Windows prefers Job Objects. When the current process cannot attach the child to a kill-on-close
 //! job, cleanup falls back to best-effort tree cleanup rooted at the captured child PID:
@@ -215,10 +216,8 @@ fn kill_process_tree(cleanup: &ProcessTreeCleanup) {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
-    match rustix::process::getpgid(Some(identity.leader_pid)) {
-        Ok(current) => current == identity.process_group_id,
-        Err(_) => false,
-    }
+    let _ = identity;
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -790,7 +789,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cleanup_kills_child_process_group() -> io::Result<()> {
+    async fn cleanup_does_not_kill_process_group_without_strong_identity_revalidation()
+    -> io::Result<()> {
         let dir = tempfile::tempdir()?;
         let pid_file = dir.path().join("background.pid");
         let script = format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
@@ -997,7 +997,8 @@ mod unix_tests {
     }
 
     #[tokio::test]
-    async fn cleanup_kills_child_process_group() -> io::Result<()> {
+    async fn cleanup_does_not_kill_process_group_without_strong_identity_revalidation()
+    -> io::Result<()> {
         let dir = tempfile::tempdir()?;
         let pid_file = dir.path().join("background.pid");
         let script = format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
@@ -1014,30 +1015,49 @@ mod unix_tests {
         let mut child = command.spawn()?;
         let mut cleanup = ProcessTreeCleanup::new(&child)?;
         let process_group = pid_to_process_group(child.id().expect("child pid should exist"));
-        let _bg_pid = wait_for_pid(&pid_file)
+        let bg_pid = wait_for_pid(&pid_file)
             .await
             .expect("background pid file should be written");
+        let background_pid =
+            Pid::from_raw(i32::try_from(bg_pid).expect("background pid should fit in i32"))
+                .expect("background pid must be non-zero");
 
         assert_eq!(
             cleanup.start_termination(),
             CleanupDisposition::DirectChildKillRequired
         );
         cleanup.kill_tree();
+        let _ = child.kill().await;
         tokio::time::timeout(Duration::from_secs(5), child.wait())
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "child did not exit in time"))??;
 
-        let mut gone = false;
+        let mut still_present = false;
         for _ in 0..300 {
-            if process_group_gone(process_group) {
-                gone = true;
+            if !process_group_gone(process_group) {
+                still_present = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        assert!(gone, "background process group should be terminated");
-        Ok(())
+        assert!(
+            still_present,
+            "cleanup must fail closed instead of killing a non-Linux Unix process group without strong identity revalidation"
+        );
+
+        let _ = kill_process(background_pid, Signal::KILL);
+        for _ in 0..300 {
+            if process_group_gone(process_group) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "background process group did not exit after explicit cleanup",
+        ))
     }
 
     #[tokio::test]

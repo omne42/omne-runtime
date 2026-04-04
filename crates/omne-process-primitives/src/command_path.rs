@@ -13,6 +13,11 @@ pub(crate) fn resolve_command_path_os_with_path_var(
     command: &OsStr,
     path_var: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
+    if is_explicit_command_path(command) {
+        let path = PathBuf::from(command);
+        return is_spawnable_command_path(&path).then_some(path);
+    }
+
     let path_var = path_var?;
     for dir in std::env::split_paths(&path_var) {
         if let Some(path) = resolve_command_in_dir(command, &dir, is_spawnable_command_path) {
@@ -51,6 +56,11 @@ pub(crate) fn resolve_available_command_path_with_path_var(
     command: &OsStr,
     path_var: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
+    if is_explicit_command_path(command) {
+        let path = PathBuf::from(command);
+        return is_regular_command_path(&path).then_some(path);
+    }
+
     let path_var = path_var?;
     for dir in std::env::split_paths(&path_var) {
         if let Some(path) = resolve_command_in_dir(command, &dir, is_regular_command_path) {
@@ -80,6 +90,15 @@ pub(crate) fn is_spawnable_command_path(path: &Path) -> bool {
 #[cfg(any(test, windows))]
 pub(crate) fn is_regular_command_path(path: &Path) -> bool {
     path.is_file()
+}
+
+fn is_explicit_command_path(command: &OsStr) -> bool {
+    let path = Path::new(command);
+    path.is_absolute()
+        || command
+            .to_string_lossy()
+            .chars()
+            .any(|ch| ch == '/' || ch == '\\')
 }
 
 fn resolve_command_path_from_standard_locations<F>(command: &OsStr, predicate: F) -> Option<PathBuf>
@@ -265,6 +284,41 @@ mod tests {
 
         assert!(is_regular_command_path(&plain_file));
         assert!(!is_spawnable_command_path(&plain_file));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_relative_paths_do_not_probe_path_entries() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nested = temp.path().join("subdir");
+        std::fs::create_dir_all(&nested).expect("mkdir nested");
+        let shadow = nested.join("tool");
+        std::fs::write(&shadow, "#!/bin/sh\nexit 0\n").expect("write shadow");
+        let mut permissions = std::fs::metadata(&shadow)
+            .expect("stat shadow")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&shadow, permissions).expect("chmod shadow");
+
+        let explicit_relative = std::path::Path::new("subdir").join("tool");
+        let path_var = std::env::join_paths([temp.path()]).expect("join PATH");
+
+        assert!(
+            super::resolve_command_path_os_with_path_var(
+                explicit_relative.as_os_str(),
+                Some(path_var)
+            )
+            .is_none()
+        );
+        assert!(
+            super::resolve_available_command_path_with_path_var(
+                explicit_relative.as_os_str(),
+                Some(std::env::join_paths([temp.path()]).expect("join PATH"))
+            )
+            .is_none()
+        );
     }
 
     #[cfg(unix)]
