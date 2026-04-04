@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `delete` no longer does a deny pre-scan followed by ambient `remove_dir_all`; recursive deletes now re-read each directory level and retry the final `remove_dir`, so denied content inserted during the delete race is still caught fail-closed before removal commits.
+- `git-permissions` now resolves `git` from trusted absolute system locations, strips inherited `GIT_*` variables, and disables external diff helpers so policy fallback no longer trusts caller-controlled `PATH` or Git environment state.
 - `delete` now matches `copy_file` / `move_path` fail-closed semantics when parent or target
   identity cannot be revalidated before removal, instead of degrading unverifiable paths to
   best-effort success.

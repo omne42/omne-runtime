@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 use globset::{GlobSet, GlobSetBuilder};
 use regex::Regex;
@@ -26,16 +26,8 @@ pub(crate) enum RedactionOutcome<'a> {
 #[derive(Debug)]
 pub(crate) struct SecretRedactor {
     deny: GlobSet,
-    deny_delete_scan: Vec<DenyDeleteScanPattern>,
     redact: Vec<Regex>,
     replacement: String,
-}
-
-#[derive(Debug)]
-enum DenyDeleteScanPattern {
-    Literal(PathBuf),
-    Prefix(PathBuf),
-    AlwaysScan,
 }
 
 impl SecretRedactor {
@@ -61,8 +53,6 @@ impl SecretRedactor {
 
         let mut deny_builder = GlobSetBuilder::new();
         let mut total_pattern_bytes = 0usize;
-        let mut deny_delete_scan =
-            Vec::<DenyDeleteScanPattern>::with_capacity(rules.deny_globs.len());
         for (idx, pattern) in rules.deny_globs.iter().enumerate() {
             if pattern.trim().is_empty() {
                 return Err(Error::InvalidPolicy(format!(
@@ -80,7 +70,6 @@ impl SecretRedactor {
             let normalized =
                 crate::path_utils_internal::normalize_glob_pattern_for_matching(pattern);
             compile_and_add_deny_glob(&mut deny_builder, pattern, &normalized)?;
-            deny_delete_scan.push(compile_delete_scan_pattern(&normalized));
 
             // Ensure `foo/**` also denies direct access to `foo` itself.
             if let Some(directory_root) = normalized
@@ -119,7 +108,6 @@ impl SecretRedactor {
         }
         Ok(Self {
             deny,
-            deny_delete_scan,
             redact,
             replacement: rules.replacement.clone(),
         })
@@ -137,30 +125,6 @@ impl SecretRedactor {
             None => true,
         }
     }
-
-    pub(crate) fn requires_recursive_delete_descendant_scan(&self, target_relative: &Path) -> bool {
-        let normalized_target = crate::path_utils::normalized_for_boundary(target_relative);
-        for pattern in &self.deny_delete_scan {
-            match pattern {
-                DenyDeleteScanPattern::Literal(literal) => {
-                    if crate::path_utils::starts_with_case_insensitive_normalized(
-                        literal,
-                        normalized_target.as_ref(),
-                    ) {
-                        return true;
-                    }
-                }
-                DenyDeleteScanPattern::Prefix(prefix) => {
-                    if overlaps_by_boundary_prefix_normalized(prefix, normalized_target.as_ref()) {
-                        return true;
-                    }
-                }
-                DenyDeleteScanPattern::AlwaysScan => return true,
-            }
-        }
-        false
-    }
-
     pub(crate) fn redact_text_outcome<'a>(&self, input: &'a str) -> RedactionOutcome<'a> {
         if self.redact.is_empty() || input.is_empty() {
             return RedactionOutcome::Text(Cow::Borrowed(input));
@@ -245,58 +209,6 @@ fn compile_and_add_deny_glob(
     )?;
     deny_builder.add(glob);
     Ok(())
-}
-
-fn compile_delete_scan_pattern(normalized_pattern: &str) -> DenyDeleteScanPattern {
-    if !glob_pattern_has_meta(normalized_pattern) {
-        let literal = crate::path_utils::normalized_for_boundary(Path::new(normalized_pattern));
-        return DenyDeleteScanPattern::Literal(literal.into_owned());
-    }
-    let Some(prefix) = leading_literal_glob_prefix(normalized_pattern) else {
-        return DenyDeleteScanPattern::AlwaysScan;
-    };
-    let prefix = crate::path_utils::normalized_for_boundary(&prefix);
-    DenyDeleteScanPattern::Prefix(prefix.into_owned())
-}
-
-fn glob_pattern_has_meta(pattern: &str) -> bool {
-    pattern
-        .bytes()
-        .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']' | b'{' | b'}'))
-}
-
-fn glob_component_has_meta(component: &std::ffi::OsStr) -> bool {
-    component
-        .as_encoded_bytes()
-        .iter()
-        .any(|byte| matches!(*byte, b'*' | b'?' | b'[' | b']' | b'{' | b'}'))
-}
-
-fn leading_literal_glob_prefix(pattern: &str) -> Option<PathBuf> {
-    let mut prefix = PathBuf::new();
-    for component in Path::new(pattern).components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(segment) => {
-                if glob_component_has_meta(segment) {
-                    break;
-                }
-                prefix.push(segment);
-            }
-            _ => break,
-        }
-    }
-    if prefix.as_os_str().is_empty() {
-        None
-    } else {
-        Some(prefix)
-    }
-}
-
-#[inline]
-fn overlaps_by_boundary_prefix_normalized(a: &Path, b: &Path) -> bool {
-    crate::path_utils::starts_with_case_insensitive_normalized(a, b)
-        || crate::path_utils::starts_with_case_insensitive_normalized(b, a)
 }
 
 fn accumulate_pattern_bytes(total: &mut usize, pattern_bytes: usize) -> Result<()> {

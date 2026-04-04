@@ -1,22 +1,94 @@
+#[cfg(feature = "git-permissions")]
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
+#[cfg(feature = "git-permissions")]
+use std::path::PathBuf;
 
 use crate::error::{Error, Result};
 
 use super::Context;
 
 #[cfg(feature = "git-permissions")]
-use omne_process_primitives::{
-    HostCommandError, HostCommandRequest, HostCommandSudoMode,
-    resolve_command_path_or_standard_location_os, run_host_command,
-};
-#[cfg(feature = "git-permissions")]
-use std::ffi::{OsStr, OsString};
-#[cfg(feature = "git-permissions")]
-use std::path::PathBuf;
+use std::process::Command;
 
 #[cfg(feature = "git-permissions")]
 const GIT_BINARY_MISSING_HINT: &str =
-    "git permission fallback requires `git` to be installed and available in PATH";
+    "git permission fallback requires `git` to be installed at a trusted system path";
+
+#[cfg(feature = "git-permissions")]
+fn trusted_git_program() -> Option<PathBuf> {
+    trusted_git_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+#[cfg(feature = "git-permissions")]
+fn trusted_git_candidates() -> Vec<PathBuf> {
+    #[cfg(unix)]
+    {
+        vec![
+            PathBuf::from("/usr/bin/git"),
+            PathBuf::from("/bin/git"),
+            PathBuf::from("/usr/local/bin/git"),
+            PathBuf::from("/opt/homebrew/bin/git"),
+            PathBuf::from("/opt/local/bin/git"),
+        ]
+    }
+
+    #[cfg(windows)]
+    {
+        vec![
+            PathBuf::from(r"C:\Program Files\Git\cmd\git.exe"),
+            PathBuf::from(r"C:\Program Files\Git\bin\git.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Git\cmd\git.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Git\bin\git.exe"),
+        ]
+    }
+}
+
+#[cfg(feature = "git-permissions")]
+fn build_git_command(
+    program: &Path,
+    canonical_root: &Path,
+    args: &[&str],
+    relative_path: Option<&Path>,
+) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.env_clear();
+    cmd.envs(sanitized_git_environment(std::env::vars_os()));
+    cmd.arg("-C").arg(canonical_root);
+    cmd.args(args);
+    if let Some(relative_path) = relative_path {
+        cmd.arg("--");
+        cmd.arg(relative_path);
+    }
+    cmd
+}
+
+#[cfg(feature = "git-permissions")]
+fn sanitized_git_environment<I>(env: I) -> Vec<(OsString, OsString)>
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    env.into_iter()
+        .filter(|(name, _)| !is_git_env_name(name))
+        .collect()
+}
+
+#[cfg(feature = "git-permissions")]
+fn is_git_env_name(name: &OsStr) -> bool {
+    #[cfg(windows)]
+    {
+        name.to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("GIT_")
+    }
+
+    #[cfg(not(windows))]
+    {
+        name.as_encoded_bytes().starts_with(b"GIT_")
+    }
+}
 
 #[cfg(feature = "git-permissions")]
 fn run_git_status(
@@ -25,14 +97,53 @@ fn run_git_status(
     op: &str,
     args: &[&str],
 ) -> Result<std::process::ExitStatus> {
-    let args = git_args_with_path(canonical_root, args, relative_path);
-    run_git_command(op, relative_path, &args).map(|output| output.status)
+    let Some(program) = trusted_git_program() else {
+        return Err(Error::NotPermitted(format!(
+            "{op} is disabled by policy: {GIT_BINARY_MISSING_HINT}"
+        )));
+    };
+    let mut cmd = build_git_command(&program, canonical_root, args, Some(relative_path));
+    let status = match cmd.status() {
+        Ok(status) => status,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::NotPermitted(format!(
+                "{op} is disabled by policy: {GIT_BINARY_MISSING_HINT}"
+            )));
+        }
+        Err(err) => {
+            return Err(Error::IoPath {
+                op: "spawn_git",
+                path: relative_path.to_path_buf(),
+                source: err,
+            });
+        }
+    };
+    Ok(status)
 }
 
 #[cfg(feature = "git-permissions")]
 fn run_git_output_no_path(canonical_root: &Path, op: &str, args: &[&str]) -> Result<String> {
-    let args = git_args_no_path(canonical_root, args);
-    let output = run_git_command(op, canonical_root, &args)?;
+    let Some(program) = trusted_git_program() else {
+        return Err(Error::NotPermitted(format!(
+            "{op} is disabled by policy: {GIT_BINARY_MISSING_HINT}"
+        )));
+    };
+    let mut cmd = build_git_command(&program, canonical_root, args, None);
+    let output = match cmd.output() {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::NotPermitted(format!(
+                "{op} is disabled by policy: {GIT_BINARY_MISSING_HINT}"
+            )));
+        }
+        Err(err) => {
+            return Err(Error::IoPath {
+                op: "spawn_git",
+                path: canonical_root.to_path_buf(),
+                source: err,
+            });
+        }
+    };
     if !output.status.success() {
         return Err(Error::NotPermitted(format!(
             "{op} is disabled by policy: git check failed at {}",
@@ -40,62 +151,6 @@ fn run_git_output_no_path(canonical_root: &Path, op: &str, args: &[&str]) -> Res
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-#[cfg(feature = "git-permissions")]
-fn run_git_command(op: &str, path: &Path, args: &[OsString]) -> Result<std::process::Output> {
-    let git_path = resolve_git_program_path(op)?;
-    let request = HostCommandRequest {
-        program: git_path.as_os_str(),
-        args,
-        env: &[],
-        working_directory: None,
-        sudo_mode: HostCommandSudoMode::Never,
-    };
-    run_host_command(&request)
-        .map(|output| output.output)
-        .map_err(|err| map_git_command_error(op, path, err))
-}
-
-#[cfg(feature = "git-permissions")]
-fn resolve_git_program_path(op: &str) -> Result<PathBuf> {
-    resolve_command_path_or_standard_location_os(OsStr::new("git")).ok_or_else(|| {
-        Error::NotPermitted(format!(
-            "{op} is disabled by policy: {GIT_BINARY_MISSING_HINT}"
-        ))
-    })
-}
-
-#[cfg(feature = "git-permissions")]
-fn map_git_command_error(op: &str, path: &Path, err: HostCommandError) -> Error {
-    match err {
-        HostCommandError::CommandNotFound { .. } => Error::NotPermitted(format!(
-            "{op} is disabled by policy: {GIT_BINARY_MISSING_HINT}"
-        )),
-        HostCommandError::SpawnFailed { source, .. }
-        | HostCommandError::CaptureFailed { source, .. } => Error::IoPath {
-            op: "spawn_git",
-            path: path.to_path_buf(),
-            source,
-        },
-    }
-}
-
-#[cfg(feature = "git-permissions")]
-fn git_args_no_path(canonical_root: &Path, args: &[&str]) -> Vec<OsString> {
-    let mut git_args = Vec::with_capacity(args.len() + 2);
-    git_args.push(OsString::from("-C"));
-    git_args.push(canonical_root.as_os_str().to_os_string());
-    git_args.extend(args.iter().map(OsString::from));
-    git_args
-}
-
-#[cfg(feature = "git-permissions")]
-fn git_args_with_path(canonical_root: &Path, args: &[&str], relative_path: &Path) -> Vec<OsString> {
-    let mut git_args = git_args_no_path(canonical_root, args);
-    git_args.push(OsString::from("--"));
-    git_args.push(relative_path.as_os_str().to_os_string());
-    git_args
 }
 
 #[cfg(feature = "git-permissions")]
@@ -144,7 +199,7 @@ pub(super) fn ensure_revertible_write_allowed(
         canonical_root,
         relative_path,
         op,
-        &["diff", "--quiet", "HEAD"],
+        &["diff", "--quiet", "--no-ext-diff", "HEAD"],
     )?;
     match diff_status.code() {
         Some(0) => Ok(()),
@@ -168,4 +223,52 @@ pub(super) fn ensure_revertible_write_allowed(
     _recursive: bool,
 ) -> Result<()> {
     Err(Error::NotPermitted(format!("{op} is disabled by policy")))
+}
+
+#[cfg(all(test, feature = "git-permissions"))]
+mod tests {
+    use super::{build_git_command, is_git_env_name, sanitized_git_environment};
+    use std::ffi::{OsStr, OsString};
+    use std::path::Path;
+
+    #[test]
+    fn sanitized_git_environment_drops_git_prefixed_variables() {
+        let env = vec![
+            (OsString::from("HOME"), OsString::from("/tmp/home")),
+            (OsString::from("GIT_DIR"), OsString::from("/tmp/git")),
+            (OsString::from("GIT_WORK_TREE"), OsString::from("/tmp/work")),
+        ];
+
+        let sanitized = sanitized_git_environment(env);
+        assert_eq!(
+            sanitized,
+            vec![(OsString::from("HOME"), OsString::from("/tmp/home"))]
+        );
+    }
+
+    #[test]
+    fn build_git_command_uses_absolute_program_and_sanitized_env() {
+        let command = build_git_command(
+            Path::new("/usr/bin/git"),
+            Path::new("/tmp/repo"),
+            &["rev-parse", "--is-inside-work-tree"],
+            None,
+        );
+        assert_eq!(command.get_program(), OsStr::new("/usr/bin/git"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![
+                OsStr::new("-C"),
+                OsStr::new("/tmp/repo"),
+                OsStr::new("rev-parse"),
+                OsStr::new("--is-inside-work-tree")
+            ]
+        );
+    }
+
+    #[test]
+    fn git_env_name_detection_matches_git_prefix() {
+        assert!(is_git_env_name(OsStr::new("GIT_DIR")));
+        assert!(!is_git_env_name(OsStr::new("HOME")));
+    }
 }
