@@ -275,6 +275,12 @@ mod tests {
     }
 
     #[test]
+    fn host_platform_from_parts_fails_closed_for_linux_without_libc() {
+        assert!(host_platform_from_parts("linux", "aarch64", None).is_none());
+        assert!(host_platform_from_parts("linux", "x86_64", None).is_none());
+    }
+
+    #[test]
     fn detect_host_target_triple_matches_current_host_when_supported() {
         if let Some(triple) = detect_host_target_triple() {
             assert!(!triple.is_empty());
@@ -368,6 +374,31 @@ mod tests {
     fn detect_host_linux_libc_returns_none_without_known_markers() {
         let libc = super::detect_host_linux_libc_with(&|_| false);
         assert_eq!(libc, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_host_linux_libc_only_checks_known_filesystem_markers() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let libc = super::detect_host_linux_libc_with(&|path| {
+            seen.borrow_mut().push(path.to_path_buf());
+            false
+        });
+        assert_eq!(libc, None);
+        assert_eq!(
+            seen.into_inner(),
+            vec![
+                std::path::PathBuf::from("/lib/ld-musl-x86_64.so.1"),
+                std::path::PathBuf::from("/lib/ld-musl-aarch64.so.1"),
+                std::path::PathBuf::from("/lib64/ld-musl-x86_64.so.1"),
+                std::path::PathBuf::from("/lib64/ld-musl-aarch64.so.1"),
+                std::path::PathBuf::from("/etc/alpine-release"),
+                std::path::PathBuf::from("/lib64/ld-linux-x86-64.so.2"),
+                std::path::PathBuf::from("/lib/ld-linux-aarch64.so.1"),
+                std::path::PathBuf::from("/lib/ld-linux-x86-64.so.2"),
+                std::path::PathBuf::from("/lib64/ld-linux-aarch64.so.1"),
+            ]
+        );
     }
 
     #[cfg(windows)]
