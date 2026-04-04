@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- fail closed on Linux once process-tree cleanup can no longer revalidate the original leader
+  after exit, instead of trusting surviving same-session group members behind a reused historical
+  process-group id
+- terminate still-running direct children as soon as captured stdout/stderr exceeds the bounded
+  per-stream limit, so oversized output fails fast instead of waiting for the command to exit
 - stop `resolve_command_path*` helpers from reinterpreting explicit relative paths through `PATH`;
   commands such as `./tool` and `subdir/tool` now resolve only as explicit paths, matching
   shell/`exec` semantics and keeping probe APIs aligned with execution

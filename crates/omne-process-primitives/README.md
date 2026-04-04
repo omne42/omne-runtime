@@ -34,11 +34,10 @@ Low-level host-command and process-tree primitives shared across callers.
 - Windows `taskkill` cleanup that waits for command success before skipping descendant fallback
 - Unix process-group cleanup that fails closed once the captured leader PID has been reused by a
   different live process, and on Linux also fails closed when the leader exits before cleanup can
-  still bind the original `/proc` identity; non-Linux Unix skips `killpg` entirely because the
-  crate cannot revalidate leader lifetime with Linux-strength evidence there; only leaders captured successfully may later reap
-  same-session orphaned descendants after the original leader has actually exited, and the
-  captured process-group id, `start_ticks`, and `session_id` all come from the same
-  `/proc/<pid>/stat` snapshot so cleanup never mixes fields from different process lifetimes
+  still revalidate the original `/proc` identity; non-Linux Unix skips `killpg` entirely because
+  the crate cannot revalidate leader lifetime with Linux-strength evidence there, and the captured
+  process-group id, `start_ticks`, and `session_id` all come from the same `/proc/<pid>/stat`
+  snapshot so cleanup never mixes fields from different process lifetimes
 
 ## Non-Goals
 
