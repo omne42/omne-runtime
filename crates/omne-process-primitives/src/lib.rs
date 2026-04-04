@@ -104,6 +104,7 @@ impl ProcessTreeCleanup {
 #[cfg(unix)]
 #[derive(Clone, Copy, Debug)]
 struct UnixProcessGroupIdentity {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     leader_pid: rustix::process::Pid,
     process_group_id: rustix::process::Pid,
     #[cfg(target_os = "linux")]
