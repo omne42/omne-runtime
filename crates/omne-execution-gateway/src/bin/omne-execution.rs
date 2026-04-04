@@ -7,6 +7,7 @@ use std::process::{ExitCode, ExitStatus};
 
 use omne_execution_gateway::{
     ExecEvent, ExecGateway, ExecRequest, ExecResult, GatewayPolicy, RequestResolution,
+    path_guard::ensure_existing_ancestors_are_real_directories,
 };
 use omne_fs_primitives::{ReadUtf8Error, read_utf8_regular_file_in_ambient_root};
 use policy_meta::ExecutionIsolation;
@@ -149,6 +150,8 @@ fn build_exec_request(
 }
 
 fn load_request(path: &Path) -> Result<ExecRequestWire, String> {
+    ensure_existing_ancestors_are_real_directories(path)
+        .map_err(|err| format!("failed to read request {}: {err}", path.display()))?;
     let content = read_utf8_regular_file_in_ambient_root(
         path,
         "request file",
@@ -650,13 +653,42 @@ mod tests {
         let err = load_request(&alias_dir.join("request.json"))
             .expect_err("ancestor symlink should fail closed");
         assert!(
-            err.contains("Not a directory")
+            err.contains("path is not a directory")
+                || err.contains("Not a directory")
                 || err.contains("failed to open file")
                 || err.contains("No such file")
                 || err.contains("target file must be a regular file")
                 || err.contains("must not traverse symlinks"),
             "unexpected error: {err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_request_rejects_symlink_ancestor_when_nested_directory_exists() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_temp_root(&dir);
+        let real_root = root.join("real-root");
+        fs::create_dir_all(real_root.join("nested")).expect("create real root");
+        let linked_root = root.join("linked-root");
+        symlink(&real_root, &linked_root).expect("create root symlink");
+        let request_path = linked_root.join("nested").join("request.json");
+        fs::write(
+            &request_path,
+            r#"{
+                "program": "echo",
+                "args": ["hello"],
+                "env": [],
+                "cwd": ".",
+                "workspace_root": ".",
+                "required_isolation": "best_effort",
+                "declared_mutation": false
+            }"#,
+        )
+        .expect("write request");
+
+        let err = load_request(&request_path).expect_err("symlink ancestor should fail");
+        assert!(err.contains("path is not a directory"));
     }
 
     #[cfg(unix)]

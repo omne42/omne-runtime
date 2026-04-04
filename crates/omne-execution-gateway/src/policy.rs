@@ -6,6 +6,8 @@ use omne_fs_primitives::read_utf8_regular_file_in_ambient_root;
 use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
 
+use crate::path_guard::ensure_existing_ancestors_are_real_directories;
+
 const MAX_POLICY_JSON_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +76,7 @@ impl GatewayPolicy {
     }
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
+        ensure_existing_ancestors_are_real_directories(path.as_ref())?;
         let content = read_utf8_regular_file_in_ambient_root(
             path.as_ref(),
             "policy file",
@@ -425,6 +428,34 @@ mod tests {
         let err = GatewayPolicy::load_json(alias_dir.join("policy.json"))
             .expect_err("ancestor symlink should be rejected");
         assert_ne!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_json_rejects_symlink_ancestor_when_nested_directory_exists() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_temp_root(&dir);
+        let real_root = root.join("real-root");
+        fs::create_dir_all(real_root.join("nested")).expect("create real root");
+        let linked_root = root.join("linked-root");
+        symlink(&real_root, &linked_root).expect("create symlink ancestor");
+        let path = linked_root.join("nested").join("policy.json");
+        fs::write(
+            &path,
+            r#"{
+                "allow_isolation_none": false,
+                "enforce_allowlisted_program_for_mutation": true,
+                "mutating_program_allowlist": [],
+                "non_mutating_program_allowlist": [],
+                "default_isolation": "best_effort"
+            }"#,
+        )
+        .expect("write policy");
+
+        let err = GatewayPolicy::load_json(&path).expect_err("symlink ancestor should fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[cfg(unix)]
