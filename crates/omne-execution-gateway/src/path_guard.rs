@@ -28,13 +28,13 @@ pub fn ensure_existing_ancestors_are_real_directories(path: &Path) -> io::Result
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
+    use std::io;
+
+    use super::ensure_existing_ancestors_are_real_directories;
     use tempfile::tempdir;
 
-    use super::*;
-
-    #[cfg(unix)]
     #[test]
     fn rejects_existing_symlink_ancestor() {
         use std::os::unix::fs::symlink;
