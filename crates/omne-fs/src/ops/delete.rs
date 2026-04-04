@@ -57,20 +57,47 @@ fn ensure_recursive_delete_allows_descendants(
     target_relative: &Path,
     ignore_missing: bool,
 ) -> Result<()> {
-    let max_walk_entries = u64::try_from(ctx.policy.limits.max_walk_entries).unwrap_or(u64::MAX);
-    let max_walk = ctx.policy.limits.max_walk_ms.map(Duration::from_millis);
-    let started = Instant::now();
-    let mut scanned_entries: u64 = 0;
+    let mut scan_state = RecursiveDeleteScanState::new(ctx);
     delete_directory_checked(
         ctx,
         target_abs,
         target_relative,
         ignore_missing,
-        &started,
-        max_walk,
-        max_walk_entries,
-        &mut scanned_entries,
+        &mut scan_state,
     )
+}
+
+struct RecursiveDeleteScanState {
+    started: Instant,
+    max_walk: Option<Duration>,
+    max_walk_entries: u64,
+    scanned_entries: u64,
+}
+
+impl RecursiveDeleteScanState {
+    fn new(ctx: &Context) -> Self {
+        Self {
+            started: Instant::now(),
+            max_walk: ctx.policy.limits.max_walk_ms.map(Duration::from_millis),
+            max_walk_entries: u64::try_from(ctx.policy.limits.max_walk_entries).unwrap_or(u64::MAX),
+            scanned_entries: 0,
+        }
+    }
+
+    fn ensure_within_budget(&self, dir_relative: &Path) -> Result<()> {
+        ensure_recursive_delete_scan_within_budget(
+            dir_relative,
+            self.scanned_entries,
+            self.max_walk_entries,
+            &self.started,
+            self.max_walk,
+        )
+    }
+
+    fn note_entry(&mut self, dir_relative: &Path) -> Result<()> {
+        self.scanned_entries = self.scanned_entries.saturating_add(1);
+        self.ensure_within_budget(dir_relative)
+    }
 }
 
 fn delete_directory_checked(
@@ -78,19 +105,10 @@ fn delete_directory_checked(
     dir_abs: &Path,
     dir_relative: &Path,
     ignore_missing: bool,
-    started: &Instant,
-    max_walk: Option<Duration>,
-    max_walk_entries: u64,
-    scanned_entries: &mut u64,
+    scan_state: &mut RecursiveDeleteScanState,
 ) -> Result<()> {
     loop {
-        ensure_recursive_delete_scan_within_budget(
-            dir_relative,
-            *scanned_entries,
-            max_walk_entries,
-            started,
-            max_walk,
-        )?;
+        scan_state.ensure_within_budget(dir_relative)?;
         let entries = match fs::read_dir(dir_abs) {
             Ok(entries) => entries,
             Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
@@ -100,14 +118,7 @@ fn delete_directory_checked(
         };
 
         for entry in entries {
-            *scanned_entries = scanned_entries.saturating_add(1);
-            ensure_recursive_delete_scan_within_budget(
-                dir_relative,
-                *scanned_entries,
-                max_walk_entries,
-                started,
-                max_walk,
-            )?;
+            scan_state.note_entry(dir_relative)?;
             let entry = entry.map_err(|err| Error::io_path("read_dir", dir_relative, err))?;
             let child_name = entry.file_name();
             let child_relative = dir_relative.join(&child_name);
@@ -125,10 +136,7 @@ fn delete_directory_checked(
                     &child_abs,
                     &child_relative,
                     ignore_missing,
-                    started,
-                    max_walk,
-                    max_walk_entries,
-                    scanned_entries,
+                    scan_state,
                 )?;
                 continue;
             }
