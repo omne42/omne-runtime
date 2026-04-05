@@ -4,6 +4,9 @@
 
 - `Cargo.toml`
   - Workspace 成员与默认成员入口。
+- `../omne_foundation`
+  - 当前构建图要求存在的 sibling foundation checkout；提供 `http-kit`、`policy-meta`
+    等 path dependency，不属于本仓库记录系统但属于本仓库的 build prerequisite。
 - `README.md`
   - 外部概览与最小验证命令。
 - `AGENTS.md`
@@ -41,6 +44,8 @@
 ## Layout Rules
 
 - workspace 根只放跨 crate 的导航、规则和机械校验。
+- 本仓库的 Rust 构建不是孤立的；凡是运行 `cargo check/test/clippy` 的入口，都默认
+  相邻目录下已有 `../omne_foundation`。
 - 具体能力事实优先沉到对应 crate 的本地 docs 系统。
 - 每个 crate 的文件名必须能直接表达职责，不新增 `misc`、`helpers` 之类兜底名字。
 - 生成物目录不是记录系统的一部分。
