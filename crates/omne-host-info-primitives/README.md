@@ -13,9 +13,9 @@ Low-level host platform and target-triple primitives shared across callers.
 
 - host OS and architecture detection
 - canonical target-triple mapping, including Linux `gnu` vs `musl` detection from local ABI markers
-- target override normalization
+- supported target override validation/normalization
 - home-directory resolution
-- executable suffix inference
+- executable suffix inference for supported canonical target triples
 
 ## Non-Goals
 
