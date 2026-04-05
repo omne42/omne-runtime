@@ -2,6 +2,8 @@ use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+#[cfg(unix)]
+use std::{fs::File, os::fd::AsRawFd};
 
 use crate::audit::{ExecDecision, ExecEvent, SandboxRuntimeObservation, requested_policy_meta};
 use crate::audit_log::{AuditLogger, PreparedAuditSink};
@@ -18,6 +20,8 @@ use sha2::{Digest, Sha256};
 struct BoundDirectory {
     path: PathBuf,
     identity: SameFileHandle,
+    #[cfg(unix)]
+    spawn_handle: File,
 }
 
 #[derive(Debug)]
@@ -811,7 +815,14 @@ fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<Boun
             kind,
             path: path.clone(),
         })?;
-    Ok(BoundDirectory { path, identity })
+    #[cfg(unix)]
+    let spawn_handle = open_bound_directory_spawn_handle(&path, kind, &identity)?;
+    Ok(BoundDirectory {
+        path,
+        identity,
+        #[cfg(unix)]
+        spawn_handle,
+    })
 }
 
 fn bind_program_path(program: &OsStr, bind_contents: bool) -> ExecResult<BoundProgram> {
@@ -988,7 +999,7 @@ fn apply_prepared_request(
     revalidate_bound_program(&prepared.bound_program)?;
     revalidate_prepared_request_paths(&prepared.resolved_paths)?;
     configure_request_environment(&prepared.event.env, command);
-    command.current_dir(&prepared.resolved_paths.cwd.path);
+    configure_bound_current_dir(&prepared.resolved_paths.cwd, command);
     sandbox::apply_sandbox(
         command,
         prepared.required_isolation,
@@ -1012,8 +1023,65 @@ fn build_prepared_spawn_command(prepared: &PreparedExecRequest, args: &[OsString
     command.args(args);
     configure_request_environment(&prepared.event.env, &mut command);
     configure_noninteractive_stdio(&mut command);
-    command.current_dir(&prepared.resolved_paths.cwd.path);
+    configure_bound_current_dir(&prepared.resolved_paths.cwd, &mut command);
     command
+}
+
+fn configure_bound_current_dir(bound: &BoundDirectory, command: &mut Command) {
+    #[cfg(unix)]
+    {
+        command.current_dir(bound_directory_spawn_path(bound));
+    }
+
+    #[cfg(not(unix))]
+    {
+        command.current_dir(&bound.path);
+    }
+}
+
+#[cfg(unix)]
+fn open_bound_directory_spawn_handle(
+    path: &Path,
+    kind: &'static str,
+    identity: &SameFileHandle,
+) -> ExecResult<File> {
+    let file = File::open(path).map_err(|_| ExecError::PathIdentityUnavailable {
+        kind,
+        path: path.to_path_buf(),
+    })?;
+    let handle = SameFileHandle::from_file(file.try_clone().map_err(|_| {
+        ExecError::PathIdentityUnavailable {
+            kind,
+            path: path.to_path_buf(),
+        }
+    })?)
+    .map_err(|_| ExecError::PathIdentityUnavailable {
+        kind,
+        path: path.to_path_buf(),
+    })?;
+    if handle != *identity {
+        return Err(ExecError::RequestPathChanged {
+            kind,
+            path: path.to_path_buf(),
+            detail: "directory identity changed while opening spawn handle".to_string(),
+        });
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn bound_directory_spawn_path(bound: &BoundDirectory) -> PathBuf {
+    fd_backed_directory_path(bound.spawn_handle.as_raw_fd())
+}
+
+#[cfg(target_os = "linux")]
+fn fd_backed_directory_path(raw_fd: i32) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{raw_fd}"))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn fd_backed_directory_path(raw_fd: i32) -> PathBuf {
+    PathBuf::from(format!("/dev/fd/{raw_fd}"))
 }
 
 fn configure_noninteractive_stdio(command: &mut Command) {
@@ -2497,7 +2565,25 @@ mod tests {
             .path()
             .canonicalize()
             .expect("canonicalize workspace");
-        assert_eq!(prepared.current_dir(), Some(expected_cwd.as_path()));
+        let actual_cwd = prepared.current_dir().expect("prepared current_dir");
+        assert_eq!(
+            actual_cwd
+                .canonicalize()
+                .expect("canonicalize prepared current_dir"),
+            expected_cwd
+        );
+
+        #[cfg(target_os = "linux")]
+        assert!(
+            actual_cwd.to_string_lossy().starts_with("/proc/self/fd/"),
+            "unix prepared cwd should stay bound to a directory handle"
+        );
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        assert!(
+            actual_cwd.to_string_lossy().starts_with("/dev/fd/"),
+            "unix prepared cwd should stay bound to a directory handle"
+        );
     }
 
     #[cfg(unix)]

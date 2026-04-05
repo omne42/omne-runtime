@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- bind Unix spawn-time `cwd` changes to a pre-opened directory handle path, so request directory
+  revalidation no longer falls back to a bare path-name `chdir` window after the last preflight
+  check
 - complete the public API reference's `ExecError` variant list so downstream callers can track the
   full documented gateway failure surface instead of an outdated subset
 - document `ExecRequest` / `RequestResolution` / `ExecEvent` environment fields more explicitly in
