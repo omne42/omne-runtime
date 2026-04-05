@@ -71,7 +71,9 @@ Use it when you need the gateway's canonical pre-execution request view, includi
 policy-default provenance. When preflight reaches path validation, `program` / `cwd` /
 `workspace_root` mirror the authoritative validated view that also appears in `ExecEvent`. For
 bare command-name requests, `program` becomes the resolved absolute executable path that the
-gateway actually bound and will revalidate before spawn.
+gateway actually bound and will revalidate before spawn. For explicit absolute paths that arrive
+through a symlink alias, `program` likewise becomes the canonical real executable path that the
+gateway will actually pass to `spawn()`.
 Its JSON form also emits `program_exact` / `args_exact` / `env_exact` so callers can reconstruct
 non-UTF-8 OS strings exactly instead of depending on lossy display fields.
 
