@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::fs;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 #[cfg(unix)]
@@ -768,9 +769,7 @@ fn map_archive_directory_component_error(
     match directory.symlink_metadata(component) {
         Ok(metadata) if metadata.file_type().is_symlink() => std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!(
-                "archive tree destination must stay within real directories without crossing symlink ancestors"
-            ),
+            "archive tree destination must stay within real directories without crossing symlink ancestors",
         ),
         Ok(metadata) if !metadata.is_dir() => std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
