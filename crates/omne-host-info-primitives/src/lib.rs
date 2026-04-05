@@ -90,6 +90,59 @@ impl HostPlatform {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SupportedTargetTriple {
+    Aarch64AppleDarwin,
+    X8664AppleDarwin,
+    Aarch64UnknownLinuxGnu,
+    Aarch64UnknownLinuxMusl,
+    X8664UnknownLinuxGnu,
+    X8664UnknownLinuxMusl,
+    Aarch64PcWindowsMsvc,
+    X8664PcWindowsMsvc,
+}
+
+impl SupportedTargetTriple {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Aarch64AppleDarwin => "aarch64-apple-darwin",
+            Self::X8664AppleDarwin => "x86_64-apple-darwin",
+            Self::Aarch64UnknownLinuxGnu => "aarch64-unknown-linux-gnu",
+            Self::Aarch64UnknownLinuxMusl => "aarch64-unknown-linux-musl",
+            Self::X8664UnknownLinuxGnu => "x86_64-unknown-linux-gnu",
+            Self::X8664UnknownLinuxMusl => "x86_64-unknown-linux-musl",
+            Self::Aarch64PcWindowsMsvc => "aarch64-pc-windows-msvc",
+            Self::X8664PcWindowsMsvc => "x86_64-pc-windows-msvc",
+        }
+    }
+
+    const fn executable_suffix(self) -> &'static str {
+        match self {
+            Self::Aarch64PcWindowsMsvc | Self::X8664PcWindowsMsvc => ".exe",
+            Self::Aarch64AppleDarwin
+            | Self::X8664AppleDarwin
+            | Self::Aarch64UnknownLinuxGnu
+            | Self::Aarch64UnknownLinuxMusl
+            | Self::X8664UnknownLinuxGnu
+            | Self::X8664UnknownLinuxMusl => "",
+        }
+    }
+}
+
+fn parse_supported_target_triple(raw: &str) -> Option<SupportedTargetTriple> {
+    match raw.trim() {
+        "aarch64-apple-darwin" => Some(SupportedTargetTriple::Aarch64AppleDarwin),
+        "x86_64-apple-darwin" => Some(SupportedTargetTriple::X8664AppleDarwin),
+        "aarch64-unknown-linux-gnu" => Some(SupportedTargetTriple::Aarch64UnknownLinuxGnu),
+        "aarch64-unknown-linux-musl" => Some(SupportedTargetTriple::Aarch64UnknownLinuxMusl),
+        "x86_64-unknown-linux-gnu" => Some(SupportedTargetTriple::X8664UnknownLinuxGnu),
+        "x86_64-unknown-linux-musl" => Some(SupportedTargetTriple::X8664UnknownLinuxMusl),
+        "aarch64-pc-windows-msvc" => Some(SupportedTargetTriple::Aarch64PcWindowsMsvc),
+        "x86_64-pc-windows-msvc" => Some(SupportedTargetTriple::X8664PcWindowsMsvc),
+        _ => None,
+    }
+}
+
 #[cfg(windows)]
 const HOME_ENV_KEYS: &[&str] = &["HOME", "USERPROFILE"];
 #[cfg(not(windows))]
@@ -105,21 +158,17 @@ pub fn detect_host_target_triple() -> Option<&'static str> {
 }
 
 pub fn resolve_target_triple(override_target: Option<&str>, host_target_triple: &str) -> String {
-    if let Some(raw) = override_target {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
+    if let Some(raw) = override_target
+        && let Some(target) = parse_supported_target_triple(raw)
+    {
+        return target.as_str().to_string();
     }
     host_target_triple.to_string()
 }
 
 pub fn executable_suffix_for_target(target_triple: &str) -> &'static str {
-    if target_triple.contains("windows") {
-        ".exe"
-    } else {
-        ""
-    }
+    parse_supported_target_triple(target_triple)
+        .map_or("", SupportedTargetTriple::executable_suffix)
 }
 
 pub fn resolve_home_dir() -> Option<PathBuf> {
@@ -303,13 +352,42 @@ mod tests {
     #[test]
     fn resolve_target_triple_prefers_trimmed_override() {
         assert_eq!(
-            resolve_target_triple(Some("  custom-target  "), "x86_64-unknown-linux-gnu"),
-            "custom-target"
+            resolve_target_triple(
+                Some("  x86_64-pc-windows-msvc  "),
+                "x86_64-unknown-linux-gnu"
+            ),
+            "x86_64-pc-windows-msvc"
         );
         assert_eq!(
             resolve_target_triple(Some("   "), "x86_64-unknown-linux-gnu"),
             "x86_64-unknown-linux-gnu"
         );
+    }
+
+    #[test]
+    fn resolve_target_triple_rejects_unsupported_override() {
+        assert_eq!(
+            resolve_target_triple(Some("custom-target"), "x86_64-unknown-linux-gnu"),
+            "x86_64-unknown-linux-gnu"
+        );
+        assert_eq!(
+            resolve_target_triple(
+                Some("x86_64-unknown-linux-windows"),
+                "x86_64-unknown-linux-gnu"
+            ),
+            "x86_64-unknown-linux-gnu"
+        );
+    }
+
+    #[test]
+    fn executable_suffix_requires_supported_windows_target() {
+        assert_eq!(
+            executable_suffix_for_target("x86_64-pc-windows-msvc"),
+            ".exe"
+        );
+        assert_eq!(executable_suffix_for_target("x86_64-unknown-linux-gnu"), "");
+        assert_eq!(executable_suffix_for_target("custom-windows-target"), "");
+        assert_eq!(executable_suffix_for_target("windows"), "");
     }
 
     #[test]
