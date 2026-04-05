@@ -348,7 +348,22 @@ impl ExecGateway {
                     )),
                 ));
             }
-            if uses_opaque_command_launcher(&request.program) {
+            let opaque_launcher = match request_uses_opaque_command_launcher(request) {
+                Ok(opaque_launcher) => opaque_launcher,
+                Err(err @ ExecError::RelativeProgramPath { .. }) => {
+                    return Err(self.deny_preflight(event, "relative_program_path_forbidden", err));
+                }
+                Err(
+                    err @ ExecError::ProgramPathInvalid { .. }
+                    | err @ ExecError::ProgramLookupFailed { .. }
+                    | err @ ExecError::PathIdentityUnavailable { .. }
+                    | err @ ExecError::RequestPathChanged { .. },
+                ) => return Err(self.deny_preflight(event, "program_path_invalid", err)),
+                Err(err) => {
+                    unreachable!("opaque launcher policy binding returned unexpected error: {err}")
+                }
+            };
+            if opaque_launcher {
                 return Err(self.deny_preflight(
                     event,
                     "opaque_command_forbidden",
@@ -534,6 +549,17 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
                 | "php"
                 | "lua"
         )
+    })
+}
+
+fn request_uses_opaque_command_launcher(request: &ExecRequest) -> ExecResult<bool> {
+    if !is_explicit_program_path(&request.program) {
+        return Ok(uses_opaque_command_launcher(&request.program));
+    }
+
+    bind_program_path(&request.program, false).map(|bound| {
+        uses_opaque_command_launcher(&request.program)
+            || uses_opaque_command_launcher(bound.path.as_os_str())
     })
 }
 
@@ -2383,6 +2409,38 @@ mod tests {
         assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn denies_opaque_command_launcher_alias_when_target_is_allowlisted_for_mutation() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempdir().expect("create temp workspace");
+        let program = dummy_program_absolute_path();
+        let alias = workspace.path().join("trusted-tool");
+        symlink(&program, &alias).expect("create program alias");
+
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &alias,
+            vec![dummy_shell_flag(), "echo hello"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
+    }
+
     #[test]
     fn denies_opaque_command_launcher_when_explicitly_allowlisted_for_non_mutation() {
         let program = dummy_program_absolute_path();
@@ -2397,6 +2455,38 @@ mod tests {
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             &program,
+            vec![dummy_shell_flag(), "echo hello"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn denies_opaque_command_launcher_alias_when_target_is_allowlisted_for_non_mutation() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempdir().expect("create temp workspace");
+        let program = dummy_program_absolute_path();
+        let alias = workspace.path().join("trusted-tool");
+        symlink(&program, &alias).expect("create program alias");
+
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &alias,
             vec![dummy_shell_flag(), "echo hello"],
             workspace.path(),
             ExecutionIsolation::BestEffort,
