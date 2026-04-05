@@ -10,6 +10,7 @@
 //! - inferring executable suffixes from target triples
 
 use std::ffi::OsString;
+use std::fmt;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,17 +130,39 @@ impl SupportedTargetTriple {
     }
 }
 
-fn parse_supported_target_triple(raw: &str) -> Option<SupportedTargetTriple> {
-    match raw.trim() {
-        "aarch64-apple-darwin" => Some(SupportedTargetTriple::Aarch64AppleDarwin),
-        "x86_64-apple-darwin" => Some(SupportedTargetTriple::X8664AppleDarwin),
-        "aarch64-unknown-linux-gnu" => Some(SupportedTargetTriple::Aarch64UnknownLinuxGnu),
-        "aarch64-unknown-linux-musl" => Some(SupportedTargetTriple::Aarch64UnknownLinuxMusl),
-        "x86_64-unknown-linux-gnu" => Some(SupportedTargetTriple::X8664UnknownLinuxGnu),
-        "x86_64-unknown-linux-musl" => Some(SupportedTargetTriple::X8664UnknownLinuxMusl),
-        "aarch64-pc-windows-msvc" => Some(SupportedTargetTriple::Aarch64PcWindowsMsvc),
-        "x86_64-pc-windows-msvc" => Some(SupportedTargetTriple::X8664PcWindowsMsvc),
-        _ => None,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetTripleError {
+    Empty,
+    Unsupported(String),
+}
+
+impl fmt::Display for TargetTripleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "target triple must not be empty"),
+            Self::Unsupported(target) => write!(f, "unsupported target triple: {target}"),
+        }
+    }
+}
+
+impl std::error::Error for TargetTripleError {}
+
+fn parse_supported_target_triple(raw: &str) -> Result<SupportedTargetTriple, TargetTripleError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(TargetTripleError::Empty);
+    }
+
+    match trimmed {
+        "aarch64-apple-darwin" => Ok(SupportedTargetTriple::Aarch64AppleDarwin),
+        "x86_64-apple-darwin" => Ok(SupportedTargetTriple::X8664AppleDarwin),
+        "aarch64-unknown-linux-gnu" => Ok(SupportedTargetTriple::Aarch64UnknownLinuxGnu),
+        "aarch64-unknown-linux-musl" => Ok(SupportedTargetTriple::Aarch64UnknownLinuxMusl),
+        "x86_64-unknown-linux-gnu" => Ok(SupportedTargetTriple::X8664UnknownLinuxGnu),
+        "x86_64-unknown-linux-musl" => Ok(SupportedTargetTriple::X8664UnknownLinuxMusl),
+        "aarch64-pc-windows-msvc" => Ok(SupportedTargetTriple::Aarch64PcWindowsMsvc),
+        "x86_64-pc-windows-msvc" => Ok(SupportedTargetTriple::X8664PcWindowsMsvc),
+        _ => Err(TargetTripleError::Unsupported(trimmed.to_string())),
     }
 }
 
@@ -157,18 +180,37 @@ pub fn detect_host_target_triple() -> Option<&'static str> {
     detect_host_platform().map(HostPlatform::target_triple)
 }
 
-pub fn resolve_target_triple(override_target: Option<&str>, host_target_triple: &str) -> String {
-    if let Some(raw) = override_target
-        && let Some(target) = parse_supported_target_triple(raw)
-    {
-        return target.as_str().to_string();
+pub fn try_resolve_target_triple(
+    override_target: Option<&str>,
+    host_target_triple: &str,
+) -> Result<String, TargetTripleError> {
+    if let Some(raw) = override_target {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return parse_supported_target_triple(trimmed)
+                .map(|target| target.as_str().to_string());
+        }
     }
-    host_target_triple.to_string()
+    parse_supported_target_triple(host_target_triple).map(|target| target.as_str().to_string())
+}
+
+pub fn resolve_target_triple(override_target: Option<&str>, host_target_triple: &str) -> String {
+    try_resolve_target_triple(override_target, host_target_triple).unwrap_or_else(|_| {
+        parse_supported_target_triple(host_target_triple)
+            .map(|target| target.as_str())
+            .unwrap_or("")
+            .to_string()
+    })
+}
+
+pub fn try_executable_suffix_for_target(
+    target_triple: &str,
+) -> Result<&'static str, TargetTripleError> {
+    parse_supported_target_triple(target_triple).map(SupportedTargetTriple::executable_suffix)
 }
 
 pub fn executable_suffix_for_target(target_triple: &str) -> &'static str {
-    parse_supported_target_triple(target_triple)
-        .map_or("", SupportedTargetTriple::executable_suffix)
+    try_executable_suffix_for_target(target_triple).unwrap_or("")
 }
 
 pub fn resolve_home_dir() -> Option<PathBuf> {
@@ -291,9 +333,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        HostArchitecture, HostLinuxLibc, HostOperatingSystem, detect_host_target_triple,
-        executable_suffix_for_target, host_platform_from_parts, resolve_home_dir_with,
-        resolve_target_triple,
+        HostArchitecture, HostLinuxLibc, HostOperatingSystem, TargetTripleError,
+        detect_host_target_triple, executable_suffix_for_target, host_platform_from_parts,
+        resolve_home_dir_with, resolve_target_triple, try_executable_suffix_for_target,
+        try_resolve_target_triple,
     };
 
     #[test]
@@ -350,44 +393,69 @@ mod tests {
     }
 
     #[test]
-    fn resolve_target_triple_prefers_trimmed_override() {
+    fn resolve_target_triple_prefers_supported_trimmed_override() {
         assert_eq!(
-            resolve_target_triple(
-                Some("  x86_64-pc-windows-msvc  "),
-                "x86_64-unknown-linux-gnu"
+            try_resolve_target_triple(
+                Some("  aarch64-pc-windows-msvc  "),
+                "x86_64-unknown-linux-gnu",
             ),
-            "x86_64-pc-windows-msvc"
+            Ok("aarch64-pc-windows-msvc".to_string())
         );
+    }
+
+    #[test]
+    fn resolve_target_triple_uses_host_for_blank_override() {
         assert_eq!(
             resolve_target_triple(Some("   "), "x86_64-unknown-linux-gnu"),
-            "x86_64-unknown-linux-gnu"
+            "x86_64-unknown-linux-gnu".to_string()
         );
     }
 
     #[test]
-    fn resolve_target_triple_rejects_unsupported_override() {
+    fn resolve_target_triple_rejects_blank_host_target() {
+        assert_eq!(
+            try_resolve_target_triple(None, "   "),
+            Err(TargetTripleError::Empty)
+        );
+    }
+
+    #[test]
+    fn resolve_target_triple_rejects_unknown_override() {
+        assert_eq!(
+            try_resolve_target_triple(Some("  custom-target  "), "x86_64-unknown-linux-gnu"),
+            Err(TargetTripleError::Unsupported("custom-target".to_string()))
+        );
+    }
+
+    #[test]
+    fn executable_suffix_rejects_unknown_targets() {
+        assert_eq!(
+            try_executable_suffix_for_target("windows"),
+            Err(TargetTripleError::Unsupported("windows".to_string()))
+        );
+        assert_eq!(
+            try_executable_suffix_for_target("x86_64-unknown-linux-windows-gnu"),
+            Err(TargetTripleError::Unsupported(
+                "x86_64-unknown-linux-windows-gnu".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn resolve_target_triple_legacy_wrapper_falls_back_when_override_is_unsupported() {
         assert_eq!(
             resolve_target_triple(Some("custom-target"), "x86_64-unknown-linux-gnu"),
-            "x86_64-unknown-linux-gnu"
-        );
-        assert_eq!(
-            resolve_target_triple(
-                Some("x86_64-unknown-linux-windows"),
-                "x86_64-unknown-linux-gnu"
-            ),
-            "x86_64-unknown-linux-gnu"
+            "x86_64-unknown-linux-gnu".to_string()
         );
     }
 
     #[test]
-    fn executable_suffix_requires_supported_windows_target() {
-        assert_eq!(
-            executable_suffix_for_target("x86_64-pc-windows-msvc"),
-            ".exe"
-        );
-        assert_eq!(executable_suffix_for_target("x86_64-unknown-linux-gnu"), "");
-        assert_eq!(executable_suffix_for_target("custom-windows-target"), "");
+    fn executable_suffix_legacy_wrapper_fails_closed_for_unknown_targets() {
         assert_eq!(executable_suffix_for_target("windows"), "");
+        assert_eq!(
+            executable_suffix_for_target("x86_64-unknown-linux-windows-gnu"),
+            ""
+        );
     }
 
     #[test]
