@@ -258,6 +258,7 @@ pub fn run_host_command_with_options(
     request: &HostCommandRequest<'_>,
     options: HostCommandRunOptions<'_>,
 ) -> Result<HostCommandOutput, HostCommandError> {
+    validate_direct_request_program(request)?;
     let execution = if should_try_sudo(request) {
         HostCommandExecution::Sudo
     } else {
@@ -748,7 +749,9 @@ fn resolve_program_for_direct_command(request: &HostCommandRequest<'_>) -> Optio
         return Some(program.to_path_buf());
     }
     if is_explicit_command_path(request.program) {
-        return Some(resolve_relative_program_against_caller_cwd(program));
+        return request
+            .working_directory
+            .map(|working_directory| working_directory.join(program));
     }
     resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
 }
@@ -757,11 +760,21 @@ fn resolve_program_for_direct_spawn(request: &HostCommandRequest<'_>) -> PathBuf
     resolve_program_for_direct_command(request).unwrap_or_else(|| PathBuf::from(request.program))
 }
 
-fn resolve_relative_program_against_caller_cwd(program: &Path) -> PathBuf {
-    if let Ok(current_directory) = std::env::current_dir() {
-        return current_directory.join(program);
+fn validate_direct_request_program(
+    request: &HostCommandRequest<'_>,
+) -> Result<(), HostCommandError> {
+    if is_explicit_relative_program_without_working_directory(request) {
+        return Err(HostCommandError::SpawnFailed {
+            program: request.program.to_os_string(),
+            execution: HostCommandExecution::Direct,
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "explicit relative program paths require working_directory",
+            ),
+        });
     }
-    program.to_path_buf()
+
+    Ok(())
 }
 
 fn resolve_program_for_sudo_target(request: &HostCommandRequest<'_>) -> PathBuf {
@@ -802,6 +815,14 @@ fn ensure_sudo_target_is_available(
 
 fn is_explicit_command_path(command: &OsStr) -> bool {
     has_path_separator(command) || Path::new(command).is_absolute()
+}
+
+fn is_explicit_relative_program_without_working_directory(
+    request: &HostCommandRequest<'_>,
+) -> bool {
+    is_explicit_command_path(request.program)
+        && !Path::new(request.program).is_absolute()
+        && request.working_directory.is_none()
 }
 
 #[derive(Debug)]
@@ -886,6 +907,7 @@ mod tests {
     use super::ensure_sudo_target_is_available;
     #[cfg(unix)]
     use super::explicit_system_package_manager_path_with_resolved;
+    use super::is_explicit_relative_program_without_working_directory;
     #[cfg(unix)]
     use super::resolve_command_path_in_standard_locations_os;
     #[cfg(unix)]
@@ -1458,16 +1480,13 @@ mod tests {
     }
 
     #[test]
-    fn run_host_command_resolves_relative_program_against_caller_cwd() {
-        let current_directory = std::env::current_dir().expect("current dir");
-        let temp = tempfile::Builder::new()
-            .prefix("omne-process-primitives-relative-program-")
-            .tempdir_in(&current_directory)
-            .expect("tempdir in current dir");
+    fn run_host_command_resolves_relative_program_against_working_directory() {
         let working_directory = tempfile::tempdir().expect("working directory tempdir");
-        let command_path = write_pwd_command(temp.path(), "pwd");
+        let command_root = working_directory.path().join("bin");
+        std::fs::create_dir_all(&command_root).expect("create relative command root");
+        let command_path = write_pwd_command(&command_root, "pwd");
         let relative_program = command_path
-            .strip_prefix(&current_directory)
+            .strip_prefix(working_directory.path())
             .expect("relative command path")
             .to_path_buf();
         let args = Vec::new();
@@ -1479,10 +1498,10 @@ mod tests {
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        assert!(command_exists_os(relative_program.as_os_str()));
+        assert!(!command_exists_os(relative_program.as_os_str()));
         assert_eq!(
             resolve_program_for_direct_spawn(&request),
-            current_directory.join(&relative_program)
+            working_directory.path().join(&relative_program)
         );
 
         let output = run_host_command(&request).expect("run host command");
@@ -1523,16 +1542,13 @@ mod tests {
     }
 
     #[test]
-    fn request_scoped_probe_keeps_relative_program_on_caller_cwd() {
-        let current_directory = std::env::current_dir().expect("current dir");
-        let temp = tempfile::Builder::new()
-            .prefix("omne-process-primitives-request-probe-")
-            .tempdir_in(&current_directory)
-            .expect("tempdir in current dir");
+    fn request_scoped_probe_resolves_relative_program_against_working_directory() {
         let working_directory = tempfile::tempdir().expect("working directory tempdir");
-        let command_path = write_pwd_command(temp.path(), "pwd");
+        let command_root = working_directory.path().join("bin");
+        std::fs::create_dir_all(&command_root).expect("create relative command root");
+        let command_path = write_pwd_command(&command_root, "pwd");
         let relative_program = command_path
-            .strip_prefix(&current_directory)
+            .strip_prefix(working_directory.path())
             .expect("relative command path")
             .to_path_buf();
         let request = HostCommandRequest {
@@ -1547,8 +1563,53 @@ mod tests {
         assert!(command_available_for_request(&request));
         assert_eq!(
             resolve_program_for_direct_spawn(&request),
-            current_directory.join(&relative_program)
+            working_directory.path().join(&relative_program)
         );
+    }
+
+    #[test]
+    fn request_scoped_probe_rejects_relative_program_without_working_directory() {
+        let request = HostCommandRequest {
+            program: OsStr::new("./tool"),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        assert!(!command_exists_for_request(&request));
+        assert!(!command_available_for_request(&request));
+        assert!(is_explicit_relative_program_without_working_directory(
+            &request
+        ));
+    }
+
+    #[test]
+    fn run_host_command_rejects_relative_program_without_working_directory() {
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: OsStr::new("./tool"),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let err = run_host_command(&request).expect_err("relative program should fail closed");
+        match err {
+            HostCommandError::SpawnFailed {
+                execution, source, ..
+            } => {
+                assert_eq!(execution, HostCommandExecution::Direct);
+                assert_eq!(source.kind(), io::ErrorKind::InvalidInput);
+                assert!(
+                    source
+                        .to_string()
+                        .contains("explicit relative program paths require working_directory")
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[cfg(unix)]

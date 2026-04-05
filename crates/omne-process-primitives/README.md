@@ -14,7 +14,7 @@ Low-level host-command and process-tree primitives shared across callers.
 - host command discovery, including `OsStr`-friendly probe/resolve helpers
 - explicit-path command discovery that treats `./tool` and `subdir/tool` as explicit paths instead
   of continuing to search `PATH`, matching shell/`exec` semantics for probe helpers
-- request-scoped command probes that honor request `PATH` overrides for bare direct commands without changing caller-cwd semantics for explicit relative program paths
+- request-scoped command probes that honor request `PATH` overrides for bare direct commands while failing closed on explicit relative program paths that omit `working_directory`
 - `command_available*` probes that keep the same spawnable contract as execution and do not report non-executable files as available
 - host command execution with captured output that returns after the direct child exits even if daemonized descendants keep inherited stdout/stderr open
 - optional request-scoped env removals and hard timeouts for host command / recipe execution, while leaving timeout selection to the caller
@@ -22,7 +22,7 @@ Low-level host-command and process-tree primitives shared across callers.
 - distinct timeout errors that preserve bounded captured stdout/stderr for callers that need to render or classify partial output
 - host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
 - non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
-- explicit relative program paths that keep caller-cwd semantics even when the child process runs under a different `working_directory`
+- explicit relative program paths that resolve only against an explicit `working_directory`, instead of silently inheriting the caller process cwd
 - sudo-style escalation that resolves the privileged target from trusted host locations and drops all request env at the sudo boundary, so elevated commands never reintroduce caller-controlled `PATH` or other request-scoped environment into the root-side target process
 - fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved from trusted standard install locations as a canonical system package manager command
 - direct explicit-path spawns only collapse `ENOENT` into `CommandNotFound` when the resolved target path itself is gone; if the file still exists, interpreter/loader failures remain structured spawn errors
