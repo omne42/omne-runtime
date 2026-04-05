@@ -84,6 +84,11 @@ pub enum AtomicDirectoryError {
         path: PathBuf,
         source: io::Error,
     },
+    CommittedButCleanupFailed {
+        op: &'static str,
+        path: PathBuf,
+        source: io::Error,
+    },
     Validation(String),
 }
 
@@ -121,6 +126,14 @@ impl AtomicDirectoryError {
             source,
         }
     }
+
+    fn committed_but_cleanup_failed(op: &'static str, path: &Path, source: io::Error) -> Self {
+        Self::CommittedButCleanupFailed {
+            op,
+            path: path.to_path_buf(),
+            source,
+        }
+    }
 }
 
 impl fmt::Display for AtomicWriteError {
@@ -150,6 +163,11 @@ impl fmt::Display for AtomicDirectoryError {
                 "filesystem update committed but parent sync failed during {op} ({}): {source}",
                 path.display()
             ),
+            Self::CommittedButCleanupFailed { op, path, source } => write!(
+                f,
+                "filesystem update committed but cleanup failed during {op} ({}): {source}",
+                path.display()
+            ),
             Self::Validation(message) => write!(f, "{message}"),
         }
     }
@@ -167,7 +185,9 @@ impl std::error::Error for AtomicWriteError {
 impl std::error::Error for AtomicDirectoryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::IoPath { source, .. } | Self::CommittedButUnsynced { source, .. } => Some(source),
+            Self::IoPath { source, .. }
+            | Self::CommittedButUnsynced { source, .. }
+            | Self::CommittedButCleanupFailed { source, .. } => Some(source),
             Self::Validation(_) => None,
         }
     }
@@ -475,6 +495,20 @@ fn commit_replace_directory(
     destination: &Path,
     options: &AtomicDirectoryOptions,
 ) -> Result<(), AtomicDirectoryError> {
+    commit_replace_directory_with_backup_root_cleanup(
+        staged_dir,
+        destination,
+        options,
+        close_backup_root,
+    )
+}
+
+fn commit_replace_directory_with_backup_root_cleanup(
+    staged_dir: tempfile::TempDir,
+    destination: &Path,
+    options: &AtomicDirectoryOptions,
+    backup_root_cleanup: fn(tempfile::TempDir) -> io::Result<()>,
+) -> Result<(), AtomicDirectoryError> {
     let staged_path = staged_dir.keep();
     let mut backup_root = None;
     let mut backup_path = None;
@@ -534,14 +568,22 @@ fn commit_replace_directory(
     }
 
     if let Some(holder) = backup_root {
-        holder
-            .close()
-            .map_err(|err| AtomicDirectoryError::io_path("remove_backup_dir", destination, err))?;
+        backup_root_cleanup(holder).map_err(|err| {
+            AtomicDirectoryError::committed_but_cleanup_failed(
+                "remove_backup_dir",
+                destination,
+                err,
+            )
+        })?;
     }
 
     sync_parent_directory(destination).map_err(|err| {
         AtomicDirectoryError::committed_but_unsynced("sync_parent", destination, err)
     })
+}
+
+fn close_backup_root(holder: tempfile::TempDir) -> io::Result<()> {
+    holder.close()
 }
 
 fn remove_path_if_exists(path: &Path) {
@@ -716,6 +758,42 @@ mod tests {
         assert!(!destination.join("old.txt").exists());
         assert_eq!(
             std::fs::read(destination.join("bin/tool")).expect("read staged file"),
+            b"new"
+        );
+    }
+
+    #[test]
+    fn staged_atomic_directory_reports_committed_cleanup_failure_after_switch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tree");
+        std::fs::create_dir_all(&destination).expect("mkdir destination");
+        std::fs::write(destination.join("old.txt"), b"old").expect("seed file");
+
+        let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+            .expect("stage directory");
+        std::fs::create_dir_all(staged.path().join("bin")).expect("mkdir staged");
+        std::fs::write(staged.path().join("bin/tool"), b"new").expect("write staged file");
+
+        let err = super::commit_replace_directory_with_backup_root_cleanup(
+            staged.staged,
+            &destination,
+            &staged.options,
+            |_| Err(std::io::Error::other("cleanup failed")),
+        )
+        .expect_err("cleanup failure should surface");
+
+        match err {
+            super::AtomicDirectoryError::CommittedButCleanupFailed { op, path, source } => {
+                assert_eq!(op, "remove_backup_dir");
+                assert_eq!(path, destination);
+                assert_eq!(source.to_string(), "cleanup failed");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        assert!(!destination.join("old.txt").exists());
+        assert_eq!(
+            std::fs::read(destination.join("bin/tool")).expect("read switched directory"),
             b"new"
         );
     }

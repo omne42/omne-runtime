@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- report staged directory replace backup cleanup failures as post-commit errors so callers can tell the destination already switched
 - call `fs2::FileExt::unlock` with fully qualified syntax so future stdlib name-collision lints do not break `-D warnings` builds
 - narrow macOS root-alias normalization to the known `/var` and `/tmp` aliases instead of trusting any first-component symlink under `/`
 - reject non-root symlink ancestors while materializing parent directories for staged atomic file/directory writes, while normalizing platform root aliases such as macOS `/var`
