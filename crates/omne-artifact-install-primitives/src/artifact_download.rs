@@ -91,31 +91,29 @@ impl fmt::Display for ArtifactInstallError {
 impl std::error::Error for ArtifactInstallError {}
 
 impl ArtifactDownloader for reqwest::Client {
-    fn download_to_writer<W>(
+    async fn download_to_writer<W>(
         &self,
         url: &str,
         writer: &mut W,
         max_bytes: Option<u64>,
-    ) -> impl Future<Output = Result<(), ArtifactInstallError>>
+    ) -> Result<(), ArtifactInstallError>
     where
         W: Write + ?Sized,
     {
-        async move {
-            let response = self
-                .get(url)
-                .send()
-                .await
-                .map_err(|err| ArtifactInstallError::download(err.to_string()))?;
-            if !response.status().is_success() {
-                return Err(ArtifactInstallError::download(format!(
-                    "HTTP {}",
-                    response.status()
-                )));
-            }
-            write_response_body_limited(response, writer, max_bytes)
-                .await
-                .map_err(|err| ArtifactInstallError::download(err.to_string()))
+        let response = self
+            .get(url)
+            .send()
+            .await
+            .map_err(|err| ArtifactInstallError::download(err.to_string()))?;
+        if !response.status().is_success() {
+            return Err(ArtifactInstallError::download(format!(
+                "HTTP {}",
+                response.status()
+            )));
         }
+        write_response_body_limited(response, writer, max_bytes)
+            .await
+            .map_err(|err| ArtifactInstallError::download(err.to_string()))
     }
 }
 
