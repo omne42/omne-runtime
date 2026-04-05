@@ -66,6 +66,10 @@ package 名保持一致。
 直接含义是：
 
 - 不创建一个兜底式 `platform` crate。
+- 当前 workspace 的构建图跨仓库引用 sibling `../omne_foundation`：`omne-artifact-install-primitives`
+  通过 path dependency 复用 `http-kit`，`omne-fs` 和 `omne-execution-gateway` 通过 path
+  dependency 复用 `policy-meta`。因此 `omne-runtime` 是 runtime workspace 的事实来源，
+  但不是脱离 foundation 后还能单独 `cargo test --workspace` 的孤立仓库。
 - `omne-artifact-install-primitives` 负责 artifact 候选下载执行与安装管道，
   但不持有 release metadata 或候选顺序策略。
 - `omne-archive-primitives` 负责 archive/compression 格式读取与条目提取，
@@ -91,6 +95,8 @@ package 名保持一致。
 - `omne-artifact-install-primitives` 依赖 `omne-archive-primitives`、
   `omne-fs-primitives`、`omne-integrity-primitives` 与 foundation 的 `http-kit`。
   它首先面向需要共享 artifact 下载 + 校验 + 落盘/解压安装管道的 sibling caller。
+- 当前本仓库所有引用 foundation crate 的 path dependency 都要求 checkout 布局满足
+  `omne-runtime/` 与 sibling `../omne_foundation/` 并存；CI 也按这个布局检出。
 - `omne-execution-gateway` 当前依赖 `omne-fs-primitives` 与 `policy-meta`。
   它把 bounded no-follow policy/request/audit-log 文件输入复用到 `omne-fs-primitives`，并把平台相关 sandbox 代码保留在 `src/sandbox/*` 下。
 - `omne-process-primitives` 当前依赖 `omne-system-package-primitives`。
