@@ -890,7 +890,6 @@ fn spawn_error_is_missing_program(
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};
-    #[cfg(unix)]
     use std::io;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
