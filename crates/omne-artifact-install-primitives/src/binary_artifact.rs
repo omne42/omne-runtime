@@ -372,32 +372,30 @@ mod tests {
     }
 
     impl ArtifactDownloader for StubDownloader {
-        fn download_to_writer<W>(
+        async fn download_to_writer<W>(
             &self,
             url: &str,
             writer: &mut W,
             max_bytes: Option<u64>,
-        ) -> impl std::future::Future<Output = Result<(), ArtifactInstallError>>
+        ) -> Result<(), ArtifactInstallError>
         where
             W: Write + ?Sized,
         {
-            async move {
-                let body = self.routes.get(url).ok_or_else(|| {
-                    ArtifactInstallError::download(format!("missing stub route: {url}"))
-                })?;
-                if let Some(limit) = max_bytes
-                    && body.len() as u64 > limit
-                {
-                    return Err(ArtifactInstallError::download(format!(
-                        "response body too large ({} > {} bytes)",
-                        body.len(),
-                        limit
-                    )));
-                }
-                writer
-                    .write_all(body)
-                    .map_err(|err| ArtifactInstallError::install(err.to_string()))
+            let body = self.routes.get(url).ok_or_else(|| {
+                ArtifactInstallError::download(format!("missing stub route: {url}"))
+            })?;
+            if let Some(limit) = max_bytes
+                && body.len() as u64 > limit
+            {
+                return Err(ArtifactInstallError::download(format!(
+                    "response body too large ({} > {} bytes)",
+                    body.len(),
+                    limit
+                )));
             }
+            writer
+                .write_all(body)
+                .map_err(|err| ArtifactInstallError::install(err.to_string()))
         }
     }
 

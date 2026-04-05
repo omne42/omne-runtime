@@ -203,7 +203,6 @@ fn aggregate_failure_kind(errors: &[CandidateFailure]) -> ArtifactInstallErrorKi
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
     use std::io::Write;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
@@ -229,24 +228,22 @@ mod tests {
     }
 
     impl ArtifactDownloader for RecordingDownloader {
-        fn download_to_writer<W>(
+        async fn download_to_writer<W>(
             &self,
             url: &str,
             writer: &mut W,
             _max_bytes: Option<u64>,
-        ) -> impl Future<Output = Result<(), ArtifactInstallError>>
+        ) -> Result<(), ArtifactInstallError>
         where
             W: Write + ?Sized,
         {
-            async move {
-                self.visited_urls
-                    .lock()
-                    .expect("record visited urls")
-                    .push(url.to_string());
-                writer
-                    .write_all(&self.body)
-                    .map_err(|err| ArtifactInstallError::download(err.to_string()))
-            }
+            self.visited_urls
+                .lock()
+                .expect("record visited urls")
+                .push(url.to_string());
+            writer
+                .write_all(&self.body)
+                .map_err(|err| ArtifactInstallError::download(err.to_string()))
         }
     }
 
