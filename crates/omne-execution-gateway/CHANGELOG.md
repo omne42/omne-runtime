@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- clarify in docs and API references that `ExecGateway::new()` / `Default` stay fail-closed on
+  mutation policy unless callers provide explicit allowlists or disable mutation enforcement, so
+  the public constructor is not mistaken for a permissive execution baseline
 - complete the public API reference's `ExecError` variant list so downstream callers can track the
   full documented gateway failure surface instead of an outdated subset
 - normalize explicit and bare program bindings to the canonical real executable path before spawn,

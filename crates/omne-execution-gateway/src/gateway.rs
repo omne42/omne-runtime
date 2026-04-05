@@ -118,6 +118,11 @@ impl Default for ExecGateway {
 }
 
 impl ExecGateway {
+    /// Construct a gateway with host-compatible isolation defaults but fail-closed mutation policy.
+    ///
+    /// `GatewayPolicy::default_for_supported_isolation(...)` still enables mutation enforcement
+    /// and starts with empty allowlists, so callers that expect commands to run must either supply
+    /// explicit allowlists or build a custom policy that disables mutation enforcement.
     pub fn new() -> Self {
         let supported_isolation = sandbox::detect_supported_isolation();
         Self::with_policy_and_supported_isolation(
@@ -142,6 +147,8 @@ impl ExecGateway {
         }
     }
 
+    /// Construct a gateway with the supplied host capability but the same fail-closed default
+    /// policy shape as [`ExecGateway::new`].
     pub fn with_supported_isolation(supported_isolation: ExecutionIsolation) -> Self {
         Self::with_policy_and_supported_isolation(
             GatewayPolicy::default_for_supported_isolation(supported_isolation),

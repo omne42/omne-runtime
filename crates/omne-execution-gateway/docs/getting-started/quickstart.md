@@ -35,6 +35,10 @@ assert_eq!(execution.event.decision, omne_execution_gateway::ExecDecision::Run);
 # Ok::<(), omne_execution_gateway::ExecError>(())
 ```
 
+This example uses `with_policy(...)` on purpose. `ExecGateway::new()` / `Default` keep mutation
+enforcement enabled with empty allowlists, so they deny ordinary commands until you explicitly
+configure policy.
+
 ## 3. Check Host Capability
 
 ```bash

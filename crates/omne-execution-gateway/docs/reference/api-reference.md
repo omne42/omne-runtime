@@ -84,6 +84,11 @@ non-UTF-8 OS strings exactly instead of depending on lossy display fields.
 - `ExecGateway::with_supported_isolation(level)`
 - `ExecGateway::with_policy_and_supported_isolation(policy, level)`
 
+`ExecGateway::new()` and `ExecGateway::with_supported_isolation(...)` keep the same fail-closed
+default policy shape as `GatewayPolicy::default_for_supported_isolation(...)`: host-compatible
+`default_isolation`, but mutation enforcement still on and both allowlists empty. Callers that
+want commands to run must pass a custom policy or explicit allowlists.
+
 ## ExecGateway Methods
 
 - `capability_report()`
