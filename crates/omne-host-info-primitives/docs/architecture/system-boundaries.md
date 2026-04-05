@@ -10,7 +10,7 @@
 - 把宿主组合映射到 canonical target triple，并在 Linux 上仅根据本地 ABI marker 区分 `gnu` / `musl` 宿主 ABI；无法可靠识别时直接拒绝返回宿主平台。
 - 解析可选 target override，并在空值时回退到宿主 triple。
 - 解析当前用户 home 目录，只接受来自标准环境变量的绝对路径。
-- 根据 target triple 推断可执行后缀。
+- 根据 target triple 的 OS 段推断可执行后缀，而不是用宽松子串猜测平台。
 
 ## 不负责什么
 

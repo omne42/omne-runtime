@@ -115,10 +115,25 @@ pub fn resolve_target_triple(override_target: Option<&str>, host_target_triple: 
 }
 
 pub fn executable_suffix_for_target(target_triple: &str) -> &'static str {
-    if target_triple.contains("windows") {
+    if matches!(
+        target_triple_operating_system(target_triple),
+        Some(HostOperatingSystem::Windows)
+    ) {
         ".exe"
     } else {
         ""
+    }
+}
+
+fn target_triple_operating_system(target_triple: &str) -> Option<HostOperatingSystem> {
+    let mut components = target_triple.trim().split('-');
+    let _arch = components.next()?;
+    let _vendor = components.next()?;
+    match components.next()? {
+        "linux" => Some(HostOperatingSystem::Linux),
+        "darwin" => Some(HostOperatingSystem::Macos),
+        "windows" => Some(HostOperatingSystem::Windows),
+        _ => None,
     }
 }
 
@@ -296,6 +311,11 @@ mod tests {
         assert_eq!(executable_suffix_for_target("x86_64-unknown-linux-gnu"), "");
         assert_eq!(
             executable_suffix_for_target("x86_64-unknown-linux-musl"),
+            ""
+        );
+        assert_eq!(executable_suffix_for_target("custom-target"), "");
+        assert_eq!(
+            executable_suffix_for_target("x86_64-unknown-notwindows-msvc"),
             ""
         );
     }

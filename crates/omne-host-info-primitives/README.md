@@ -15,7 +15,7 @@ Low-level host platform and target-triple primitives shared across callers.
 - canonical target-triple mapping, including Linux `gnu` vs `musl` detection from local ABI markers
 - target override normalization
 - home-directory resolution
-- executable suffix inference
+- executable suffix inference from the parsed target OS slot rather than substring guesses
 
 ## Non-Goals
 
