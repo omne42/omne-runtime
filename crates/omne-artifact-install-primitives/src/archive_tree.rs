@@ -1,6 +1,8 @@
-#[cfg(unix)]
 use std::fs;
+use std::io;
 use std::io::{Cursor, Read, Seek, SeekFrom};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
@@ -13,7 +15,7 @@ use omne_fs_primitives::{
     create_regular_file_at, lock_advisory_file_in_ambient_root, open_ambient_root,
     open_directory_component, stage_directory_atomically, stage_file_atomically_with_name,
 };
-use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
+use omne_integrity_primitives::{Sha256Digest, hash_sha256, verify_sha256_reader};
 use tar::Archive as TarArchive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
@@ -195,8 +197,11 @@ fn archive_tree_install_lock_file_name(destination: &Path) -> PathBuf {
         .map(|name| sanitize_lock_component(&name.to_string_lossy()))
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "tree".to_string());
+    let lock_identity = archive_tree_install_lock_identity(destination);
+    let lock_hash = hash_sha256(&archive_tree_lock_identity_bytes(&lock_identity)).to_string();
     PathBuf::from(format!(
-        "{ARCHIVE_TREE_INSTALL_LOCK_PREFIX}{label}{ARCHIVE_TREE_INSTALL_LOCK_SUFFIX}"
+        "{ARCHIVE_TREE_INSTALL_LOCK_PREFIX}{label}-{hash}{ARCHIVE_TREE_INSTALL_LOCK_SUFFIX}",
+        hash = &lock_hash[..16]
     ))
 }
 
@@ -208,6 +213,93 @@ fn sanitize_lock_component(value: &str) -> String {
             _ => '_',
         })
         .collect()
+}
+
+fn archive_tree_install_lock_identity(destination: &Path) -> PathBuf {
+    let absolute = absolute_lexically_normalized_path(destination);
+    normalize_existing_lock_identity_path(&absolute).unwrap_or(absolute)
+}
+
+fn absolute_lexically_normalized_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    lexically_normalize_path(&absolute)
+}
+
+fn lexically_normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+        }
+    }
+    normalized
+}
+
+fn normalize_existing_lock_identity_path(path: &Path) -> io::Result<PathBuf> {
+    let mut visited = PathBuf::new();
+    let mut normalized = PathBuf::new();
+    let mut components = path.components().peekable();
+
+    while let Some(component) = components.next() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {
+                visited.push(component.as_os_str());
+                normalized.push(component.as_os_str());
+            }
+            Component::Normal(part) => {
+                visited.push(part);
+                match fs::symlink_metadata(&visited) {
+                    Ok(_) => normalized = fs::canonicalize(&visited)?,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        normalized.push(part);
+                        for remainder in components {
+                            normalized.push(remainder.as_os_str());
+                        }
+                        return Ok(normalized);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Component::CurDir | Component::ParentDir => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+
+    Ok(normalized)
+}
+
+#[cfg(unix)]
+fn archive_tree_lock_identity_bytes(path: &Path) -> Vec<u8> {
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(windows)]
+fn archive_tree_lock_identity_bytes(path: &Path) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+
+    path.as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn archive_tree_lock_identity_bytes(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
 }
 
 fn extract_zip_tree<R>(
@@ -1169,6 +1261,41 @@ mod tests {
         handle.join().expect("install thread join");
         assert_eq!(fs::read(destination.join("bin/demo"))?, b"demo");
         Ok(())
+    }
+
+    #[test]
+    fn archive_tree_install_lock_name_collapses_lexically_equivalent_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().canonicalize().expect("canonicalize tempdir");
+        let canonical = base.join("nested").join("tree");
+        let equivalent = base
+            .join("nested")
+            .join(".")
+            .join("tool")
+            .join("..")
+            .join("tree");
+
+        assert_eq!(
+            archive_tree_install_lock_file_name(&canonical),
+            archive_tree_install_lock_file_name(&equivalent)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_tree_install_lock_name_collapses_existing_alias_prefix() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let real_root = temp.path().join("real-root");
+        fs::create_dir_all(&real_root).expect("mkdir real root");
+        let alias_root = temp.path().join("alias-root");
+        symlink(&real_root, &alias_root).expect("create alias root");
+
+        assert_eq!(
+            archive_tree_install_lock_file_name(&real_root.join("tree")),
+            archive_tree_install_lock_file_name(&alias_root.join("tree"))
+        );
     }
 
     #[cfg(unix)]
