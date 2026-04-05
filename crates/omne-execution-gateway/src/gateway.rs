@@ -557,6 +557,10 @@ fn request_uses_opaque_command_launcher(request: &ExecRequest) -> ExecResult<boo
         return Ok(uses_opaque_command_launcher(&request.program));
     }
 
+    if !Path::new(&request.program).is_absolute() {
+        return Ok(uses_opaque_command_launcher(&request.program));
+    }
+
     bind_program_path(&request.program, false).map(|bound| {
         uses_opaque_command_launcher(&request.program)
             || uses_opaque_command_launcher(bound.path.as_os_str())
