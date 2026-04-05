@@ -4,6 +4,8 @@
 
 - complete the public API reference's `ExecError` variant list so downstream callers can track the
   full documented gateway failure surface instead of an outdated subset
+- normalize explicit and bare program bindings to the canonical real executable path before spawn,
+  so validated symlink aliases are not passed back into the final `spawn()` call
 - document `ExecRequest` / `RequestResolution` / `ExecEvent` environment fields more explicitly in
   the API reference, including `env_exact` and the fact that gateway-managed spawns clear inherited
   process state before applying only the audited request environment

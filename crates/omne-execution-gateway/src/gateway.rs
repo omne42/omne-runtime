@@ -847,8 +847,15 @@ fn bind_absolute_program_path(
     requested_path: &Path,
     bind_contents: bool,
 ) -> ExecResult<BoundProgram> {
+    let canonical_path =
+        requested_path
+            .canonicalize()
+            .map_err(|err| ExecError::ProgramPathInvalid {
+                path: requested_path.to_path_buf(),
+                detail: err.to_string(),
+            })?;
     let metadata =
-        std::fs::metadata(requested_path).map_err(|err| ExecError::ProgramPathInvalid {
+        std::fs::metadata(&canonical_path).map_err(|err| ExecError::ProgramPathInvalid {
             path: requested_path.to_path_buf(),
             detail: err.to_string(),
         })?;
@@ -858,24 +865,24 @@ fn bind_absolute_program_path(
             detail: "program path must reference a regular file".to_string(),
         });
     }
-    if !is_spawnable_program_path(requested_path) {
+    if !is_spawnable_program_path(&canonical_path) {
         return Err(ExecError::ProgramPathInvalid {
             path: requested_path.to_path_buf(),
             detail: "program path must reference a spawnable executable".to_string(),
         });
     }
 
-    let identity = SameFileHandle::from_path(requested_path).map_err(|_| {
+    let identity = SameFileHandle::from_path(&canonical_path).map_err(|_| {
         ExecError::PathIdentityUnavailable {
             kind: "program",
-            path: requested_path.to_path_buf(),
+            path: canonical_path.clone(),
         }
     })?;
     Ok(BoundProgram {
-        path: requested_path.to_path_buf(),
+        path: canonical_path.clone(),
         identity,
         content_fingerprint: bind_contents
-            .then(|| fingerprint_program_contents(requested_path))
+            .then(|| fingerprint_program_contents(&canonical_path))
             .transpose()?,
     })
 }
@@ -1509,7 +1516,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn preserves_requested_symlink_program_paths_in_events() {
+    fn resolves_symlink_program_paths_to_real_execution_path_in_events() {
         use std::os::unix::fs::symlink;
 
         let policy = GatewayPolicy {
@@ -1537,7 +1544,10 @@ mod tests {
 
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Run);
-        assert_eq!(event.program, symlink_path);
+        assert_eq!(
+            event.program,
+            target.canonicalize().expect("canonicalize target")
+        );
     }
 
     #[test]
@@ -3440,6 +3450,8 @@ mod tests {
     fn resolved_non_mutating_program_path() -> PathBuf {
         resolve_bare_program_path(OsStr::new(non_mutating_program()))
             .expect("resolve non-mutating test program")
+            .canonicalize()
+            .expect("canonicalize non-mutating test program")
     }
 
     fn dummy_program_absolute_path() -> PathBuf {
