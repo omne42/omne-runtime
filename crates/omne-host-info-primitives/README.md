@@ -13,9 +13,11 @@ Low-level host platform and target-triple primitives shared across callers.
 
 - host OS and architecture detection
 - canonical target-triple mapping, including Linux `gnu` vs `musl` detection from local ABI markers
-- supported target override validation/normalization
+- validated target override normalization for the crate's supported canonical triples, with checked
+  APIs that return structured errors and compatibility helpers that fail closed
 - home-directory resolution
-- executable suffix inference for supported canonical target triples
+- executable suffix inference for validated canonical target triples, with checked APIs plus
+  fail-closed compatibility helpers
 
 ## Non-Goals
 
