@@ -10,8 +10,8 @@ use std::path::{Component, Path, PathBuf};
 use flate2::read::GzDecoder;
 use omne_fs_primitives::{
     AtomicDirectoryOptions, AtomicWriteOptions, Dir, MissingRootPolicy, create_directory_component,
-    create_regular_file_at, lock_advisory_file_in_ambient_root, open_directory_component,
-    open_root, stage_directory_atomically, stage_file_atomically_with_name,
+    create_regular_file_at, lock_advisory_file_in_ambient_root, open_ambient_root,
+    open_directory_component, stage_directory_atomically, stage_file_atomically_with_name,
 };
 use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 use tar::Archive as TarArchive;
@@ -697,7 +697,7 @@ fn validate_archive_hard_link_target(
 }
 
 fn open_archive_destination_root(destination: &Path) -> Result<Dir, ArtifactInstallError> {
-    open_root(
+    open_ambient_root(
         destination,
         "archive tree destination",
         MissingRootPolicy::Error,
@@ -1242,6 +1242,28 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(!outside.join("bin/demo").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_regular_files_allow_existing_symlinked_ambient_ancestor() -> Result<(), Box<dyn Error>> {
+        let archive = make_tar_archive(&[TarEntry::File("bin/demo", b"demo".as_slice(), 0o755)])?;
+        let temp = tempfile::tempdir()?;
+        let real_root = temp.path().join("real-root");
+        let ambient_link = temp.path().join("ambient-link");
+        let destination = ambient_link.join("tree");
+        fs::create_dir_all(real_root.join("tree"))?;
+        std::os::unix::fs::symlink(&real_root, &ambient_link)?;
+
+        extract_tar_tree(
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits::default(),
+        )?;
+
+        assert_eq!(fs::read(real_root.join("tree/bin/demo"))?, b"demo");
+        assert_eq!(fs::read(destination.join("bin/demo"))?, b"demo");
         Ok(())
     }
 
