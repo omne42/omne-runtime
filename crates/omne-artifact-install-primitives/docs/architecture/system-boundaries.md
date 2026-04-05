@@ -9,8 +9,8 @@
 - 消费调用方给定的有序下载候选列表。
 - 以受限响应体流式下载 artifact。
 - 对下载结果执行可选的 SHA-256 校验。
-- 把直接二进制资产原子安装到目标路径。
-- 从受支持的 archive 中提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束。
+- 把直接二进制资产原子安装到目标路径，并对同一 binary 目标的 install phase 做 advisory lock 串行化，避免并发 commit 互相踩坏最终落点。
+- 从受支持的 archive 中提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束；同一 binary 目标的 install phase 同样按 destination 做 advisory lock 串行化。
 - 把受支持的 archive 目录树解到 `omne-fs-primitives` 提供的 staged 目录，并在默认 extracted-byte / entry-count 预算内成功后替换目标目录。
 - 对同一个 archive tree 目标目录，安装阶段按目标做 advisory lock 串行化，避免并发 replace/rollback 互相踩坏目录状态。
 - 对 archive tree 中会物化目录项的条目，要求落点父目录链必须是 staging 目录下的真实目录；命中 symlink 祖先时 fail-closed，不能借由已创建链接把后续 regular file 写出到 staging 目录之外。
@@ -21,7 +21,7 @@
 
 - GitHub release API、release DTO 或 latest tag 选择。
 - `gateway|canonical|mirror` 候选顺序策略生成。
-- 产品级目标目录布局、tool name 到 destination 的映射。
+- 产品级目标目录布局或 tool/package 映射。
 - 产品级错误码、JSON 结果 contract 或 CLI。
 
 ## 依赖边界
