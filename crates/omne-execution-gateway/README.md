@@ -29,6 +29,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `BestEffort` is a compatibility tier, not a strong sandbox guarantee.
 - Linux, macOS, and Windows currently do not expose a native `BestEffort` or `Strict` sandbox. Requests above `None` fail closed.
 - the in-memory `GatewayPolicy::default()` baseline now uses `allow_isolation_none = true` plus `default_isolation = none`, so a default `ExecGateway::new()` stays usable on today's `None`-only hosts; callers that want fail-closed sandbox preference must opt into `best_effort` or `strict` explicitly.
+- `ExecGateway::new()` / `Default` are still deny-by-default on mutation policy: mutation enforcement remains on and both allowlists start empty, so callers that actually want commands to run must either provide allowlists or build a policy with `enforce_allowlisted_program_for_mutation = false`.
 - Linux's previous native Landlock path is intentionally disabled until it can be reintroduced without relying on unsafe post-`fork` Rust execution.
 - when `enforce_allowlisted_program_for_mutation = true`, callers must always set `with_declared_mutation(...)` intentionally instead of relying on the constructor default.
 - declared mutations must bind to a `mutating_program_allowlist` executable identity via an explicit program path, and declared non-mutating requests must bind to a `non_mutating_program_allowlist` executable identity via an explicit program path.
@@ -94,6 +95,9 @@ assert!(status.success());
 assert_eq!(execution.event.decision, omne_execution_gateway::ExecDecision::Run);
 # Ok::<(), omne_execution_gateway::ExecError>(())
 ```
+
+Use `ExecGateway::new()` only when you intentionally want that fail-closed default policy shape;
+it will not authorize ordinary commands until you add allowlists or disable mutation enforcement.
 
 ## Capability Check
 
