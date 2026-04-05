@@ -12,6 +12,9 @@ Reusable artifact download and install primitives shared by higher-level callers
 ## Scope
 
 - ordered artifact download candidate execution
+- public download/install entrypoints that depend on the crate-local `ArtifactDownloader` boundary
+  instead of hard-coding a concrete HTTP client type; `reqwest::Client` remains supported via the
+  built-in adapter impl
 - optional SHA-256 verification for downloaded artifacts
 - direct binary artifact atomic installation, serialized per destination during the install phase
 - binary-from-archive installation with the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget and the same per-destination install lock

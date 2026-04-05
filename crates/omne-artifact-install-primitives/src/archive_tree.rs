@@ -21,7 +21,7 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::artifact_download::{
-    ArtifactDownloadCandidate, ArtifactInstallError, candidate_failure_message,
+    ArtifactDownloadCandidate, ArtifactDownloader, ArtifactInstallError, candidate_failure_message,
     download_candidate_to_writer_with_options, failed_candidates_error, run_blocking_install,
 };
 
@@ -60,11 +60,14 @@ pub fn install_archive_tree_from_bytes(
     )
 }
 
-pub async fn download_and_install_archive_tree(
-    client: &reqwest::Client,
+pub async fn download_and_install_archive_tree<D>(
+    downloader: &D,
     candidates: &[ArtifactDownloadCandidate],
     request: &ArchiveTreeInstallRequest<'_>,
-) -> Result<ArtifactDownloadCandidate, ArtifactInstallError> {
+) -> Result<ArtifactDownloadCandidate, ArtifactInstallError>
+where
+    D: ArtifactDownloader + ?Sized,
+{
     if !is_archive_tree_asset_name(request.asset_name) {
         return Err(ArtifactInstallError::install(format!(
             "archive tree install requires a supported archive asset, got `{}`",
@@ -85,7 +88,7 @@ pub async fn download_and_install_archive_tree(
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
 
         let download_result = download_candidate_to_writer_with_options(
-            client,
+            downloader,
             candidate,
             staged.file_mut(),
             request.max_download_bytes,
@@ -994,7 +997,10 @@ mod tests {
 
     use omne_fs_primitives::lock_advisory_file_in_ambient_root;
 
-    use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
+    use crate::artifact_download::{
+        ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactDownloader,
+        ArtifactInstallError,
+    };
 
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
@@ -1021,6 +1027,40 @@ mod tests {
             archive.finish()?;
         }
         Ok(writer.into_inner())
+    }
+
+    struct StubDownloader {
+        routes: HashMap<String, Vec<u8>>,
+    }
+
+    impl ArtifactDownloader for StubDownloader {
+        fn download_to_writer<W>(
+            &self,
+            url: &str,
+            writer: &mut W,
+            max_bytes: Option<u64>,
+        ) -> impl std::future::Future<Output = Result<(), ArtifactInstallError>>
+        where
+            W: Write + ?Sized,
+        {
+            async move {
+                let body = self.routes.get(url).ok_or_else(|| {
+                    ArtifactInstallError::download(format!("missing stub route: {url}"))
+                })?;
+                if let Some(limit) = max_bytes
+                    && body.len() as u64 > limit
+                {
+                    return Err(ArtifactInstallError::download(format!(
+                        "response body too large ({} > {} bytes)",
+                        body.len(),
+                        limit
+                    )));
+                }
+                writer
+                    .write_all(body)
+                    .map_err(|err| ArtifactInstallError::install(err.to_string()))
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -1161,6 +1201,38 @@ mod tests {
         assert!(destination.join("LICENSE").exists());
 
         handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn archive_tree_download_accepts_non_reqwest_downloader() -> Result<(), Box<dyn Error>> {
+        let archive_name = "demo-tree.zip";
+        let archive = make_zip_archive(&[("bin/demo.exe", b"MZ".as_slice(), 0o755)])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        let canonical_url = format!("https://example.invalid/{archive_name}");
+        let downloader = StubDownloader {
+            routes: HashMap::from([(canonical_url.clone(), archive)]),
+        };
+
+        let selected = download_and_install_archive_tree(
+            &downloader,
+            &[ArtifactDownloadCandidate {
+                url: canonical_url.clone(),
+                kind: ArtifactDownloadCandidateKind::Canonical,
+            }],
+            &ArchiveTreeInstallRequest {
+                canonical_url: &canonical_url,
+                destination: &destination,
+                asset_name: archive_name,
+                expected_sha256: None,
+                max_download_bytes: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(selected.kind, ArtifactDownloadCandidateKind::Canonical);
+        assert!(destination.join("bin/demo.exe").exists());
         Ok(())
     }
 

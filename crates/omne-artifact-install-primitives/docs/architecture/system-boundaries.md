@@ -7,6 +7,7 @@
 ## 负责什么
 
 - 消费调用方给定的有序下载候选列表。
+- 对外通过 crate-local `ArtifactDownloader` 边界接收下载能力，而不是把具体 HTTP client 类型固定进 public API。
 - 以受限响应体流式下载 artifact。
 - 对下载结果执行可选的 SHA-256 校验。
 - 把直接二进制资产原子安装到目标路径，并对同一 binary 目标的 install phase 做 advisory lock 串行化，避免并发 commit 互相踩坏最终落点。
@@ -27,7 +28,7 @@
 
 ## 依赖边界
 
-- 依赖 `http-kit` 做受限响应体下载。
+- 对外下载边界固定为 crate-local `ArtifactDownloader`；内建的 `reqwest::Client` 适配仍通过 `http-kit` 做受限响应体下载。
 - 依赖 `omne-integrity-primitives` 做 digest 校验。
 - 依赖 `omne-fs-primitives` 做 staged atomic file/directory replace。
 - 依赖 `omne-archive-primitives` 做 archive binary 提取。
