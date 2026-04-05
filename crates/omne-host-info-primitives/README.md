@@ -12,7 +12,9 @@ Low-level host platform and target-triple primitives shared across callers.
 ## Scope
 
 - host OS and architecture detection
-- canonical target-triple mapping, including Linux `gnu` vs `musl` detection from local ABI markers
+- canonical target-triple mapping, including Linux `gnu` vs `musl` detection from current-process
+  loader/libc mappings with fail-closed filesystem-marker fallback when direct runtime evidence is
+  unavailable
 - validated target override normalization for the crate's supported canonical triples, with checked
   APIs that return structured errors and compatibility helpers that fail closed
 - home-directory resolution
