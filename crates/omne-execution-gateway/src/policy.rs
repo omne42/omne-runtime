@@ -45,6 +45,7 @@ impl GatewayPolicy {
 
         Self {
             allow_isolation_none: matches!(default_isolation, ExecutionIsolation::None),
+            enforce_allowlisted_program_for_mutation: false,
             default_isolation,
             ..Self::default()
         }
@@ -203,7 +204,15 @@ mod tests {
         let policy = GatewayPolicy::default_for_supported_isolation(ExecutionIsolation::BestEffort);
         assert!(!policy.allow_isolation_none);
         assert_eq!(policy.default_isolation, ExecutionIsolation::BestEffort);
-        assert!(policy.enforce_allowlisted_program_for_mutation);
+        assert!(!policy.enforce_allowlisted_program_for_mutation);
+    }
+
+    #[test]
+    fn host_compatible_default_keeps_none_only_hosts_usable() {
+        let policy = GatewayPolicy::default_for_supported_isolation(ExecutionIsolation::None);
+        assert!(policy.allow_isolation_none);
+        assert_eq!(policy.default_isolation, ExecutionIsolation::None);
+        assert!(!policy.enforce_allowlisted_program_for_mutation);
     }
 
     #[test]

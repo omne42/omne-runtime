@@ -32,7 +32,7 @@
 - rebuild `prepare_command()` results from the validated request instead of reusing the caller's original `Command`, so hidden pre-exec and other opaque process state cannot bypass the gateway boundary
 - bind audit-log writes to the appendable file handle opened during `execute()` / `prepare_command()`, so post-preflight path swaps cannot redirect the final record to a different sink
 - treat `/usr/bin/env`-style launcher indirection as opaque execution, so non-mutating requests cannot bypass the launcher gate through `env`
-- make `GatewayPolicy::default()` host-compatible on current `None`-only hosts, and teach `ExecGateway::new()` / `with_supported_isolation()` to choose a capability-aligned default isolation instead of advertising an unusable policy default
+- keep `GatewayPolicy::default()` as the strict mutation-enforcing baseline, but make `GatewayPolicy::default_for_supported_isolation()` plus `ExecGateway::new()` / `with_supported_isolation()` use a host-compatible executable default so no-policy gateways no longer start as accidental deny-all constructors
 - require explicit absolute program paths to point at spawnable executables, and make Unix gateway
   tests resolve the actual shell path instead of assuming `/bin/sh`
 - reuse `omne-fs-primitives` ambient no-follow regular-file helpers for policy/request/audit-log inputs, and let CLI request JSON carry exact OS-string encodings instead of forcing UTF-8-only input

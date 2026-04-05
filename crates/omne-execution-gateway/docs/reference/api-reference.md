@@ -84,10 +84,12 @@ non-UTF-8 OS strings exactly instead of depending on lossy display fields.
 - `ExecGateway::with_supported_isolation(level)`
 - `ExecGateway::with_policy_and_supported_isolation(policy, level)`
 
-`ExecGateway::new()` and `ExecGateway::with_supported_isolation(...)` keep the same fail-closed
-default policy shape as `GatewayPolicy::default_for_supported_isolation(...)`: host-compatible
-`default_isolation`, but mutation enforcement still on and both allowlists empty. Callers that
-want commands to run must pass a custom policy or explicit allowlists.
+`ExecGateway::new()` and `ExecGateway::with_supported_isolation(level)` use
+`GatewayPolicy::default_for_supported_isolation(level)` rather than `GatewayPolicy::default()`,
+so the default no-policy gateway keeps a host-compatible `default_isolation` and leaves mutation
+allowlist enforcement off. Callers that want the strict mutation-enforcing baseline must pass an
+explicit `GatewayPolicy::default()` through `with_policy(...)` or
+`with_policy_and_supported_isolation(...)`.
 
 ## ExecGateway Methods
 
@@ -159,6 +161,7 @@ Notable fields:
 Path: `omne_execution_gateway::GatewayPolicy`
 
 - `GatewayPolicy::default()`
+- `GatewayPolicy::default_for_supported_isolation(level)`
 - `GatewayPolicy::load_json(path)`
 - `is_mutating_program_allowlisted(program)`
 - `is_non_mutating_program_allowlisted(program)`
@@ -167,6 +170,9 @@ Path: `omne_execution_gateway::GatewayPolicy`
 their resolved executable identity rather than basename text.
 `is_non_mutating_program_allowlisted(program)` applies the same explicit-path + executable-identity
 check for requests that declare `declared_mutation = false`.
+`GatewayPolicy::default()` remains the strict mutation-enforcing baseline, while
+`GatewayPolicy::default_for_supported_isolation(level)` is the host-compatible executable default
+used by the gateway constructors when no explicit policy is supplied.
 
 ## ExecError Variants
 

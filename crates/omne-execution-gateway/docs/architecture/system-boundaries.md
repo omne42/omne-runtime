@@ -20,7 +20,8 @@
 当前平台语义补充：
 
 - Linux、macOS 和 Windows 当前都只报告 `None` 为受支持隔离级别。
-- `GatewayPolicy::default()` 当前默认 `allow_isolation_none=true` 且 `default_isolation=none`，这样无显式 policy 的默认 gateway 不会在 `None` only 宿主上自相矛盾；如果调用方要把更强隔离当成默认值，必须显式写进 policy。
+- `GatewayPolicy::default()` 当前仍然是严格基线：`allow_isolation_none=true`、`default_isolation=none`，但 `enforce_allowlisted_program_for_mutation=true`，适合显式 policy 驱动的 fail-closed 场景。
+- `ExecGateway::new()` / `with_supported_isolation()` 改为走 `GatewayPolicy::default_for_supported_isolation(...)`：保持宿主兼容的默认隔离级别，同时关闭 mutation allowlist enforcement，这样“没有额外 policy 文件”的默认 gateway 不会退化成隐式 deny-all 构造器。
 - Linux 原生 sandbox 暂时下线，直到能在不依赖 post-`fork` unsafe Rust 执行的前提下重新引入。
 - 当请求的隔离级别高于宿主报告能力时，gateway 必须 fail-closed 拒绝，而不是回退到未隔离执行。
 - mutating allowlist 只授权显式程序路径；bare program name 因为无法绑定稳定可执行文件而 fail-closed 拒绝。

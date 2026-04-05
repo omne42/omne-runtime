@@ -1841,6 +1841,24 @@ mod tests {
     }
 
     #[test]
+    fn default_gateway_without_policy_stays_usable_on_none_only_hosts() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::None);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            resolved_non_mutating_program_path(),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
+        assert_eq!(event.reason, None);
+    }
+
+    #[test]
     fn execute_with_event_preserves_deny_reason() {
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             GatewayPolicy {
@@ -1894,7 +1912,7 @@ mod tests {
 
     #[test]
     fn denies_mutation_for_non_allowlisted_program() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = strict_test_gateway(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let program = non_allowlisted_program_path(&workspace);
         write_test_executable_placeholder(&program);
@@ -1916,7 +1934,7 @@ mod tests {
 
     #[test]
     fn requires_explicit_mutation_declaration_for_non_allowlisted_programs() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = strict_test_gateway(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "echo",
@@ -1969,7 +1987,7 @@ mod tests {
 
     #[test]
     fn denies_non_mutating_for_non_allowlisted_program() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = strict_test_gateway(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             resolved_non_mutating_program_path(),
@@ -2239,7 +2257,7 @@ mod tests {
 
     #[test]
     fn denies_opaque_command_launcher_without_allowlist() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = strict_test_gateway(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             dummy_program(),
@@ -2263,7 +2281,7 @@ mod tests {
 
     #[test]
     fn denies_env_launcher_without_allowlist() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = strict_test_gateway(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "/usr/bin/env",
@@ -2341,7 +2359,7 @@ mod tests {
 
     #[test]
     fn denies_interpreter_launcher_without_allowlist() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let gateway = strict_test_gateway(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             interpreter_program(),
@@ -3591,6 +3609,13 @@ mod tests {
 
     fn host_supported_test_isolation() -> ExecutionIsolation {
         ExecutionIsolation::None
+    }
+
+    fn strict_test_gateway(supported_isolation: ExecutionIsolation) -> ExecGateway {
+        ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy::default(),
+            supported_isolation,
+        )
     }
 
     #[cfg(unix)]

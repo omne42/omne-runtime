@@ -46,7 +46,8 @@
 - the gateway does not parse arbitrary tool-specific CLI syntax or infer arbitrary binary semantics from executable basenames. If a caller wants to authorize read-only invocations of tools such as `git` or `cargo`, that decision must be expressed through an explicit `non_mutating_program_allowlist` entry for the resolved executable path.
 - allowlist matching is executable-identity based for explicit paths; it is not binary provenance verification.
 - `execute()` owns the final execution audit record; `prepare_command()` only records the preflight `prepared` / `prepare_error` audit state because the caller owns the child lifecycle after `spawn()`.
-- `GatewayPolicy::default()` is a host-compatible unsandboxed baseline for current shipped hosts, so it defaults to `allow_isolation_none=true` and `default_isolation=none`; if a caller wants fail-closed sandbox preference, it must set `default_isolation` to `best_effort` or `strict` explicitly.
+- `GatewayPolicy::default()` remains the strict baseline: it keeps `allow_isolation_none=true` and `default_isolation=none`, but it also leaves `enforce_allowlisted_program_for_mutation=true`, so callers only get execution after they provide explicit allowlists and mutation declarations.
+- `GatewayPolicy::default_for_supported_isolation(...)` is the host-compatible executable baseline used by `ExecGateway::new()` / `with_supported_isolation()`: it still aligns `default_isolation` with host capability, but it turns mutation allowlist enforcement off so a no-policy gateway does not start life as an accidental deny-all constructor.
 - Linux、macOS 和 Windows 当前都只报告 `None` 为受支持能力；如果 policy/default/request 仍要求 `best_effort` 或 `strict`，gateway 会按 `isolation_not_supported` fail-closed。
 
 ## Denial Reasons
