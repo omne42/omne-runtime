@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- make the public download/install entrypoints generic over a narrow `ArtifactDownloader` trait,
+  so callers are no longer forced to expose `reqwest::Client` at the primitive boundary while the
+  built-in `reqwest` adapter remains available for current integrations
 - derive archive-tree install lock names from a normalized destination identity so root aliases and lexical path aliases cannot bypass per-target serialization
 - cap ZIP symlink target reads so archive-tree extraction no longer buffers arbitrarily large link payloads into memory before validation
 - clarify aggregated candidate failures so install-phase errors no longer report themselves as pure download failures

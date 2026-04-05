@@ -20,8 +20,8 @@ pub use archive_tree::{
     install_archive_tree_from_bytes, is_archive_tree_asset_name,
 };
 pub use artifact_download::{
-    ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactInstallError,
-    ArtifactInstallErrorKind,
+    ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactDownloader,
+    ArtifactInstallError, ArtifactInstallErrorKind,
 };
 pub use binary_artifact::{
     BinaryArchiveInstallRequest, DownloadBinaryRequest, InstalledArchiveBinary,

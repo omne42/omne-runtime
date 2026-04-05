@@ -1,4 +1,5 @@
 use std::fmt;
+use std::future::Future;
 use std::io::Write;
 
 use http_kit::write_response_body_limited;
@@ -44,6 +45,22 @@ pub struct ArtifactInstallError {
     message: String,
 }
 
+/// Narrow async download adapter for artifact-install entrypoints.
+///
+/// Callers can satisfy this contract with their own HTTP/runtime stack; the public primitive
+/// boundary does not require a concrete client type. `reqwest::Client` remains supported through
+/// the built-in adapter impl below.
+pub trait ArtifactDownloader {
+    fn download_to_writer<W>(
+        &self,
+        url: &str,
+        writer: &mut W,
+        max_bytes: Option<u64>,
+    ) -> impl Future<Output = Result<(), ArtifactInstallError>> + Send
+    where
+        W: Write + ?Sized + Send;
+}
+
 impl ArtifactInstallError {
     pub fn download(message: impl Into<String>) -> Self {
         Self {
@@ -73,29 +90,48 @@ impl fmt::Display for ArtifactInstallError {
 
 impl std::error::Error for ArtifactInstallError {}
 
-pub(crate) async fn download_candidate_to_writer_with_options<W>(
-    client: &reqwest::Client,
+impl ArtifactDownloader for reqwest::Client {
+    fn download_to_writer<W>(
+        &self,
+        url: &str,
+        writer: &mut W,
+        max_bytes: Option<u64>,
+    ) -> impl Future<Output = Result<(), ArtifactInstallError>>
+    where
+        W: Write + ?Sized,
+    {
+        async move {
+            let response = self
+                .get(url)
+                .send()
+                .await
+                .map_err(|err| ArtifactInstallError::download(err.to_string()))?;
+            if !response.status().is_success() {
+                return Err(ArtifactInstallError::download(format!(
+                    "HTTP {}",
+                    response.status()
+                )));
+            }
+            write_response_body_limited(response, writer, max_bytes)
+                .await
+                .map_err(|err| ArtifactInstallError::download(err.to_string()))
+        }
+    }
+}
+
+pub(crate) async fn download_candidate_to_writer_with_options<D, W>(
+    downloader: &D,
     candidate: &ArtifactDownloadCandidate,
     writer: &mut W,
     max_bytes: Option<u64>,
 ) -> Result<(), ArtifactInstallError>
 where
-    W: Write + ?Sized,
+    D: ArtifactDownloader + ?Sized,
+    W: Write + ?Sized + Send,
 {
-    let response = client
-        .get(&candidate.url)
-        .send()
+    downloader
+        .download_to_writer(&candidate.url, writer, max_bytes)
         .await
-        .map_err(|err| ArtifactInstallError::download(err.to_string()))?;
-    if !response.status().is_success() {
-        return Err(ArtifactInstallError::download(format!(
-            "HTTP {}",
-            response.status()
-        )));
-    }
-    write_response_body_limited(response, writer, max_bytes)
-        .await
-        .map_err(|err| ArtifactInstallError::download(err.to_string()))
 }
 
 pub(crate) async fn run_blocking_install<T, F>(operation: F) -> Result<T, ArtifactInstallError>
@@ -169,13 +205,52 @@ fn aggregate_failure_kind(errors: &[CandidateFailure]) -> ArtifactInstallErrorKi
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::io::Write;
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     use super::{
-        ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactInstallError,
-        ArtifactInstallErrorKind, candidate_failure_message, failed_candidates_error,
-        run_blocking_install,
+        ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactDownloader,
+        ArtifactInstallError, ArtifactInstallErrorKind, candidate_failure_message,
+        download_candidate_to_writer_with_options, failed_candidates_error, run_blocking_install,
     };
+
+    struct RecordingDownloader {
+        visited_urls: Mutex<Vec<String>>,
+        body: Vec<u8>,
+    }
+
+    impl RecordingDownloader {
+        fn new(body: &[u8]) -> Self {
+            Self {
+                visited_urls: Mutex::new(Vec::new()),
+                body: body.to_vec(),
+            }
+        }
+    }
+
+    impl ArtifactDownloader for RecordingDownloader {
+        fn download_to_writer<W>(
+            &self,
+            url: &str,
+            writer: &mut W,
+            _max_bytes: Option<u64>,
+        ) -> impl Future<Output = Result<(), ArtifactInstallError>>
+        where
+            W: Write + ?Sized,
+        {
+            async move {
+                self.visited_urls
+                    .lock()
+                    .expect("record visited urls")
+                    .push(url.to_string());
+                writer
+                    .write_all(&self.body)
+                    .map_err(|err| ArtifactInstallError::download(err.to_string()))
+            }
+        }
+    }
 
     #[test]
     fn failed_candidates_error_stays_download_when_all_candidates_failed_to_download() {
@@ -271,6 +346,29 @@ mod tests {
         assert!(!failure.message.contains("token@"));
         assert!(!failure.message.contains("sig=secret"));
         assert!(!failure.message.contains("#frag"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn custom_downloader_can_stream_candidate_without_reqwest_client_surface() {
+        let candidate = ArtifactDownloadCandidate {
+            url: "https://example.invalid/demo.zip".to_string(),
+            kind: ArtifactDownloadCandidateKind::Canonical,
+        };
+        let downloader = RecordingDownloader::new(b"artifact-bytes");
+        let mut buffer = Vec::new();
+
+        download_candidate_to_writer_with_options(&downloader, &candidate, &mut buffer, None)
+            .await
+            .expect("download with custom downloader");
+
+        assert_eq!(buffer, b"artifact-bytes");
+        assert_eq!(
+            downloader
+                .visited_urls
+                .into_inner()
+                .expect("extract visited urls"),
+            vec!["https://example.invalid/demo.zip".to_string()]
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
