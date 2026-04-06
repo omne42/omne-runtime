@@ -7,6 +7,7 @@
 ## 负责什么
 
 - 消费调用方给定的有序下载候选列表。
+- 把下载候选的来源说明保持为调用方提供的窄标签，只用于错误聚合和 explain surface，不把 `gateway|canonical|mirror` 这类产品来源分类硬编码进 primitive API。
 - 对公开 download/install 入口要求候选列表非空；空列表被视为调用方输入错误，直接返回明确错误，而不是伪装成“所有候选都失败”。
 - 对外通过 crate-local `ArtifactDownloader` 边界接收下载能力，而不是把具体 HTTP client 类型固定进 public API。
 - 以受限响应体流式下载 artifact。
@@ -25,7 +26,7 @@
 ## 不负责什么
 
 - GitHub release API、release DTO 或 latest tag 选择。
-- `gateway|canonical|mirror` 候选顺序策略生成。
+- 来源选择顺序、镜像优先级或任何产品级 source-selection strategy。
 - 产品级目标目录布局或 tool/package 映射。
 - 产品级错误码、JSON 结果 contract 或 CLI。
 
