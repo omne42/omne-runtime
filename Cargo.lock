@@ -1311,7 +1311,6 @@ version = "0.1.0"
 dependencies = [
  "omne-system-package-primitives",
  "rustix",
- "same-file",
  "sysinfo",
  "tempfile",
  "tokio",
