@@ -22,7 +22,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed denial for shell-like or interpreter launchers such as `sh`, `cmd`, `pwsh`, `python`, and `node`; policy allowlists cannot authorize them because the gateway cannot bind arbitrary script or subcommand semantics to a stable executable identity
 - gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
 - structured decision events for audit/logging, including lossy display fields plus exact JSON encodings for `program` / `args` / explicit environment entries when OS strings are not valid UTF-8
-- mutating and non-mutating allowlists plus opaque-launcher gates evaluate native `OsStr` / `Path` inputs directly instead of relying on lossy UTF-8 coercion
+- mutating and non-mutating allowlists plus opaque-launcher gates evaluate native `OsStr` / `Path` inputs directly instead of relying on lossy UTF-8 coercion; Unix non-UTF-8 executable paths therefore cannot collide with UTF-8 allowlist entries through replacement-character text
 
 ## Important Scope Notes
 
@@ -59,7 +59,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
   state cannot drift out of sync after construction.
 - when `enforce_allowlisted_program_for_mutation = true`, request env is still audited, but startup-sensitive loader/interpreter/search-path overrides are denied fail-closed before preflight can authorize the execution.
 - the CLI request adapter also rejects unknown JSON fields fail-closed, and `program` / `args` / explicit env entries now accept either plain UTF-8 strings or the exact OS-string JSON object encoding used in gateway output.
-- if `audit_log_path` is configured, `evaluate()` / `resolve_request()` / `preflight()` stay side-effect free; audit parent creation and appendability checks move to `execute()` / `prepare_command()`, ancestor symlink/reparse point or non-directory blockers still fail closed before audited execution proceeds, and the final record write stays bound to the appendable file handle opened during preparation instead of reopening the path again after execution.
+- if `audit_log_path` is configured, `evaluate()` / `resolve_request()` / `preflight()` stay side-effect free; audit parent creation and appendability checks move to `execute()` / `prepare_command()`, and every existing audit-log ancestor is rechecked fail-closed for symlink/reparse-point or non-directory blockers before audited execution proceeds. The final record write stays bound to the appendable file handle opened during preparation instead of reopening the path again after execution.
 - allowlisted mutating and non-mutating programs bind both file identity and a preflight content fingerprint, and spawn revalidation rejects in-place executable rewrites before launch.
 - if audit append succeeds during preflight but the final record write later fails, the execution result is surfaced as an explicit audit-log write failure instead of silently degrading to stderr-only reporting. When the command had already failed for another reason, the returned audit error now also includes that original execution error summary.
 - `prepare_command` returns a spawn-only `PreparedCommand` wrapper instead of handing a mutable validated `Command` back to callers.

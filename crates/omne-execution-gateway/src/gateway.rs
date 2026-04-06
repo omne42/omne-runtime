@@ -474,13 +474,12 @@ impl ExecGateway {
                     ),
                 ));
             }
-            let program_path = Path::new(&request.program);
             let mutating_allowlisted = self
                 .policy
-                .is_mutating_program_allowlisted_path(program_path);
+                .is_mutating_program_allowlisted_os(request.program.as_os_str());
             let non_mutating_allowlisted = self
                 .policy
-                .is_non_mutating_program_allowlisted_path(program_path);
+                .is_non_mutating_program_allowlisted_os(request.program.as_os_str());
 
             if request.declared_mutation() {
                 if !mutating_allowlisted {
@@ -1536,6 +1535,72 @@ mod tests {
     fn explicit_path_detection_keeps_non_utf8_separator_checks_native() {
         let program = OsString::from_vec(vec![0x2f, 0x74, 0x6d, 0x70, 0x2f, 0x66, 0x6f, 0x80]);
         assert!(is_explicit_program_path(program.as_os_str()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn evaluate_does_not_allowlist_mutating_non_utf8_program_via_lossy_collision() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace
+            .path()
+            .join(OsString::from_vec(vec![0x66, 0x6f, 0x80]));
+        write_test_executable_placeholder(&program);
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec![program.to_string_lossy().into_owned()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("mutation_requires_allowlisted_program")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn evaluate_does_not_allowlist_non_mutating_non_utf8_program_via_lossy_collision() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace
+            .path()
+            .join(OsString::from_vec(vec![0x66, 0x6f, 0x80]));
+        write_test_executable_placeholder(&program);
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec![program.to_string_lossy().into_owned()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("non_mutating_requires_allowlisted_program")
+        );
     }
 
     #[test]

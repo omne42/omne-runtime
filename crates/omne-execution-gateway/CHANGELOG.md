@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- make audit-log sink validation/opening fail closed when any existing ancestor in the target path
+  is a symlink/reparse point or a non-directory, so nested existing descendants cannot hide an
+  unsafe earlier path component behind a "nearest existing ancestor" check
+- route mutating and non-mutating allowlist authorization through native `OsStr` / `Path`
+  matching instead of lossy request-program text, so Unix non-UTF-8 executable paths cannot
+  collide with UTF-8 allowlist entries through replacement-character coercion
 - route gateway policy JSON reads and audit-log sink validation/opening through
   `omne-fs-primitives` ancestor-safe helpers, so parent-directory symlink/reparse traversal stays
   fail-closed without re-implementing a second file-open boundary in `execution-gateway`
@@ -72,6 +78,7 @@
 - harden audit-log parent creation so missing intermediate directories are created one component at a time with symlink checks instead of ambient `create_dir_all`
 - move policy/request/audit-log file opens onto the same descriptor-backed no-follow parent walk, so ancestor symlinks/reparse points fail closed instead of being trusted between precheck and open
 - reject policy, request, and audit-log paths that cross pre-existing symlinked ancestor directories even when the final nested directory already exists, closing the remaining ancestor-traversal gap in preflight and CLI file handling
+- add regression coverage proving audit-log readiness checks still reject pre-existing symlinked ancestor directories even when deeper nested directories already exist behind the symlink target
 - deny known-mutating tool families such as `git`, `make`, package managers, and core file-mutating utilities when callers label them `declared_mutation = false`; those tools must now declare mutation and bind an allowlisted explicit path
 - bind allowlisted mutating programs to both executable identity and a preflight content fingerprint, so in-place binary rewrites fail closed before spawn
 - add regression coverage for `cwd_invalid` so missing working directories do not regress back into `cwd_outside_workspace`
