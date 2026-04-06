@@ -932,9 +932,9 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::io;
     #[cfg(unix)]
-    use std::os::unix::fs::symlink;
-    #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
