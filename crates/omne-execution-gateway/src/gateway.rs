@@ -1537,7 +1537,7 @@ mod tests {
         assert!(is_explicit_program_path(program.as_os_str()));
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn evaluate_does_not_allowlist_mutating_non_utf8_program_via_lossy_collision() {
         let workspace = tempdir().expect("create temp workspace");
@@ -1570,7 +1570,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn evaluate_does_not_allowlist_non_mutating_non_utf8_program_via_lossy_collision() {
         let workspace = tempdir().expect("create temp workspace");
