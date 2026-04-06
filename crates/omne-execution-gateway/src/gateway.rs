@@ -3138,6 +3138,48 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn preflight_rejects_non_executable_explicit_program_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("plain-tool");
+        fs::write(&program, "echo hi\n").expect("write plain program");
+        let mut permissions = fs::metadata(&program).expect("metadata").permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&program, permissions).expect("chmod plain program");
+
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let err = gateway
+            .preflight(&request)
+            .expect_err("preflight should fail before execution");
+        let (event, error) = err.into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("program_path_invalid"));
+        assert!(matches!(
+            error,
+            ExecError::ProgramPathInvalid { ref detail, .. }
+                if detail == "program path must reference a spawnable executable"
+        ));
+    }
+
     #[test]
     fn prepare_command_denies_unbound_bare_command() {
         let policy = GatewayPolicy {
