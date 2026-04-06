@@ -2118,6 +2118,32 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn explicit_system_package_manager_path_rejects_lexical_prefix_escape() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let trusted_root = temp.path().join("usr").join("bin");
+        let escaped_root = temp.path().join("tmp");
+        std::fs::create_dir_all(&trusted_root).expect("create trusted root");
+        std::fs::create_dir_all(&escaped_root).expect("create escaped root");
+        let trusted_program = write_test_command(&trusted_root, "apt-get");
+        let escaped_program = write_test_command(&escaped_root, "apt-get");
+        let lexical_escape = trusted_root.join("..").join("..").join("tmp").join("apt-get");
+
+        assert_eq!(
+            lexical_escape
+                .canonicalize()
+                .expect("canonicalize lexical escape"),
+            escaped_program
+                .canonicalize()
+                .expect("canonicalize escaped program")
+        );
+        assert!(!explicit_system_package_manager_path_with_resolved(
+            &lexical_escape,
+            Some(trusted_program),
+        ));
+    }
+
+    #[cfg(unix)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
         write_shell_executable(
             dir,
