@@ -1,14 +1,10 @@
-use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
-use std::str;
 
+use omne_fs_primitives::{ReadUtf8Error, read_utf8_regular_file_in_ambient_root};
 use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
-
-use crate::path_guard::reject_forbidden_path_ancestors;
 
 const MAX_POLICY_JSON_BYTES: usize = 1024 * 1024;
 
@@ -79,86 +75,24 @@ impl GatewayPolicy {
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
         let path = path.as_ref();
-        reject_forbidden_path_ancestors(path)
-            .map_err(|detail| io::Error::new(io::ErrorKind::InvalidInput, detail))?;
-        let content = read_utf8_regular_file_nofollow(path, MAX_POLICY_JSON_BYTES)?;
+        let content =
+            read_utf8_regular_file_in_ambient_root(path, "gateway policy", MAX_POLICY_JSON_BYTES)
+                .map_err(map_read_utf8_error)?;
         let policy = serde_json::from_str::<Self>(&content)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
         Ok(policy)
     }
 }
 
-fn read_utf8_regular_file_nofollow(path: &Path, max_bytes: usize) -> io::Result<String> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("path is not a regular file: {}", path.display()),
-        ));
-    }
-    let file = open_regular_readonly_nofollow(path)?;
-    let mut bytes = Vec::new();
-    let limit = u64::try_from(max_bytes)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let mut limited = file.take(limit);
-    limited.read_to_end(&mut bytes)?;
-    if bytes.len() > max_bytes {
-        return Err(io::Error::new(
+fn map_read_utf8_error(err: ReadUtf8Error) -> io::Error {
+    match err {
+        ReadUtf8Error::Io(err) => err,
+        ReadUtf8Error::TooLarge { bytes, max_bytes } => io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "policy file exceeds size limit ({} > {} bytes)",
-                bytes.len(),
-                max_bytes
-            ),
-        ));
+            format!("policy file exceeds size limit ({bytes} > {max_bytes} bytes)"),
+        ),
+        ReadUtf8Error::InvalidUtf8(err) => io::Error::new(io::ErrorKind::InvalidData, err),
     }
-    str::from_utf8(&bytes)
-        .map(str::to_owned)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))
-}
-
-#[cfg(unix)]
-fn open_regular_readonly_nofollow(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(windows)]
-fn open_regular_readonly_nofollow(path: &Path) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn open_regular_readonly_nofollow(path: &Path) -> io::Result<File> {
-    let file = OpenOptions::new().read(true).open(path)?;
-    ensure_regular_file(path, file)
-}
-
-fn ensure_regular_file(path: &Path, file: File) -> io::Result<File> {
-    let metadata = file.metadata()?;
-    if metadata.is_file() {
-        return Ok(file);
-    }
-
-    Err(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("path is not a regular file: {}", path.display()),
-    ))
 }
 
 fn is_explicit_program_path(program: impl AsRef<Path>) -> bool {
@@ -502,5 +436,21 @@ mod tests {
 
         let err = GatewayPolicy::load_json(&socket_path).expect_err("socket should be rejected");
         assert_ne!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn load_json_rejects_missing_parent_side_effect_free() {
+        let dir = tempdir().expect("tempdir");
+        let path = canonical_temp_root(&dir)
+            .join("nested")
+            .join("configs")
+            .join("policy.json");
+
+        let err = GatewayPolicy::load_json(&path).expect_err("missing policy should fail");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(
+            !path.parent().expect("policy parent").exists(),
+            "load_json must not create parent directories"
+        );
     }
 }

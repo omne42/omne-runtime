@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- route gateway policy JSON reads and audit-log sink validation/opening through
+  `omne-fs-primitives` ancestor-safe helpers, so parent-directory symlink/reparse traversal stays
+  fail-closed without re-implementing a second file-open boundary in `execution-gateway`
 - add regression coverage pinning the explicit `env` contract across `ExecRequest`,
   `RequestResolution`, `ExecEvent`, and the `omne-execution` CLI, so a future refactor cannot
   silently drop audited environment fields while execution still inherits them

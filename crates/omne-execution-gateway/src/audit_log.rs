@@ -1,16 +1,17 @@
 use std::fmt::Display;
-use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
+use omne_fs_primitives::{
+    open_appendable_regular_file_in_ambient_root, validate_appendable_regular_file_in_ambient_root,
+};
 use serde::Serialize;
 
 use crate::audit::ExecEvent;
 use crate::error::{ExecError, ExecResult};
-use crate::path_guard::reject_forbidden_path_ancestors;
 
 const APPENDABLE_OPEN_NOT_FOUND_RETRIES: usize = 4;
 
@@ -53,7 +54,7 @@ impl AuditLogger {
 
     #[cfg(test)]
     pub(crate) fn ensure_ready(&self) -> ExecResult<()> {
-        self.try_open_sink()
+        self.prepare_sink()
             .map(|_| ())
             .map_err(|err| ExecError::AuditLogUnavailable {
                 path: self.path.clone(),
@@ -115,113 +116,11 @@ impl AuditLogger {
 }
 
 fn validate_appendable_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    reject_forbidden_path_ancestors(path)
-        .map_err(|detail| std::io::Error::new(std::io::ErrorKind::InvalidInput, detail))?;
-
-    if let Some(parent) = path.parent()
-        && let Some(existing_parent) = existing_ancestor(parent)
-    {
-        ensure_existing_directory(existing_parent)?;
-    }
-
-    if path.exists() {
-        ensure_existing_regular_file_path(path)?;
-    }
-
-    Ok(())
+    validate_appendable_regular_file_in_ambient_root(path, "audit log").map_err(|err| err.into())
 }
 
-fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, std::io::Error> {
-    reject_forbidden_path_ancestors(path)
-        .map_err(|detail| std::io::Error::new(std::io::ErrorKind::InvalidInput, detail))?;
-
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        if let Some(existing_parent) = existing_ancestor(parent) {
-            ensure_existing_directory(existing_parent).map_err(io_error_from_box)?;
-        }
-        fs::create_dir_all(parent)?;
-        ensure_existing_directory(parent).map_err(io_error_from_box)?;
-    }
-    if path.exists() {
-        ensure_existing_regular_file_path(path).map_err(io_error_from_box)?;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut options = OpenOptions::new();
-        options
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-        let file = options.open(path)?;
-        ensure_regular_file(path, file).map_err(io_error_from_box)
-    }
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-
-        let mut options = OpenOptions::new();
-        options
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-        let file = options.open(path)?;
-        ensure_regular_file(path, file).map_err(io_error_from_box)
-    }
-
-    #[cfg(all(not(unix), not(windows)))]
-    {
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(path)?;
-        ensure_regular_file(path, file).map_err(io_error_from_box)
-    }
-}
-
-fn ensure_existing_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(format!("path is not a directory: {}", path.display()).into());
-    }
-    Ok(())
-}
-
-fn ensure_existing_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(format!("path is not a regular file: {}", path.display()).into());
-    }
-    Ok(())
-}
-
-fn ensure_regular_file(path: &Path, file: File) -> Result<File, Box<dyn std::error::Error>> {
-    let metadata = file.metadata()?;
-    if metadata.is_file() {
-        return Ok(file);
-    }
-
-    Err(format!("path is not a regular file: {}", path.display()).into())
-}
-
-fn existing_ancestor(path: &Path) -> Option<&Path> {
-    path.ancestors().find(|ancestor| ancestor.exists())
-}
-
-fn io_error_from_box(err: Box<dyn std::error::Error>) -> std::io::Error {
-    std::io::Error::other(err.to_string())
+fn open_appendable_regular_file_nofollow(path: &Path) -> Result<std::fs::File, std::io::Error> {
+    open_appendable_regular_file_in_ambient_root(path, "audit log").map(|file| file.into_std())
 }
 
 impl PreparedAuditSink {
@@ -574,6 +473,26 @@ mod tests {
     }
 
     #[test]
+    fn validate_ready_without_side_effects_keeps_missing_parent_absent() {
+        let dir = tempdir().expect("tempdir");
+        let path = canonical_test_root(&dir)
+            .join("nested")
+            .join("audit")
+            .join("audit.jsonl");
+        let logger = AuditLogger::new(&path);
+
+        logger
+            .validate_ready_without_side_effects()
+            .expect("missing audit leaf should validate");
+
+        assert!(!path.exists(), "validation must not create the audit file");
+        assert!(
+            !path.parent().expect("audit parent").exists(),
+            "validation must not create parent directories"
+        );
+    }
+
+    #[test]
     fn ensure_ready_rejects_non_directory_parent() {
         let dir = tempdir().expect("tempdir");
         let parent_file = canonical_test_root(&dir).join("not-a-dir");
@@ -650,6 +569,29 @@ mod tests {
             ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn validate_ready_without_side_effects_keeps_missing_parent_directories_absent() {
+        let dir = tempdir().expect("tempdir");
+        let path = canonical_test_root(&dir)
+            .join("nested")
+            .join("audit")
+            .join("audit.jsonl");
+        let logger = AuditLogger::new(&path);
+
+        logger
+            .validate_ready_without_side_effects()
+            .expect("missing audit leaf should validate");
+
+        assert!(
+            !path.exists(),
+            "validation must not create the audit log file"
+        );
+        assert!(
+            !path.parent().expect("audit parent").exists(),
+            "validation must not create parent directories"
+        );
     }
 
     #[test]
