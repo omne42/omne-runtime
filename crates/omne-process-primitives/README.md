@@ -13,7 +13,8 @@ Low-level host-command and process-tree primitives shared across callers.
 
 - host command discovery, including `OsStr`-friendly probe/resolve helpers
 - explicit-path command discovery that treats `./tool` and `subdir/tool` as explicit paths instead
-  of continuing to search `PATH`, matching shell/`exec` semantics for probe helpers
+  of continuing to search `PATH`, matching shell/`exec` semantics for probe helpers; Windows
+  drive-relative paths such as `C:tool.exe` are treated as explicit relative paths too
 - request-scoped command probes that honor request `PATH` overrides for bare direct commands while failing closed on explicit relative program paths that omit `working_directory`
 - `command_available*` probes that keep the same spawnable contract as execution and do not report non-executable files as available
 - host command execution with captured output that returns after the direct child exits even if daemonized descendants keep inherited stdout/stderr open
