@@ -109,8 +109,9 @@ that resolved executable path, and rejects unresolved bare-command `Command` val
 request's audited `env` entries.
 `execute()` and `PreparedCommand::spawn()` bind child `stdin/stdout/stderr` to null handles, so
 they are intentionally non-interactive and do not surface child output.
-`prepare_command()` only records preflight audit state; final exit auditing and runtime sandbox
-observation remain part of `execute()`, which still owns the complete child lifecycle.
+`prepare_command()` records the preflight audit state, and `PreparedChild::wait()` /
+`PreparedChild::try_wait()` / `PreparedChild` drop finalization append the authoritative execution
+record so prepared spawns no longer bypass final audit closure.
 `resolve_request()`, `evaluate()`, and `preflight()` stay side-effect free even when
 `audit_log_path` is configured; audit-sink creation happens only on `execute()` /
 `prepare_command()`.
@@ -153,6 +154,21 @@ Notable fields:
   - `spawn()`
 - behavior notes:
   - `spawn()` reapplies validated `cwd` / `workspace_root` checks and binds child `stdin/stdout/stderr` to null handles before launching the child process
+
+## PreparedChild
+
+- helper methods:
+  - `id()`
+  - `stdin()`
+  - `stdout()`
+  - `stderr()`
+  - `sandbox_runtime()`
+  - `try_wait()`
+  - `wait()`
+  - `kill()`
+- behavior notes:
+  - `wait()` returns an `ExecutionOutcome`, including the final `ExecEvent` with any post-spawn `sandbox_runtime`
+  - dropping a `PreparedChild` without `wait()` / `try_wait()` still writes a terminal detached audit record when `audit_log_path` is configured
 
 ## GatewayPolicy
 
