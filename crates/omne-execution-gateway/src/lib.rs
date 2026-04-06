@@ -5,11 +5,11 @@ mod audit_log;
 mod error;
 mod gateway;
 mod os_serialization;
+#[cfg(test)]
+mod path_guard;
 mod policy;
 mod sandbox;
 mod types;
-#[cfg(test)]
-mod path_guard;
 
 pub use crate::audit::requested_policy_meta;
 pub use crate::audit::{
