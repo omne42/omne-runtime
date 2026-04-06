@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- classify Windows drive-relative program paths such as `C:tool.exe` as explicit relative paths
+  instead of bare commands, so gateway path validation and allowlist classification fail closed on
+  the right branch
 - clarify in docs and API references that `ExecGateway::new()` / `Default` stay fail-closed on
   mutation policy unless callers provide explicit allowlists or disable mutation enforcement, so
   the public constructor is not mistaken for a permissive execution baseline

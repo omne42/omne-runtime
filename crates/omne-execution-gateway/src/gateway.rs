@@ -813,7 +813,7 @@ fn is_permitted_platform_root_alias(_: &Path) -> bool {
 
 fn explicit_path_like_os(program: &OsStr) -> bool {
     let path = Path::new(program);
-    path.is_absolute() || os_str_has_path_separator(program)
+    path.is_absolute() || os_str_has_path_separator(program) || has_windows_drive_prefix(path)
 }
 
 #[cfg(unix)]
@@ -840,6 +840,18 @@ fn os_str_has_path_separator(value: &OsStr) -> bool {
     value
         .to_str()
         .is_some_and(|text| text.chars().any(|ch| matches!(ch, '/' | '\\')))
+}
+
+#[cfg(windows)]
+fn has_windows_drive_prefix(path: &Path) -> bool {
+    use std::path::Component;
+
+    matches!(path.components().next(), Some(Component::Prefix(_)))
+}
+
+#[cfg(not(windows))]
+fn has_windows_drive_prefix(_path: &Path) -> bool {
+    false
 }
 
 fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<BoundDirectory> {
@@ -1536,6 +1548,36 @@ mod tests {
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "./tool",
+            Vec::<OsString>::new(),
+            workspace.path(),
+            host_supported_test_isolation(),
+            workspace.path(),
+        );
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("relative_program_path_forbidden")
+        );
+        assert!(matches!(result, Err(ExecError::RelativeProgramPath { .. })));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_drive_relative_program_paths() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "C:tool.exe",
             Vec::<OsString>::new(),
             workspace.path(),
             host_supported_test_isolation(),

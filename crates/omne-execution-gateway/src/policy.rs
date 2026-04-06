@@ -105,6 +105,19 @@ fn is_explicit_program_path(program: impl AsRef<Path>) -> bool {
             .to_string_lossy()
             .chars()
             .any(|ch| ch == '/' || ch == '\\')
+        || has_windows_drive_prefix(program)
+}
+
+#[cfg(windows)]
+fn has_windows_drive_prefix(program: &Path) -> bool {
+    use std::path::Component;
+
+    matches!(program.components().next(), Some(Component::Prefix(_)))
+}
+
+#[cfg(not(windows))]
+fn has_windows_drive_prefix(_program: &Path) -> bool {
+    false
 }
 
 #[cfg(windows)]
@@ -319,6 +332,19 @@ mod tests {
 
         assert!(policy.is_mutating_program_allowlisted("C:/TOOLS/OMNE-FS.EXE"));
         assert!(!policy.is_mutating_program_allowlisted("C:\\tmp\\OMNE-FS.EXE"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn drive_relative_programs_are_classified_as_explicit_paths() {
+        assert!(is_explicit_program_path("C:omne-fs.exe"));
+
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["omne-fs.exe".to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(!policy.is_mutating_program_allowlisted("C:omne-fs.exe"));
     }
 
     #[test]
