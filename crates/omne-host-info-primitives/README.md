@@ -15,7 +15,8 @@ Low-level host platform and target-triple primitives shared across callers.
 - canonical target-triple mapping, including Linux `gnu` vs `musl` detection from current-process
   loader/libc mappings with fail-closed filesystem-marker fallback only when direct runtime
   evidence is unavailable; current-process evidence stays authoritative even if unrelated musl
-  loader files exist on disk, and conflicting runtime evidence still fails closed
+  loader files exist on disk, and conflicting runtime or filesystem marker evidence still fails
+  closed instead of letting distro markers override a visible glibc loader
 - validated target override normalization for the crate's supported canonical triples, with checked
   APIs that return structured errors and compatibility helpers that fail closed
 - home-directory resolution

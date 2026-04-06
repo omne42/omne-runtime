@@ -340,11 +340,10 @@ where
         .iter()
         .any(|path| path_exists(std::path::Path::new(path)));
 
-    if alpine_marker_present {
-        return LinuxLibcDetection::Detected(HostLinuxLibc::Musl);
-    }
-
-    classify_linux_libc_markers(musl_marker_present, gnu_marker_present)
+    classify_linux_libc_markers(
+        musl_marker_present || alpine_marker_present,
+        gnu_marker_present,
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -600,7 +599,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_keeps_alpine_marker_authoritative_when_glibc_loader_exists() {
+    fn detect_host_linux_libc_fails_closed_when_alpine_marker_and_glibc_loader_conflict() {
         let libc = super::detect_host_linux_libc_with_probes(&|| None, &|path| {
             matches!(
                 path,
@@ -608,7 +607,7 @@ mod tests {
                     || path == std::path::Path::new("/lib64/ld-linux-x86-64.so.2")
             )
         });
-        assert_eq!(libc, Some(HostLinuxLibc::Musl));
+        assert_eq!(libc, None);
     }
 
     #[cfg(target_os = "linux")]

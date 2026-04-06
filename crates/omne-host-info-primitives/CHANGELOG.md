@@ -6,6 +6,9 @@
 
 - detect musl/Alpine Linux hosts before selecting the default target triple so callers do not
   incorrectly fall back to `*-unknown-linux-gnu`
+- stop treating `/etc/alpine-release` as stronger than visible glibc loader markers during Linux
+  libc fallback detection, so glibc hosts with Alpine/musl compatibility artifacts now fail closed
+  instead of being misclassified as `*-unknown-linux-musl`
 - make Linux host libc detection fail closed when musl and glibc loader markers coexist, instead
   of silently preferring musl and misclassifying ambiguous hosts
 - prefer the current process' Linux loader/libc mappings over coarse filesystem markers when
