@@ -298,6 +298,20 @@ pub(crate) fn candidate_failure_message(
     }
 }
 
+pub(crate) fn require_download_candidates(
+    candidates: &[ArtifactDownloadCandidate],
+    canonical_url: &str,
+) -> Result<(), ArtifactInstallError> {
+    if candidates.is_empty() {
+        return Err(ArtifactInstallError::install(format!(
+            "artifact install requires at least one download candidate for {}",
+            redact_url_for_error(canonical_url)
+        )));
+    }
+
+    Ok(())
+}
+
 pub(crate) fn failed_candidates_error(
     canonical_url: &str,
     errors: Vec<ArtifactCandidateFailure>,
@@ -360,7 +374,8 @@ mod tests {
         ArtifactCandidateFailure, ArtifactDownloadCandidate, ArtifactDownloadCandidateKind,
         ArtifactDownloader, ArtifactInstallError, ArtifactInstallErrorDetail,
         ArtifactInstallErrorKind, candidate_failure_message,
-        download_candidate_to_writer_with_options, failed_candidates_error, run_blocking_install,
+        download_candidate_to_writer_with_options, failed_candidates_error,
+        require_download_candidates, run_blocking_install,
     };
 
     struct RecordingDownloader {
@@ -416,6 +431,20 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("all artifact download candidates failed"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn require_download_candidates_rejects_empty_candidate_lists() {
+        let err = require_download_candidates(&[], "https://example.invalid/demo.zip")
+            .expect_err("empty candidate lists must be rejected");
+
+        assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
+        assert!(err.candidate_failures().is_empty());
+        assert!(
+            err.to_string()
+                .contains("requires at least one download candidate"),
             "unexpected message: {err}"
         );
     }

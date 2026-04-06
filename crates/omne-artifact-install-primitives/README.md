@@ -12,6 +12,7 @@ Reusable artifact download and install primitives shared by higher-level callers
 ## Scope
 
 - ordered artifact download candidate execution
+- public download/install entrypoints reject empty candidate lists as invalid caller input instead of surfacing a synthetic "all candidates failed" aggregate
 - public download/install entrypoints that depend on the crate-local `ArtifactDownloader` boundary
   instead of hard-coding a concrete HTTP client type; `reqwest::Client` remains supported via the
   built-in adapter impl
