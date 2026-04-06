@@ -98,7 +98,9 @@ annotations. In `omne-fs` they are descriptive only and do not override
 - Default: `glob`, `grep`, `patch`
 - Optional: `policy-io`
 
-If a feature is disabled, the operation API remains available but returns `Error::NotPermitted`.
+If a feature is disabled, the operation API remains callable, including `Context::glob_paths()`,
+`Context::grep()`, and the corresponding free functions; those calls return
+`Error::NotPermitted`.
 
 ## Development
 

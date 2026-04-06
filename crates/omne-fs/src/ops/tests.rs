@@ -3,7 +3,60 @@ use std::path::{Path, PathBuf};
 
 use policy_meta::WriteScope;
 
+#[cfg(any(not(feature = "glob"), not(feature = "grep")))]
+use crate::Error;
+
 use super::*;
+
+#[cfg(not(feature = "glob"))]
+#[test]
+fn context_glob_paths_remains_callable_when_glob_feature_is_disabled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut policy = SandboxPolicy::single_root("root", dir.path(), WriteScope::ReadOnly);
+    policy.permissions.glob = true;
+    let ctx = Context::new(policy).expect("ctx");
+
+    let err = ctx
+        .glob_paths(GlobRequest {
+            root_id: "root".to_string(),
+            pattern: "**/*.rs".to_string(),
+        })
+        .expect_err("glob should fail closed without the feature");
+
+    match err {
+        Error::NotPermitted(message) => assert_eq!(
+            message,
+            "glob is not supported: crate feature 'glob' is disabled"
+        ),
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[cfg(not(feature = "grep"))]
+#[test]
+fn context_grep_remains_callable_when_grep_feature_is_disabled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut policy = SandboxPolicy::single_root("root", dir.path(), WriteScope::ReadOnly);
+    policy.permissions.grep = true;
+    let ctx = Context::new(policy).expect("ctx");
+
+    let err = ctx
+        .grep(GrepRequest {
+            root_id: "root".to_string(),
+            query: "needle".to_string(),
+            regex: false,
+            glob: None,
+        })
+        .expect_err("grep should fail closed without the feature");
+
+    match err {
+        Error::NotPermitted(message) => assert_eq!(
+            message,
+            "grep is not supported: crate feature 'grep' is disabled"
+        ),
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
 
 #[test]
 #[cfg(unix)]

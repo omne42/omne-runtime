@@ -10,14 +10,11 @@ use crate::redaction::SecretRedactor;
 
 use super::{
     Context, CopyFileRequest, CopyFileResponse, DeleteRequest, DeleteResponse, EditRequest,
-    EditResponse, ListDirRequest, ListDirResponse, MkdirRequest, MkdirResponse, MovePathRequest,
-    MovePathResponse, PatchRequest, PatchResponse, ReadRequest, ReadResponse, RootRuntime,
-    StatRequest, StatResponse, WriteFileRequest, WriteFileResponse,
+    EditResponse, GlobRequest, GlobResponse, GrepRequest, GrepResponse, ListDirRequest,
+    ListDirResponse, MkdirRequest, MkdirResponse, MovePathRequest, MovePathResponse, PatchRequest,
+    PatchResponse, ReadRequest, ReadResponse, RootRuntime, StatRequest, StatResponse,
+    WriteFileRequest, WriteFileResponse,
 };
-#[cfg(feature = "glob")]
-use super::{GlobRequest, GlobResponse};
-#[cfg(feature = "grep")]
-use super::{GrepRequest, GrepResponse};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecisionTrace {
@@ -114,12 +111,10 @@ impl Context {
         super::list_dir(self, request)
     }
 
-    #[cfg(feature = "glob")]
     pub fn glob_paths(&self, request: GlobRequest) -> Result<GlobResponse> {
         super::glob_paths(self, request)
     }
 
-    #[cfg(feature = "grep")]
     pub fn grep(&self, request: GrepRequest) -> Result<GrepResponse> {
         super::grep(self, request)
     }

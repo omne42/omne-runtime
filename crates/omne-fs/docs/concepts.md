@@ -68,7 +68,8 @@ Cargo features (`glob`, `grep`, `patch`, `policy-io`) control implementation ava
 Design choice:
 
 - API remains stable even when features are off.
-- Calls return deterministic `Error::NotPermitted` when disabled.
+- `Context` methods and free functions remain callable and return deterministic
+  `Error::NotPermitted` when disabled.
 
 ## Error Model
 

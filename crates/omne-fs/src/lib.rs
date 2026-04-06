@@ -4,8 +4,9 @@
 //!
 //! The crate enforces an explicit root/permission policy in-process and offers stable request/
 //! response types for operations like read/write/edit/delete/list_dir/copy/move/mkdir/stat/patch.
-//! `glob` and `grep` APIs are always available; when the corresponding `glob`/`grep`
-//! feature is disabled, calls return `Error::NotPermitted`.
+//! `glob` and `grep` request/response types, free functions, and `Context` methods remain
+//! available even when the corresponding `glob`/`grep` feature is disabled; calls then return
+//! `Error::NotPermitted`.
 
 mod error;
 pub mod ops;
