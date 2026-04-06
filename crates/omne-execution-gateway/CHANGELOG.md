@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- add regression coverage proving `non_mutating_program_allowlist` requests also bind a preflight
+  content fingerprint, so in-place rewrites still fail closed before spawn instead of only pinning
+  the mutating allowlist path
 - keep prepared-command execution inside the authoritative audit boundary by making
   `PreparedChild::wait()` / `try_wait()` and drop finalization append the terminal execution record,
   so `prepare_command()` no longer stops at a preflight-only audit entry
