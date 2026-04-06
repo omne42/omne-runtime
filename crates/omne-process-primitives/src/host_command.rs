@@ -14,7 +14,7 @@ use crate::command_path::{
     resolve_command_path_os, resolve_command_path_os_with_path_var_and_base_dir,
 };
 
-const MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024 * 1024;
+const DEFAULT_CAPTURED_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostCommandSudoMode {
@@ -28,10 +28,21 @@ pub enum HostCommandExecution {
     Sudo,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct HostCommandRunOptions<'a> {
     pub env_remove: &'a [OsString],
     pub timeout: Option<Duration>,
+    pub max_captured_output_bytes_per_stream: Option<usize>,
+}
+
+impl Default for HostCommandRunOptions<'_> {
+    fn default() -> Self {
+        Self {
+            env_remove: &[],
+            timeout: None,
+            max_captured_output_bytes_per_stream: Some(DEFAULT_CAPTURED_OUTPUT_BYTES_PER_STREAM),
+        }
+    }
 }
 
 impl<'a> HostCommandRunOptions<'a> {
@@ -46,6 +57,16 @@ impl<'a> HostCommandRunOptions<'a> {
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    pub fn with_capture_limit_bytes_per_stream(mut self, max_bytes: usize) -> Self {
+        self.max_captured_output_bytes_per_stream = Some(max_bytes);
+        self
+    }
+
+    pub fn without_capture_limit(mut self) -> Self {
+        self.max_captured_output_bytes_per_stream = None;
         self
     }
 }
@@ -451,6 +472,7 @@ fn spawn_and_capture_output(
     let status = match wait_for_child(
         &mut child,
         options.timeout,
+        options.max_captured_output_bytes_per_stream,
         &stdout_capture,
         &stderr_capture,
     ) {
@@ -459,10 +481,18 @@ fn spawn_and_capture_output(
             timeout,
             output: timed_out_output,
         }) => {
-            let stdout = read_captured_output(stdout_capture, "stdout")
-                .map_err(CommandOutputError::Capture)?;
-            let stderr = read_captured_output(stderr_capture, "stderr")
-                .map_err(CommandOutputError::Capture)?;
+            let stdout = read_captured_output(
+                stdout_capture,
+                "stdout",
+                options.max_captured_output_bytes_per_stream,
+            )
+            .map_err(CommandOutputError::Capture)?;
+            let stderr = read_captured_output(
+                stderr_capture,
+                "stderr",
+                options.max_captured_output_bytes_per_stream,
+            )
+            .map_err(CommandOutputError::Capture)?;
             return Err(CommandOutputError::TimedOut {
                 timeout,
                 output: Output {
@@ -476,10 +506,18 @@ fn spawn_and_capture_output(
     };
     Ok(Output {
         status,
-        stdout: read_captured_output(stdout_capture, "stdout")
-            .map_err(CommandOutputError::Capture)?,
-        stderr: read_captured_output(stderr_capture, "stderr")
-            .map_err(CommandOutputError::Capture)?,
+        stdout: read_captured_output(
+            stdout_capture,
+            "stdout",
+            options.max_captured_output_bytes_per_stream,
+        )
+        .map_err(CommandOutputError::Capture)?,
+        stderr: read_captured_output(
+            stderr_capture,
+            "stderr",
+            options.max_captured_output_bytes_per_stream,
+        )
+        .map_err(CommandOutputError::Capture)?,
     })
 }
 
@@ -492,6 +530,7 @@ fn create_output_capture_file() -> io::Result<(File, File)> {
 fn wait_for_child(
     child: &mut std::process::Child,
     timeout: Option<Duration>,
+    capture_limit_bytes_per_stream: Option<usize>,
     stdout_capture: &File,
     stderr_capture: &File,
 ) -> Result<std::process::ExitStatus, CommandOutputError> {
@@ -505,12 +544,21 @@ fn wait_for_child(
             Err(source) => return Err(CommandOutputError::Spawn(source)),
         }
 
-        if let Some(stream_name) = capture_limit_exceeded(stdout_capture, stderr_capture)
-            .map_err(CommandOutputError::Spawn)?
+        if let Some(stream_name) = capture_limit_exceeded(
+            stdout_capture,
+            stderr_capture,
+            capture_limit_bytes_per_stream,
+        )
+        .map_err(CommandOutputError::Spawn)?
         {
-            terminate_child_after_capture_limit(child, stream_name)?;
+            terminate_child_after_capture_limit(
+                child,
+                stream_name,
+                capture_limit_bytes_per_stream,
+            )?;
             return Err(CommandOutputError::Capture(capture_limit_error(
                 stream_name,
+                capture_limit_bytes_per_stream,
             )));
         }
 
@@ -539,45 +587,71 @@ fn wait_for_child(
 fn capture_limit_exceeded(
     stdout_capture: &File,
     stderr_capture: &File,
+    capture_limit_bytes_per_stream: Option<usize>,
 ) -> io::Result<Option<&'static str>> {
-    if capture_file_exceeded_limit(stdout_capture)? {
+    if capture_file_exceeded_limit(stdout_capture, capture_limit_bytes_per_stream)? {
         return Ok(Some("stdout"));
     }
-    if capture_file_exceeded_limit(stderr_capture)? {
+    if capture_file_exceeded_limit(stderr_capture, capture_limit_bytes_per_stream)? {
         return Ok(Some("stderr"));
     }
     Ok(None)
 }
 
-fn capture_file_exceeded_limit(capture: &File) -> io::Result<bool> {
-    Ok(capture.metadata()?.len() > MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM as u64)
+fn capture_file_exceeded_limit(capture: &File, max_bytes: Option<usize>) -> io::Result<bool> {
+    let Some(max_bytes) = max_bytes else {
+        return Ok(false);
+    };
+    Ok(capture.metadata()?.len() > max_bytes as u64)
 }
 
 fn terminate_child_after_capture_limit(
     child: &mut std::process::Child,
     stream_name: &'static str,
+    capture_limit_bytes_per_stream: Option<usize>,
 ) -> Result<(), CommandOutputError> {
     let _ = child.kill();
     child.wait().map_err(|source| {
         CommandOutputError::Spawn(io::Error::other(format!(
-            "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes and wait failed: {source}"
+            "{} and wait failed: {source}",
+            capture_limit_message(stream_name, capture_limit_bytes_per_stream),
         )))
     })?;
     Ok(())
 }
 
-fn capture_limit_error(stream_name: &'static str) -> io::Error {
-    io::Error::other(format!(
-        "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
+fn capture_limit_error(
+    stream_name: &'static str,
+    capture_limit_bytes_per_stream: Option<usize>,
+) -> io::Error {
+    io::Error::other(capture_limit_message(
+        stream_name,
+        capture_limit_bytes_per_stream,
     ))
 }
 
-fn read_captured_output(mut capture: File, stream_name: &'static str) -> io::Result<Vec<u8>> {
-    capture.seek(SeekFrom::Start(0))?;
-    read_stream_limited(&mut capture, stream_name)
+fn capture_limit_message(
+    stream_name: &'static str,
+    capture_limit_bytes_per_stream: Option<usize>,
+) -> String {
+    let limit = capture_limit_bytes_per_stream.unwrap_or(DEFAULT_CAPTURED_OUTPUT_BYTES_PER_STREAM);
+    format!("{stream_name} exceeded capture limit of {limit} bytes")
 }
 
-fn read_stream_limited<R>(mut reader: R, stream_name: &'static str) -> io::Result<Vec<u8>>
+fn read_captured_output(
+    mut capture: File,
+    stream_name: &'static str,
+    capture_limit_bytes_per_stream: Option<usize>,
+) -> io::Result<Vec<u8>> {
+    capture.seek(SeekFrom::Start(0))?;
+    read_stream_limited(&mut capture, stream_name, capture_limit_bytes_per_stream)
+}
+
+fn read_stream_limited<R>(
+    mut reader: R,
+    stream_name: &'static str,
+    capture_limit_bytes_per_stream: Option<usize>,
+) -> io::Result<Vec<u8>>
 where
     R: Read,
 {
@@ -589,15 +663,23 @@ where
         if read == 0 {
             break;
         }
-        let remaining = MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM.saturating_sub(bytes.len());
-        let to_copy = remaining.min(read);
-        bytes.extend_from_slice(&buffer[..to_copy]);
-        if to_copy < read {
-            exceeded_capture_limit = true;
+        match capture_limit_bytes_per_stream {
+            Some(limit) => {
+                let remaining = limit.saturating_sub(bytes.len());
+                let to_copy = remaining.min(read);
+                bytes.extend_from_slice(&buffer[..to_copy]);
+                if to_copy < read {
+                    exceeded_capture_limit = true;
+                }
+            }
+            None => bytes.extend_from_slice(&buffer[..read]),
         }
     }
     if exceeded_capture_limit {
-        return Err(capture_limit_error(stream_name));
+        return Err(capture_limit_error(
+            stream_name,
+            capture_limit_bytes_per_stream,
+        ));
     }
     Ok(bytes)
 }
@@ -1489,8 +1571,61 @@ mod tests {
         assert!(output.output.status.success());
         assert_eq!(
             output.output.stdout.len(),
-            super::MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM
+            super::DEFAULT_CAPTURED_OUTPUT_BYTES_PER_STREAM
         );
+    }
+
+    #[test]
+    fn run_host_command_with_options_allows_disabling_capture_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_very_large_stdout_command(temp.path(), "unbounded");
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let output = run_host_command_with_options(
+            &request,
+            HostCommandRunOptions::new().without_capture_limit(),
+        )
+        .expect("disabling the capture limit should allow large output");
+        assert!(output.output.status.success());
+        assert!(output.output.stdout.len() > super::DEFAULT_CAPTURED_OUTPUT_BYTES_PER_STREAM);
+    }
+
+    #[test]
+    fn run_host_command_with_options_uses_custom_capture_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_large_stdout_command(temp.path(), "custom-limit");
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let err = run_host_command_with_options(
+            &request,
+            HostCommandRunOptions::new().with_capture_limit_bytes_per_stream(1024),
+        )
+        .expect_err("custom capture limit should be enforced");
+        match err {
+            HostCommandError::CaptureFailed { source, .. } => {
+                assert!(
+                    source
+                        .to_string()
+                        .contains("stdout exceeded capture limit of 1024 bytes"),
+                    "unexpected error: {source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]

@@ -19,6 +19,7 @@ Low-level host-command and process-tree primitives shared across callers.
 - `command_available*` probes that keep the same spawnable contract as execution and do not report non-executable files as available
 - host command execution with captured output that returns after the direct child exits even if daemonized descendants keep inherited stdout/stderr open
 - optional request-scoped env removals and hard timeouts for host command / recipe execution, while leaving timeout selection to the caller
+- caller-controlled per-stream capture limits for host command / recipe execution, including an explicit escape hatch to disable the default 8 MiB bound when the caller owns the higher-level policy
 - distinct host-command capture errors for post-spawn stdout/stderr read failures, so callers can distinguish execution-start failures from output-collection failures
 - distinct timeout errors that preserve bounded captured stdout/stderr for callers that need to render or classify partial output
 - host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
