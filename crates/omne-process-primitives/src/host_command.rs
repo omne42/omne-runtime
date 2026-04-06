@@ -1643,7 +1643,7 @@ mod tests {
 
         assert!(!command_exists_for_request(&request));
         assert!(!command_available_for_request(&request));
-        assert!(is_explicit_command_path(request.program));
+        assert!(super::is_explicit_command_path(request.program));
         assert!(is_explicit_relative_program_without_working_directory(
             &request
         ));
