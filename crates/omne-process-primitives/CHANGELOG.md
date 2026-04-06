@@ -10,14 +10,15 @@
 - resolve request-scoped relative `PATH` entries against the same effective `working_directory`
   used for direct spawn, including relative `working_directory` inputs, so command probing,
   missing-program classification, and execution stay aligned
-
 - treat Windows drive-relative program paths such as `C:tool.exe` as explicit relative paths
   instead of bare commands, so request-scoped probes and execution stop falling back to `PATH`
-- fail closed on Linux once process-tree cleanup can no longer revalidate the original leader
-  after exit, instead of trusting surviving same-session group members behind a reused historical
-  process-group id
+- keep Linux process-tree cleanup pinned to the exact leader `/proc` snapshot captured at spawn
+  time, so cleanup never reintroduces the old double-sample race or degrades the session check
+  into trusting a surviving historical PGID
 - terminate still-running direct children as soon as captured stdout/stderr exceeds the bounded
   per-stream limit, so oversized output fails fast instead of waiting for the command to exit
+- reap direct children asynchronously after output-overflow termination, so continuously writing
+  commands return a structured capture-limit error instead of hanging in the overflow path
 - stop `resolve_command_path*` helpers from reinterpreting explicit relative paths through `PATH`;
   commands such as `./tool` and `subdir/tool` now resolve only as explicit paths, matching
   shell/`exec` semantics and keeping probe APIs aligned with execution
