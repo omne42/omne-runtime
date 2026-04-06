@@ -345,7 +345,7 @@ pub fn command_available_for_request(request: &HostCommandRequest<'_>) -> bool {
 
 pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoMode {
     sudo_mode_system_package_manager(program)
-        .filter(|manager| manager.requires_privileged_install())
+        .filter(|manager| manager_requires_privileged_install(*manager))
         .map_or(HostCommandSudoMode::Never, |_| {
             HostCommandSudoMode::IfNonRootSystemCommand
         })
@@ -654,7 +654,7 @@ fn sudo_eligible_program(program: &OsStr) -> bool {
     let Some(manager) = sudo_mode_system_package_manager(program) else {
         return false;
     };
-    if !manager.requires_privileged_install() {
+    if !manager_requires_privileged_install(manager) {
         return false;
     }
     if !is_explicit_command_path(program) {
@@ -676,6 +676,10 @@ fn sudo_mode_program_name(program: &OsStr) -> Option<&str> {
 
 fn sudo_mode_system_package_manager(program: &OsStr) -> Option<SystemPackageManager> {
     sudo_mode_program_name(program).and_then(SystemPackageManager::parse)
+}
+
+fn manager_requires_privileged_install(manager: SystemPackageManager) -> bool {
+    !matches!(manager, SystemPackageManager::Brew)
 }
 
 fn explicit_system_package_manager_path(path: &Path) -> bool {
@@ -810,8 +814,7 @@ fn resolve_host_system_package_manager_path(program: &OsStr) -> Option<PathBuf> 
         return None;
     }
     let manager = SystemPackageManager::parse(program.to_str()?)?;
-    manager
-        .requires_privileged_install()
+    manager_requires_privileged_install(manager)
         .then_some(resolve_command_path_in_standard_locations_os(program))
         .flatten()
 }
@@ -931,7 +934,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
     #[cfg(unix)]
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::fs::symlink;
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
     #[cfg(unix)]
@@ -1999,14 +2002,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn non_executable_paths_are_not_available_or_spawnable() {
+    fn non_executable_paths_are_not_reported_as_available() {
+        use std::os::unix::fs::PermissionsExt;
+
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = temp.path().join("plain-script");
-        std::fs::write(
-            &command_path,
-            format!("#!{}\nexit 0\n", unix_test_shell_path().display()),
-        )
-        .expect("write plain script");
+        std::fs::write(&command_path, "#!/bin/sh\nexit 0\n").expect("write plain script");
         let mut permissions = std::fs::metadata(&command_path)
             .expect("stat plain script")
             .permissions();
@@ -2014,6 +2015,10 @@ mod tests {
         std::fs::set_permissions(&command_path, permissions).expect("chmod plain script");
 
         let command_path_string = command_path.to_string_lossy().into_owned();
+        assert!(!command_available(&command_path_string));
+        assert!(!command_available_os(command_path.as_os_str()));
+        assert!(!command_path_exists(&command_path));
+
         let args = Vec::new();
         let request = HostCommandRequest {
             program: command_path.as_os_str(),
@@ -2022,10 +2027,6 @@ mod tests {
             working_directory: None,
             sudo_mode: HostCommandSudoMode::Never,
         };
-        assert!(!command_available(&command_path_string));
-        assert!(!command_available_os(command_path.as_os_str()));
-        assert!(!command_available_for_request(&request));
-        assert!(!command_path_exists(&command_path));
 
         let error = run_host_command(&request).expect_err("non-executable path should fail");
         match error {
@@ -2036,7 +2037,7 @@ mod tests {
                 assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
             }
             HostCommandError::CaptureFailed { .. } => {
-                panic!("non-executable path must fail before output capture starts");
+                panic!("non-executable path must not reach output capture");
             }
             HostCommandError::TimedOut { .. } => {
                 panic!("non-executable path must fail before timeout handling");

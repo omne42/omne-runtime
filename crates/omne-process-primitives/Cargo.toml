@@ -7,7 +7,6 @@ description = "Low-level Omne process primitives."
 
 [dependencies]
 omne-system-package-primitives = { path = "../omne-system-package-primitives" }
-same-file = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["process"] }
 
