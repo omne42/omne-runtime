@@ -2127,7 +2127,11 @@ mod tests {
         std::fs::create_dir_all(&escaped_root).expect("create escaped root");
         let trusted_program = write_test_command(&trusted_root, "apt-get");
         let escaped_program = write_test_command(&escaped_root, "apt-get");
-        let lexical_escape = trusted_root.join("..").join("..").join("tmp").join("apt-get");
+        let lexical_escape = trusted_root
+            .join("..")
+            .join("..")
+            .join("tmp")
+            .join("apt-get");
 
         assert_eq!(
             lexical_escape
