@@ -13,6 +13,18 @@ pub(crate) fn resolve_command_path_os_with_path_var(
     command: &OsStr,
     path_var: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
+    resolve_command_path_os_with_path_var_and_base_dir(
+        command,
+        path_var,
+        std::env::current_dir().ok().as_deref(),
+    )
+}
+
+pub(crate) fn resolve_command_path_os_with_path_var_and_base_dir(
+    command: &OsStr,
+    path_var: Option<std::ffi::OsString>,
+    base_dir: Option<&Path>,
+) -> Option<PathBuf> {
     if is_explicit_command_path(command) {
         let path = PathBuf::from(command);
         return is_spawnable_command_path(&path).then_some(path);
@@ -20,7 +32,9 @@ pub(crate) fn resolve_command_path_os_with_path_var(
 
     let path_var = path_var?;
     for dir in std::env::split_paths(&path_var) {
-        if let Some(path) = resolve_command_in_dir(command, &dir, is_spawnable_command_path) {
+        if let Some(path) =
+            resolve_command_in_dir(command, &dir, base_dir, is_spawnable_command_path)
+        {
             return Some(path);
         }
     }
@@ -56,6 +70,19 @@ pub(crate) fn resolve_available_command_path_with_path_var(
     command: &OsStr,
     path_var: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
+    resolve_available_command_path_with_path_var_and_base_dir(
+        command,
+        path_var,
+        std::env::current_dir().ok().as_deref(),
+    )
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn resolve_available_command_path_with_path_var_and_base_dir(
+    command: &OsStr,
+    path_var: Option<std::ffi::OsString>,
+    base_dir: Option<&Path>,
+) -> Option<PathBuf> {
     if is_explicit_command_path(command) {
         let path = PathBuf::from(command);
         return is_regular_command_path(&path).then_some(path);
@@ -63,7 +90,8 @@ pub(crate) fn resolve_available_command_path_with_path_var(
 
     let path_var = path_var?;
     for dir in std::env::split_paths(&path_var) {
-        if let Some(path) = resolve_command_in_dir(command, &dir, is_regular_command_path) {
+        if let Some(path) = resolve_command_in_dir(command, &dir, base_dir, is_regular_command_path)
+        {
             return Some(path);
         }
     }
@@ -125,7 +153,7 @@ where
     let candidate_dirs: [&str; 0] = [];
 
     for dir in candidate_dirs {
-        if let Some(path) = resolve_command_in_dir(command, Path::new(dir), predicate) {
+        if let Some(path) = resolve_command_in_dir(command, Path::new(dir), None, predicate) {
             return Some(path);
         }
     }
@@ -133,10 +161,16 @@ where
     None
 }
 
-fn resolve_command_in_dir<F>(command: &OsStr, dir: &Path, predicate: F) -> Option<PathBuf>
+fn resolve_command_in_dir<F>(
+    command: &OsStr,
+    dir: &Path,
+    base_dir: Option<&Path>,
+    predicate: F,
+) -> Option<PathBuf>
 where
     F: Fn(&Path) -> bool + Copy,
 {
+    let dir = resolve_path_entry_dir(dir, base_dir)?;
     let candidate = dir.join(command);
 
     #[cfg(windows)]
@@ -160,6 +194,14 @@ where
     {
         predicate(&candidate).then_some(candidate)
     }
+}
+
+fn resolve_path_entry_dir(dir: &Path, base_dir: Option<&Path>) -> Option<PathBuf> {
+    if dir.is_absolute() {
+        return Some(dir.to_path_buf());
+    }
+
+    Some(base_dir?.join(dir))
 }
 
 #[cfg(windows)]
@@ -243,13 +285,19 @@ mod tests {
         std::fs::set_permissions(&plain_file, plain_permissions).expect("chmod plain file");
 
         assert_eq!(
-            resolve_command_in_dir(OsStr::new("tool"), temp.path(), is_spawnable_command_path),
+            resolve_command_in_dir(
+                OsStr::new("tool"),
+                temp.path(),
+                None,
+                is_spawnable_command_path
+            ),
             Some(executable.clone())
         );
         assert!(
             resolve_command_in_dir(
                 OsStr::new("plain-tool"),
                 temp.path(),
+                None,
                 is_spawnable_command_path
             )
             .is_none()
@@ -258,6 +306,7 @@ mod tests {
             resolve_command_in_dir(
                 OsStr::new("plain-tool"),
                 temp.path(),
+                None,
                 is_regular_command_path
             ),
             Some(plain_file.clone())
@@ -319,6 +368,30 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_path_entries_resolve_against_supplied_base_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let working_directory = temp.path().join("cwd");
+        let relative_bin = working_directory.join("bin");
+        std::fs::create_dir_all(&relative_bin).expect("mkdir relative PATH dir");
+        let tool = relative_bin.join("tool");
+        std::fs::write(&tool, "#!/bin/sh\nexit 0\n").expect("write tool");
+        let mut permissions = std::fs::metadata(&tool).expect("stat tool").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&tool, permissions).expect("chmod tool");
+
+        let resolved = super::resolve_command_path_os_with_path_var_and_base_dir(
+            OsStr::new("tool"),
+            Some(std::ffi::OsString::from("bin")),
+            Some(&working_directory),
+        );
+
+        assert_eq!(resolved, Some(tool));
     }
 
     #[cfg(unix)]

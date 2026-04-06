@@ -11,7 +11,7 @@ use tempfile::tempfile;
 
 use crate::command_path::{
     is_spawnable_command_path, resolve_command_path_in_standard_locations_os,
-    resolve_command_path_os, resolve_command_path_os_with_path_var,
+    resolve_command_path_os, resolve_command_path_os_with_path_var_and_base_dir,
 };
 
 const MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024 * 1024;
@@ -385,7 +385,7 @@ fn build_command_with_options(
             cmd.env(name, value);
         }
     }
-    if let Some(working_directory) = request.working_directory {
+    if let Some(working_directory) = resolved_working_directory_for_request(request) {
         cmd.current_dir(working_directory);
     }
     cmd.stdin(Stdio::null());
@@ -748,12 +748,15 @@ fn resolve_program_for_direct_command(request: &HostCommandRequest<'_>) -> Optio
     if program.is_absolute() {
         return Some(program.to_path_buf());
     }
+    let working_directory = resolved_working_directory_for_request(request);
     if is_explicit_command_path(request.program) {
-        return request
-            .working_directory
-            .map(|working_directory| working_directory.join(program));
+        return working_directory.map(|working_directory| working_directory.join(program));
     }
-    resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
+    resolve_command_path_os_with_path_var_and_base_dir(
+        request.program,
+        effective_path_var(request.env),
+        working_directory.as_deref(),
+    )
 }
 
 fn resolve_program_for_direct_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
@@ -775,6 +778,22 @@ fn validate_direct_request_program(
     }
 
     Ok(())
+}
+
+fn resolved_working_directory_for_request(request: &HostCommandRequest<'_>) -> Option<PathBuf> {
+    request
+        .working_directory
+        .map(resolve_working_directory_for_spawn)
+}
+
+fn resolve_working_directory_for_spawn(working_directory: &Path) -> PathBuf {
+    if working_directory.is_absolute() {
+        return working_directory.to_path_buf();
+    }
+
+    std::env::current_dir()
+        .map(|current_dir| current_dir.join(working_directory))
+        .unwrap_or_else(|_| working_directory.to_path_buf())
 }
 
 fn resolve_program_for_sudo_target(request: &HostCommandRequest<'_>) -> PathBuf {
@@ -914,6 +933,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
     #[cfg(unix)]
     use std::time::{Duration, Instant};
 
@@ -1527,6 +1547,44 @@ mod tests {
         assert!(stdout.contains(&working_directory.path().display().to_string()));
     }
 
+    #[test]
+    fn request_scoped_relative_path_entries_follow_relative_working_directory() {
+        let _lock = current_dir_lock().lock().expect("lock current_dir");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let original_cwd = std::env::current_dir().expect("current_dir");
+        std::env::set_current_dir(temp.path()).expect("set current_dir");
+
+        let test_result = (|| {
+            let working_directory = PathBuf::from("cwd");
+            let relative_bin = temp.path().join("cwd").join("bin");
+            std::fs::create_dir_all(&relative_bin).expect("create relative PATH dir");
+            write_pwd_command(&relative_bin, "pwd");
+            let env = vec![(OsString::from("PATH"), OsString::from("bin"))];
+            let request = HostCommandRequest {
+                program: OsStr::new("pwd"),
+                args: &[],
+                env: &env,
+                working_directory: Some(&working_directory),
+                sudo_mode: HostCommandSudoMode::Never,
+            };
+
+            assert!(command_exists_for_request(&request));
+            assert!(command_available_for_request(&request));
+            assert_eq!(
+                resolve_program_for_direct_spawn(&request),
+                temp.path().join("cwd").join("bin").join("pwd")
+            );
+
+            let output = run_host_command(&request).expect("run request-scoped PATH command");
+            assert!(output.output.status.success());
+            let stdout = String::from_utf8_lossy(&output.output.stdout);
+            assert!(stdout.contains(&temp.path().join("cwd").display().to_string()));
+        })();
+
+        std::env::set_current_dir(original_cwd).expect("restore current_dir");
+        test_result
+    }
+
     #[cfg(unix)]
     #[test]
     fn direct_command_resolves_bare_request_path_before_spawn() {
@@ -1585,6 +1643,27 @@ mod tests {
     }
 
     #[test]
+    fn request_scoped_probe_resolves_relative_path_entry_against_working_directory() {
+        let working_directory = tempfile::tempdir().expect("working directory tempdir");
+        let command_root = working_directory.path().join("bin");
+        std::fs::create_dir_all(&command_root).expect("create relative command root");
+        let command_path = write_test_command(&command_root, "echoenv");
+        let env = vec![(OsString::from("PATH"), OsString::from("bin"))];
+        let request = HostCommandRequest {
+            program: OsStr::new("echoenv"),
+            args: &[],
+            env: &env,
+            working_directory: Some(working_directory.path()),
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        assert!(!command_exists_os(request.program));
+        assert!(command_exists_for_request(&request));
+        assert!(command_available_for_request(&request));
+        assert_eq!(resolve_program_for_direct_spawn(&request), command_path);
+    }
+
+    #[test]
     fn request_scoped_probe_rejects_relative_program_without_working_directory() {
         let request = HostCommandRequest {
             program: OsStr::new("./tool"),
@@ -1627,6 +1706,30 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn run_host_command_resolves_relative_path_entry_against_working_directory() {
+        let working_directory = tempfile::tempdir().expect("working directory tempdir");
+        let command_root = working_directory.path().join("bin");
+        std::fs::create_dir_all(&command_root).expect("create relative command root");
+        write_test_command(&command_root, "echoenv");
+        let env = vec![
+            (OsString::from("PATH"), OsString::from("bin")),
+            (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
+        ];
+        let request = HostCommandRequest {
+            program: OsStr::new("echoenv"),
+            args: &[],
+            env: &env,
+            working_directory: Some(working_directory.path()),
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let output = run_host_command(&request).expect("run host command");
+        assert!(output.output.status.success());
+        let stdout = String::from_utf8_lossy(&output.output.stdout);
+        assert!(stdout.contains("env=world"));
     }
 
     #[cfg(windows)]
@@ -2196,5 +2299,10 @@ mod tests {
         )
         .expect("write windows loud stderr command");
         path
+    }
+
+    fn current_dir_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
     }
 }

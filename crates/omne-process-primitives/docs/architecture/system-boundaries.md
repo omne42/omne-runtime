@@ -16,7 +16,7 @@
 - 把“命令根本没能启动”与“命令已执行但输出采集失败”区分成不同错误面，避免把 capture-limit/读取失败错误错误归类成 `SpawnFailed`。
 - 把“命令超时被终止”与“命令启动失败/输出采集失败”继续分开建模，避免调用方只能从字符串猜测 timeout。
 - 对显式相对程序路径要求调用方显式提供 `working_directory` 作为解析基准；如果 request 没给这个基准，本 crate 会 fail closed，而不是偷偷退回调用方进程的 ambient cwd。
-- `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，而 direct bare command 的真正 spawn 也会先绑定到同一条解析出的可执行路径；对显式相对程序路径则与执行共享同一个 `working_directory` 解析语义，并在缺少它时返回 false。
+- `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，而 direct bare command 的真正 spawn 也会先绑定到同一条解析出的可执行路径；如果 request 的 `PATH` 里包含相对目录，这些目录会继续按 request 的 `working_directory` 解释，而不是退回宿主进程的 ambient cwd。对显式相对程序路径也与执行共享同一个 `working_directory` 解析语义，并在缺少它时返回 false。
 - `command_available` / `command_available_os` / `command_available_for_request` 只会把真正可执行的命令视为 available，不会把普通文件或缺少执行位的路径伪装成“已可运行”。
 - direct 显式路径 spawn 如果返回 `ENOENT`，只有在解析后的目标路径确实不存在时才会折叠成 `CommandNotFound`；如果目标文件仍在，本 crate 会保留原始 spawn 失败，让缺失 shebang 解释器或动态 loader 这类问题不会被误报成“命令不存在”。
 - 当命中 `sudo` 路径时，在提权边界内完全丢弃 request env；提权后的目标命令只接收受信任解析出的目标路径和 argv，避免把 request `PATH` 或其他调用方环境变量重新带进 root 侧进程语义。
