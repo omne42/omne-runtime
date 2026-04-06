@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 pub(crate) fn reject_forbidden_path_ancestors(path: &Path) -> Result<(), String> {
