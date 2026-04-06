@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- keep prepared-command execution inside the authoritative audit boundary by making
+  `PreparedChild::wait()` / `try_wait()` and drop finalization append the terminal execution record,
+  so `prepare_command()` no longer stops at a preflight-only audit entry
 - classify Windows drive-relative program paths such as `C:tool.exe` as explicit relative paths
   instead of bare commands, so gateway path validation and allowlist classification fail closed on
   the right branch

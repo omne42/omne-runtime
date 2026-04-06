@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
 use crate::audit::{ExecDecision, ExecEvent, SandboxRuntimeObservation, requested_policy_meta};
 use crate::audit_log::{AuditLogger, PreparedAuditSink};
@@ -76,8 +76,10 @@ pub struct ExecutionOutcome {
 #[derive(Debug)]
 #[must_use = "prepared spawn outcomes carry child ownership and sandbox metadata"]
 pub struct PreparedChild {
-    pub child: std::process::Child,
-    pub sandbox_runtime: Option<SandboxRuntimeObservation>,
+    child: std::process::Child,
+    sandbox_runtime: Option<SandboxRuntimeObservation>,
+    event: ExecEvent,
+    audit_sink: Option<PreparedAuditSink>,
 }
 
 #[derive(Debug)]
@@ -85,6 +87,7 @@ pub struct PreparedChild {
 pub struct PreparedCommand {
     command: Command,
     prepared: PreparedExecRequest,
+    audit_sink: Option<PreparedAuditSink>,
 }
 
 impl ExecutionOutcome {
@@ -94,8 +97,80 @@ impl ExecutionOutcome {
 }
 
 impl PreparedChild {
-    pub fn into_parts(self) -> (std::process::Child, Option<SandboxRuntimeObservation>) {
-        (self.child, self.sandbox_runtime)
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn stdin(&mut self) -> Option<&mut ChildStdin> {
+        self.child.stdin.as_mut()
+    }
+
+    pub fn stdout(&mut self) -> Option<&mut ChildStdout> {
+        self.child.stdout.as_mut()
+    }
+
+    pub fn stderr(&mut self) -> Option<&mut ChildStderr> {
+        self.child.stderr.as_mut()
+    }
+
+    pub fn sandbox_runtime(&self) -> Option<&SandboxRuntimeObservation> {
+        self.sandbox_runtime.as_ref()
+    }
+
+    pub fn try_wait(&mut self) -> ExecResult<Option<ExitStatus>> {
+        let status = self.child.try_wait().map_err(ExecError::Spawn)?;
+        match status {
+            Some(status) => self.finalize_result(Ok(status)).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub fn wait(mut self) -> ExecutionOutcome {
+        let event = self.event_with_runtime();
+        let result = self
+            .child
+            .wait()
+            .map_err(ExecError::Spawn)
+            .and_then(|status| self.finalize_result(Ok(status)));
+        ExecutionOutcome { event, result }
+    }
+
+    pub fn kill(&mut self) -> ExecResult<()> {
+        self.child.kill().map_err(ExecError::Spawn)
+    }
+
+    fn event_with_runtime(&self) -> ExecEvent {
+        let mut event = self.event.clone();
+        event.sandbox_runtime = self.sandbox_runtime.clone();
+        event
+    }
+
+    fn finalize_result(&mut self, result: ExecResult<ExitStatus>) -> ExecResult<ExitStatus> {
+        let audit_result = if let Some(mut audit_sink) = self.audit_sink.take() {
+            audit_sink.write_execution_record(&self.event_with_runtime(), &result)
+        } else {
+            Ok(())
+        };
+        combine_result_with_audit_write(result, audit_result)
+    }
+
+    fn finalize_on_drop(&mut self) {
+        let Some(mut audit_sink) = self.audit_sink.take() else {
+            return;
+        };
+        let event = self.event_with_runtime();
+        let _ = match self.child.try_wait() {
+            Ok(Some(status)) => audit_sink.write_execution_record(&event, &Ok(status)),
+            Ok(None) => audit_sink
+                .write_detached_record(&event, "prepared child dropped without wait/try_wait"),
+            Err(err) => audit_sink.write_execution_error_record(&event, &ExecError::Spawn(err)),
+        };
+    }
+}
+
+impl Drop for PreparedChild {
+    fn drop(&mut self) {
+        self.finalize_on_drop();
     }
 }
 
@@ -106,8 +181,20 @@ impl PreparedCommand {
 
     pub fn spawn(mut self) -> ExecResult<PreparedChild> {
         configure_noninteractive_stdio(&mut self.command);
-        apply_prepared_request(&self.prepared, &mut self.command)
+        let event = self.prepared.event.clone();
+        let result = apply_prepared_request(&self.prepared, &mut self.command)
             .and_then(|monitor| spawn_command_with_monitor(&mut self.command, monitor))
+            .map(|(child, sandbox_runtime)| PreparedChild {
+                child,
+                sandbox_runtime,
+                event: event.clone(),
+                audit_sink: self.audit_sink.take(),
+            });
+        let audit_result = match (&result, self.audit_sink.as_mut()) {
+            (Err(err), Some(audit_sink)) => audit_sink.write_execution_error_record(&event, err),
+            _ => Ok(()),
+        };
+        combine_result_with_audit_write(result, audit_result)
     }
 }
 
@@ -197,8 +284,8 @@ impl ExecGateway {
                     configure_noninteractive_stdio(&mut command);
                     let result =
                         apply_prepared_request(&prepared, &mut command).and_then(|monitor| {
-                            let prepared_child = spawn_command_with_monitor(&mut command, monitor)?;
-                            let (mut child, sandbox_runtime) = prepared_child.into_parts();
+                            let (mut child, sandbox_runtime) =
+                                spawn_command_with_monitor(&mut command, monitor)?;
                             let status = child.wait().map_err(ExecError::Spawn)?;
                             Ok((sandbox_runtime, status))
                         });
@@ -260,7 +347,11 @@ impl ExecGateway {
                         let event = prepared.event.clone();
                         (
                             event,
-                            Ok(PreparedCommand { command, prepared }),
+                            Ok(PreparedCommand {
+                                command,
+                                prepared,
+                                audit_sink: None,
+                            }),
                             audit_sink.take(),
                         )
                     }
@@ -279,18 +370,29 @@ impl ExecGateway {
                 (event, Err(err), None)
             }
         };
+        let mut retained_audit_sink = None;
         let result = if audit_error_already_reported(&result) {
             result
         } else if let Some(mut audit_sink) = audit_sink {
             let audit_result = audit_sink.write_prepare_record(&event, &result);
-            combine_result_with_audit_write(result, audit_result)
+            let result = combine_result_with_audit_write(result, audit_result);
+            if result.is_ok() {
+                retained_audit_sink = Some(audit_sink);
+            }
+            result
         } else if let Some(audit) = &self.audit {
             let audit_result = audit.write_prepare_record(&event, &result);
             combine_result_with_audit_write(result, audit_result)
         } else {
             result
         };
-        (event, result)
+        (
+            event,
+            result.map(|mut prepared| {
+                prepared.audit_sink = retained_audit_sink;
+                prepared
+            }),
+        )
     }
 
     #[allow(clippy::result_large_err)]
@@ -1055,12 +1157,9 @@ fn apply_prepared_request(
 fn spawn_command_with_monitor(
     command: &mut Command,
     monitor: sandbox::SandboxMonitor,
-) -> ExecResult<PreparedChild> {
+) -> ExecResult<(std::process::Child, Option<SandboxRuntimeObservation>)> {
     let child = command.spawn().map_err(ExecError::Spawn)?;
-    Ok(PreparedChild {
-        child,
-        sandbox_runtime: monitor.observe_after_spawn(),
-    })
+    Ok((child, monitor.observe_after_spawn()))
 }
 
 fn build_prepared_spawn_command(prepared: &PreparedExecRequest, args: &[OsString]) -> Command {
@@ -1893,6 +1992,56 @@ mod tests {
         assert_eq!(record["event"]["decision"], "run");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn prepared_child_wait_writes_execution_record() {
+        let workspace = tempdir().expect("create temp workspace");
+        let audit_path = canonical_test_root(&workspace)
+            .join("logs")
+            .join("audit")
+            .join("gateway.jsonl");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                audit_log_path: Some(audit_path.clone()),
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let program = dummy_program_absolute_path();
+        let request = ExecRequest::new(
+            &program,
+            vec![dummy_shell_flag(), "exit 0"],
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+        let mut command = Command::new(&program);
+        command.args([dummy_shell_flag(), "exit 0"]);
+
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let status = result
+            .expect("prepare command")
+            .spawn()
+            .expect("spawn prepared command")
+            .wait()
+            .result
+            .expect("wait prepared command");
+        assert!(status.success(), "unexpected status: {status}");
+
+        let content = fs::read_to_string(&audit_path).expect("read audit log");
+        let records = content
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("parse audit line"))
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2, "expected prepare + execution record");
+        assert_eq!(records[0]["result"]["status"], "prepared");
+        assert_eq!(records[1]["result"]["status"], "exited");
+        assert_eq!(records[1]["event"]["decision"], "run");
+    }
+
     #[test]
     fn capability_report_matches_supported_isolation() {
         let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
@@ -2722,8 +2871,8 @@ mod tests {
             .expect("prepare command")
             .spawn()
             .expect("spawn prepared command")
-            .child
             .wait()
+            .result
             .expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
     }
@@ -2763,18 +2912,18 @@ mod tests {
             .expect("spawn prepared command");
 
         assert!(
-            prepared_child.child.stdin.is_none(),
+            prepared_child.stdin().is_none(),
             "prepared command should discard caller stdin override"
         );
         assert!(
-            prepared_child.child.stdout.is_none(),
+            prepared_child.stdout().is_none(),
             "prepared command should discard caller stdout override"
         );
         assert!(
-            prepared_child.child.stderr.is_none(),
+            prepared_child.stderr().is_none(),
             "prepared command should discard caller stderr override"
         );
-        let status = prepared_child.child.wait().expect("wait prepared command");
+        let status = prepared_child.wait().result.expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
     }
 
@@ -2810,8 +2959,8 @@ mod tests {
             .expect("prepare command")
             .spawn()
             .expect("spawn prepared command without leaked argv0")
-            .child
             .wait()
+            .result
             .expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
     }
@@ -2854,8 +3003,8 @@ mod tests {
             .expect("prepare command")
             .spawn()
             .expect("spawn prepared command without inherited process-group override")
-            .child
             .wait()
+            .result
             .expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
     }
@@ -2894,18 +3043,18 @@ mod tests {
             .spawn()
             .expect("spawn prepared command");
         assert!(
-            prepared_child.child.stdin.is_none(),
+            prepared_child.stdin().is_none(),
             "prepared command should not inherit stdin"
         );
         assert!(
-            prepared_child.child.stdout.is_none(),
+            prepared_child.stdout().is_none(),
             "prepared command should not expose stdout capture handles"
         );
         assert!(
-            prepared_child.child.stderr.is_none(),
+            prepared_child.stderr().is_none(),
             "prepared command should not expose stderr capture handles"
         );
-        let status = prepared_child.child.wait().expect("wait prepared command");
+        let status = prepared_child.wait().result.expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
     }
 
@@ -3565,14 +3714,14 @@ mod tests {
         let mut command = Command::new(dummy_program_absolute_path());
         command.arg(dummy_shell_flag()).arg("exit 0");
 
-        let mut prepared_child = spawn_command_with_monitor(
+        let (mut child, sandbox_runtime) = spawn_command_with_monitor(
             &mut command,
             sandbox::SandboxMonitor::with_observation(Some(observation.clone())),
         )
         .expect("spawn command with test monitor");
 
-        assert_eq!(prepared_child.sandbox_runtime, Some(observation));
-        let status = prepared_child.child.wait().expect("wait for spawned child");
+        assert_eq!(sandbox_runtime.as_ref(), Some(&observation));
+        let status = child.wait().expect("wait for spawned child");
         assert!(status.success());
     }
 

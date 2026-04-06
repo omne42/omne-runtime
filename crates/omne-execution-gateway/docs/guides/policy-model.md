@@ -45,7 +45,7 @@
 - shell-like opaque launchers such as `sh`, `cmd`, `powershell`, `pwsh`, `python`, and `node` are denied even when their executable paths appear in an allowlist, because the gateway cannot bind arbitrary script/subcommand semantics to a stable executable identity.
 - the gateway does not parse arbitrary tool-specific CLI syntax or infer arbitrary binary semantics from executable basenames. If a caller wants to authorize read-only invocations of tools such as `git` or `cargo`, that decision must be expressed through an explicit `non_mutating_program_allowlist` entry for the resolved executable path.
 - allowlist matching is executable-identity based for explicit paths; it is not binary provenance verification.
-- `execute()` owns the final execution audit record; `prepare_command()` only records the preflight `prepared` / `prepare_error` audit state because the caller owns the child lifecycle after `spawn()`.
+- `execute()` still owns the simplest full-lifecycle path, but prepared execution is no longer audit-blind: `prepare_command()` records the preflight `prepared` / `prepare_error` state, and `PreparedChild::wait()` / `try_wait()` / drop finalization append the terminal execution record.
 - `GatewayPolicy::default()` is a host-compatible unsandboxed baseline for current shipped hosts, so it defaults to `allow_isolation_none=true` and `default_isolation=none`; if a caller wants fail-closed sandbox preference, it must set `default_isolation` to `best_effort` or `strict` explicitly.
 - Linux、macOS 和 Windows 当前都只报告 `None` 为受支持能力；如果 policy/default/request 仍要求 `best_effort` 或 `strict`，gateway 会按 `isolation_not_supported` fail-closed。
 
