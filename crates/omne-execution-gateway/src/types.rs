@@ -21,10 +21,10 @@ pub struct ExecRequest {
     pub args: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
-    pub required_isolation: ExecutionIsolation,
-    pub requested_isolation_source: RequestedIsolationSource,
+    required_isolation: ExecutionIsolation,
+    requested_isolation_source: RequestedIsolationSource,
     pub workspace_root: PathBuf,
-    pub declared_mutation: bool,
+    declared_mutation: bool,
     declared_mutation_explicitly: bool,
 }
 
@@ -78,9 +78,40 @@ impl ExecRequest {
     }
 
     pub fn with_declared_mutation(mut self, declared_mutation: bool) -> Self {
+        self.set_declared_mutation(declared_mutation);
+        self
+    }
+
+    pub fn required_isolation(&self) -> ExecutionIsolation {
+        self.required_isolation
+    }
+
+    pub fn requested_isolation_source(&self) -> RequestedIsolationSource {
+        self.requested_isolation_source
+    }
+
+    pub fn declared_mutation(&self) -> bool {
+        self.declared_mutation
+    }
+
+    pub fn set_required_isolation(&mut self, required_isolation: ExecutionIsolation) {
+        self.required_isolation = required_isolation;
+        self.requested_isolation_source = RequestedIsolationSource::Request;
+    }
+
+    pub fn with_required_isolation(mut self, required_isolation: ExecutionIsolation) -> Self {
+        self.set_required_isolation(required_isolation);
+        self
+    }
+
+    pub fn set_policy_default_isolation(&mut self, policy_default_isolation: ExecutionIsolation) {
+        self.required_isolation = policy_default_isolation;
+        self.requested_isolation_source = RequestedIsolationSource::PolicyDefault;
+    }
+
+    pub fn set_declared_mutation(&mut self, declared_mutation: bool) {
         self.declared_mutation = declared_mutation;
         self.declared_mutation_explicitly = true;
-        self
     }
 
     pub fn with_env<I, K, V>(mut self, env: I) -> Self
@@ -168,13 +199,13 @@ impl RequestResolution {
             env,
             cwd,
             workspace_root,
-            declared_mutation: request.declared_mutation,
+            declared_mutation: request.declared_mutation(),
             input_required_isolation: request.input_required_isolation(),
-            requested_isolation: request.required_isolation,
-            requested_isolation_source: request.requested_isolation_source,
+            requested_isolation: request.required_isolation(),
+            requested_isolation_source: request.requested_isolation_source(),
             requested_policy_meta: PolicyMetaV1::new()
                 .with_version()
-                .with_execution_isolation(request.required_isolation),
+                .with_execution_isolation(request.required_isolation()),
             policy_default_isolation,
         }
     }
@@ -245,9 +276,9 @@ mod tests {
             request.args,
             vec![OsString::from("hello"), OsString::from("world")]
         );
-        assert!(!request.declared_mutation);
+        assert!(!request.declared_mutation());
         assert_eq!(
-            request.requested_isolation_source,
+            request.requested_isolation_source(),
             RequestedIsolationSource::Request
         );
         assert_eq!(
@@ -278,7 +309,7 @@ mod tests {
     fn request_can_be_marked_as_mutating() {
         let request = ExecRequest::new("echo", vec!["hi"], ".", ExecutionIsolation::None, ".")
             .with_declared_mutation(true);
-        assert!(request.declared_mutation);
+        assert!(request.declared_mutation());
         assert!(request.declared_mutation_is_explicit());
     }
 
@@ -291,12 +322,59 @@ mod tests {
             ExecutionIsolation::BestEffort,
             ".",
         );
-        assert_eq!(request.required_isolation, ExecutionIsolation::BestEffort);
+        assert_eq!(request.required_isolation(), ExecutionIsolation::BestEffort);
         assert_eq!(
-            request.requested_isolation_source,
+            request.requested_isolation_source(),
             RequestedIsolationSource::PolicyDefault
         );
         assert_eq!(request.input_required_isolation(), None);
+    }
+
+    #[test]
+    fn setting_required_isolation_resets_the_source_to_explicit_request() {
+        let mut request = ExecRequest::with_policy_default_isolation(
+            "echo",
+            vec!["hi"],
+            ".",
+            ExecutionIsolation::BestEffort,
+            ".",
+        );
+
+        request.set_required_isolation(ExecutionIsolation::None);
+
+        assert_eq!(request.required_isolation(), ExecutionIsolation::None);
+        assert_eq!(
+            request.requested_isolation_source(),
+            RequestedIsolationSource::Request
+        );
+        assert_eq!(
+            request.input_required_isolation(),
+            Some(ExecutionIsolation::None)
+        );
+    }
+
+    #[test]
+    fn setting_policy_default_isolation_resets_the_source_to_policy_default() {
+        let mut request = ExecRequest::new("echo", vec!["hi"], ".", ExecutionIsolation::None, ".");
+
+        request.set_policy_default_isolation(ExecutionIsolation::BestEffort);
+
+        assert_eq!(request.required_isolation(), ExecutionIsolation::BestEffort);
+        assert_eq!(
+            request.requested_isolation_source(),
+            RequestedIsolationSource::PolicyDefault
+        );
+        assert_eq!(request.input_required_isolation(), None);
+    }
+
+    #[test]
+    fn setting_declared_mutation_marks_the_flag_as_explicit() {
+        let mut request = ExecRequest::new("echo", vec!["hi"], ".", ExecutionIsolation::None, ".");
+
+        request.set_declared_mutation(false);
+
+        assert!(!request.declared_mutation());
+        assert!(request.declared_mutation_is_explicit());
     }
 
     #[test]

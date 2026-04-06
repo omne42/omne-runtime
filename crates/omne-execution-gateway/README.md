@@ -32,6 +32,11 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `ExecGateway::new()` / `Default` are still deny-by-default on mutation policy: mutation enforcement remains on and both allowlists start empty, so callers that actually want commands to run must either provide allowlists or build a policy with `enforce_allowlisted_program_for_mutation = false`.
 - Linux's previous native Landlock path is intentionally disabled until it can be reintroduced without relying on unsafe post-`fork` Rust execution.
 - when `enforce_allowlisted_program_for_mutation = true`, callers must always set `with_declared_mutation(...)` intentionally instead of relying on the constructor default.
+- `ExecRequest` keeps the isolation provenance and mutation-explicitness invariants inside its own
+  constructors/setters: use `new(...)`, `with_policy_default_isolation(...)`,
+  `set_required_isolation(...)`, `set_policy_default_isolation(...)`,
+  `with_declared_mutation(...)`, or `set_declared_mutation(...)` instead of mutating those control
+  fields directly.
 - declared mutations must bind to a `mutating_program_allowlist` executable identity via an explicit program path, and declared non-mutating requests must bind to a `non_mutating_program_allowlist` executable identity via an explicit program path.
 - when mutation enforcement is enabled, allowlisted execution also rejects startup-sensitive request env such as `PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, `PYTHONPATH`, `RUBYOPT`, and `NODE_OPTIONS`, so audited program identity cannot be widened again through loader/interpreter hooks.
 - shell-like and interpreter launchers are denied outright because the gateway cannot safely authorize runtimes that can execute arbitrary subcommands or scripts behind a single executable path.
@@ -47,6 +52,9 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `GatewayPolicy::load_json()` only accepts no-follow regular files and fail-closed ancestor directory walks via `omne-fs-primitives`, so symlinks/reparse points cannot silently stand in for trusted policy input.
 - `cwd` and `workspace_root` fail closed when their input path traverses a symlink or reparse-point ancestor, except for macOS system root aliases such as `/var` and `/tmp`, so request path validation does not silently re-authorize caller-controlled aliased directories during canonicalization.
 - `ExecRequest` now carries explicit environment entries; `execute()` and `prepare_command()` clear inherited process state and apply only that audited environment before spawn.
+- `ExecRequest` keeps `required_isolation`, `requested_isolation_source`, and `declared_mutation`
+  behind constructors plus accessor/setter methods, so request provenance and explicit-mutation
+  state cannot drift out of sync after construction.
 - when `enforce_allowlisted_program_for_mutation = true`, request env is still audited, but startup-sensitive loader/interpreter/search-path overrides are denied fail-closed before preflight can authorize the execution.
 - the CLI request adapter also rejects unknown JSON fields fail-closed, and `program` / `args` / explicit env entries now accept either plain UTF-8 strings or the exact OS-string JSON object encoding used in gateway output.
 - if `audit_log_path` is configured, `evaluate()` / `resolve_request()` / `preflight()` stay side-effect free; audit parent creation and appendability checks move to `execute()` / `prepare_command()`, ancestor symlink/reparse point or non-directory blockers still fail closed before audited execution proceeds, and the final record write stays bound to the appendable file handle opened during preparation instead of reopening the path again after execution.
