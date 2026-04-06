@@ -14,6 +14,7 @@
 - staged atomic file/directory replace 与 advisory lock；若目录替换已提交但备份清理失败，会以显式 post-commit 错误返回。
 - 需要和目标路径边界严格绑定的 advisory lock，可走 no-follow root 校验路径，不会因为已有 symlink 祖先而把锁 namespace 漂移到别处。
 - atomic staging 需要创建父目录时，按 no-follow 目录遍历/创建处理父目录链，不会把缺失层级或已有的非 root-alias 祖先 symlink 当成可信目录继续跟随；平台级 root alias 也只接受已知别名（例如 macOS `/var -> /private/var`、`/tmp -> /private/tmp`），不会把任意首层 symlink 都误当成可信根别名。
+- staged atomic file/directory 的临时对象创建、最终 rename 和目录替换都绑定在已验证的父目录 handle 上；即使校验后原始 parent path 被 rename 或换成 symlink，commit 也不会沿新的 ambient 路径漂移到别处。
 
 ## 不负责什么
 

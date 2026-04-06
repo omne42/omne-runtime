@@ -4,8 +4,18 @@ use std::io::{self, Read, Write};
 #[cfg(target_os = "macos")]
 use std::path::Component;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{MissingRootPolicy, open_root};
+use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::fs::OpenOptions;
+
+use crate::{
+    Dir, MissingRootPolicy, RootDir, create_directory_component, open_directory_component,
+    open_root,
+};
+
+static STAGED_ENTRY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct AtomicWriteOptions {
@@ -46,15 +56,23 @@ impl Default for AtomicDirectoryOptions {
 #[derive(Debug)]
 pub struct StagedAtomicFile {
     destination: PathBuf,
+    destination_leaf: PathBuf,
     options: AtomicWriteOptions,
-    staged: tempfile::NamedTempFile,
+    parent_root: RootDir,
+    staged_leaf: PathBuf,
+    staged_path: PathBuf,
+    staged: Option<fs::File>,
 }
 
 #[derive(Debug)]
 pub struct StagedAtomicDirectory {
     destination: PathBuf,
+    destination_leaf: PathBuf,
     options: AtomicDirectoryOptions,
-    staged: tempfile::TempDir,
+    parent_root: RootDir,
+    staged_leaf: PathBuf,
+    staged_path: PathBuf,
+    staged_root: Option<RootDir>,
 }
 
 #[derive(Debug)]
@@ -228,12 +246,9 @@ pub fn stage_file_atomically_with_name(
     options: &AtomicWriteOptions,
     staged_file_name: Option<&str>,
 ) -> Result<StagedAtomicFile, AtomicWriteError> {
-    if let Some(parent) = destination.parent() {
-        ensure_atomic_parent_directory(parent, options.create_parent_directories)
-            .map_err(|err| AtomicWriteError::io_path("prepare_parent", parent, err))?;
-    }
-
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let parent_root = open_atomic_parent_root(parent, options.create_parent_directories)
+        .map_err(|err| AtomicWriteError::io_path("prepare_parent", parent, err))?;
     let file_name = staged_file_name
         .and_then(normalize_staged_file_name)
         .or_else(|| {
@@ -243,16 +258,21 @@ pub fn stage_file_atomically_with_name(
                 .map(ToString::to_string)
         })
         .unwrap_or_else(|| "tool".to_string());
-    let staged = tempfile::Builder::new()
-        .prefix(&format!(".{file_name}.tmp-"))
-        .suffix(".tmp")
-        .tempfile_in(parent)
+    let prefix = format!(".{file_name}.tmp-");
+    let (staged_leaf, staged) = create_staged_file_in_root(&parent_root, &prefix, ".tmp")
         .map_err(|err| AtomicWriteError::io_path("create_temp", destination, err))?;
+    let destination_leaf = destination_leaf_path(destination)
+        .map_err(|err| AtomicWriteError::io_path("destination_leaf", destination, err))?;
+    let staged_path = parent_root.path().join(&staged_leaf);
 
     Ok(StagedAtomicFile {
         destination: destination.to_path_buf(),
+        destination_leaf,
         options: options.clone(),
-        staged,
+        parent_root,
+        staged_leaf,
+        staged_path,
+        staged: Some(staged),
     })
 }
 
@@ -260,26 +280,29 @@ pub fn stage_directory_atomically(
     destination: &Path,
     options: &AtomicDirectoryOptions,
 ) -> Result<StagedAtomicDirectory, AtomicDirectoryError> {
-    if let Some(parent) = destination.parent() {
-        ensure_atomic_parent_directory(parent, options.create_parent_directories)
-            .map_err(|err| AtomicDirectoryError::io_path("prepare_parent", parent, err))?;
-    }
-
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let parent_root = open_atomic_parent_root(parent, options.create_parent_directories)
+        .map_err(|err| AtomicDirectoryError::io_path("prepare_parent", parent, err))?;
     let file_name = destination
         .file_name()
         .and_then(|value| value.to_str())
         .map(ToString::to_string)
         .unwrap_or_else(|| "tree".to_string());
-    let staged = tempfile::Builder::new()
-        .prefix(&format!(".{file_name}.tmpdir-"))
-        .tempdir_in(parent)
+    let prefix = format!(".{file_name}.tmpdir-");
+    let (staged_leaf, staged_root) = create_staged_directory_in_root(&parent_root, &prefix)
         .map_err(|err| AtomicDirectoryError::io_path("create_tempdir", destination, err))?;
+    let destination_leaf = destination_leaf_path(destination)
+        .map_err(|err| AtomicDirectoryError::io_path("destination_leaf", destination, err))?;
+    let staged_path = parent_root.path().join(&staged_leaf);
 
     Ok(StagedAtomicDirectory {
         destination: destination.to_path_buf(),
+        destination_leaf,
         options: options.clone(),
-        staged,
+        parent_root,
+        staged_leaf,
+        staged_path,
+        staged_root: Some(staged_root),
     })
 }
 
@@ -296,12 +319,15 @@ fn normalize_staged_file_name(raw: &str) -> Option<String> {
     }
 }
 
-fn ensure_atomic_parent_directory(
-    parent: &Path,
-    create_parent_directories: bool,
-) -> io::Result<()> {
+fn open_atomic_parent_root(parent: &Path, create_parent_directories: bool) -> io::Result<RootDir> {
     if parent.as_os_str().is_empty() {
-        return Ok(());
+        return open_root(
+            Path::new("."),
+            "atomic write parent",
+            MissingRootPolicy::Error,
+            |_, _, _, error| error,
+        )
+        .and_then(|root| root.ok_or_else(|| io::Error::other("missing atomic write parent")));
     }
     let normalized_parent = normalize_platform_root_alias(parent)?;
 
@@ -316,7 +342,92 @@ fn ensure_atomic_parent_directory(
         policy,
         |_, _, _, error| error,
     )
-    .map(|_| ())
+    .and_then(|root| root.ok_or_else(|| io::Error::other("missing atomic write parent")))
+}
+
+fn destination_leaf_path(destination: &Path) -> io::Result<PathBuf> {
+    destination
+        .file_name()
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no leaf"))
+}
+
+fn create_staged_file_in_root(
+    parent_root: &RootDir,
+    prefix: &str,
+    suffix: &str,
+) -> io::Result<(PathBuf, fs::File)> {
+    for _ in 0..128 {
+        let staged_leaf = PathBuf::from(next_staged_entry_name(prefix, suffix));
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        options.follow(FollowSymlinks::No);
+        match parent_root
+            .dir()
+            .open_with(&staged_leaf, &options)
+            .map(|file| file.into_std())
+        {
+            Ok(file) => return Ok((staged_leaf, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "failed to allocate unique staged file name",
+    ))
+}
+
+fn create_staged_directory_in_root(
+    parent_root: &RootDir,
+    prefix: &str,
+) -> io::Result<(PathBuf, RootDir)> {
+    for _ in 0..128 {
+        let staged_leaf = PathBuf::from(next_staged_entry_name(prefix, ""));
+        match create_directory_component(parent_root.dir(), &staged_leaf) {
+            Ok(()) => {
+                let staged_dir = open_directory_component(parent_root.dir(), &staged_leaf)?;
+                return Ok((
+                    staged_leaf.clone(),
+                    RootDir::from_parts(parent_root.path().join(&staged_leaf), staged_dir),
+                ));
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "failed to allocate unique staged directory name",
+    ))
+}
+
+fn next_staged_entry_name(prefix: &str, suffix: &str) -> String {
+    let sequence = STAGED_ENTRY_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!(
+        "{prefix}{pid:x}-{timestamp:x}-{sequence:x}{suffix}",
+        pid = std::process::id()
+    )
+}
+
+impl Drop for StagedAtomicFile {
+    fn drop(&mut self) {
+        let _ = self.staged.take();
+        let _ = self.parent_root.dir().remove_file(&self.staged_leaf);
+    }
+}
+
+impl Drop for StagedAtomicDirectory {
+    fn drop(&mut self) {
+        let _ = self.staged_root.take();
+        let _ = self.parent_root.dir().remove_dir_all(&self.staged_leaf);
+    }
 }
 
 fn normalize_platform_root_alias(path: &Path) -> io::Result<PathBuf> {
@@ -380,12 +491,16 @@ fn is_macos_root_alias_component(component: Component<'_>) -> bool {
 
 impl StagedAtomicFile {
     pub fn file_mut(&mut self) -> &mut fs::File {
-        self.staged.as_file_mut()
+        self.staged.as_mut().expect("staged file missing")
+    }
+
+    pub fn staged_path(&self) -> &Path {
+        &self.staged_path
     }
 
     pub fn commit(mut self) -> Result<(), AtomicWriteError> {
-        self.staged
-            .as_file_mut()
+        let staged = self.staged.as_mut().expect("staged file missing");
+        staged
             .flush()
             .map_err(|err| AtomicWriteError::io_path("flush", &self.destination, err))?;
 
@@ -393,25 +508,22 @@ impl StagedAtomicFile {
         if let Some(mode) = self.options.unix_mode {
             use std::os::unix::fs::PermissionsExt;
             let perms = fs::Permissions::from_mode(mode);
-            self.staged
-                .as_file_mut()
-                .set_permissions(perms)
-                .map_err(|err| {
-                    AtomicWriteError::io_path("set_permissions", &self.destination, err)
-                })?;
+            staged.set_permissions(perms).map_err(|err| {
+                AtomicWriteError::io_path("set_permissions", &self.destination, err)
+            })?;
         }
 
-        self.staged
-            .as_file_mut()
+        staged
             .sync_all()
             .map_err(|err| AtomicWriteError::io_path("sync", &self.destination, err))?;
 
-        let staged_path = self.staged.path().to_path_buf();
-        validate_staged_file(&staged_path, &self.options)?;
+        validate_staged_file(staged, &self.staged_path, &self.options)?;
+        let _ = self.staged.take();
 
-        let persisted = self.staged.into_temp_path();
         commit_replace(
-            persisted,
+            &self.parent_root,
+            &self.staged_leaf,
+            &self.destination_leaf,
             &self.destination,
             self.options.overwrite_existing,
         )
@@ -420,20 +532,38 @@ impl StagedAtomicFile {
 
 impl StagedAtomicDirectory {
     pub fn path(&self) -> &Path {
-        self.staged.path()
+        &self.staged_path
     }
 
-    pub fn commit(self) -> Result<(), AtomicDirectoryError> {
-        validate_staged_directory(self.staged.path())?;
-        commit_replace_directory(self.staged, &self.destination, &self.options)
+    pub fn try_clone_dir(&self) -> io::Result<Dir> {
+        self.staged_root
+            .as_ref()
+            .expect("staged directory missing")
+            .dir()
+            .try_clone()
+    }
+
+    pub fn commit(mut self) -> Result<(), AtomicDirectoryError> {
+        let staged_root = self.staged_root.as_ref().expect("staged directory missing");
+        validate_staged_directory(staged_root.dir(), &self.staged_path)?;
+        let _ = self.staged_root.take();
+        commit_replace_directory(
+            &self.parent_root,
+            &self.staged_leaf,
+            &self.destination_leaf,
+            &self.destination,
+            &self.options,
+        )
     }
 }
 
 fn validate_staged_file(
+    staged_file: &fs::File,
     staged_path: &Path,
     options: &AtomicWriteOptions,
 ) -> Result<(), AtomicWriteError> {
-    let metadata = fs::metadata(staged_path)
+    let metadata = staged_file
+        .metadata()
         .map_err(|err| AtomicWriteError::io_path("metadata", staged_path, err))?;
     if !metadata.is_file() {
         return Err(AtomicWriteError::Validation(format!(
@@ -460,8 +590,12 @@ fn validate_staged_file(
     Ok(())
 }
 
-fn validate_staged_directory(staged_path: &Path) -> Result<(), AtomicDirectoryError> {
-    let metadata = fs::metadata(staged_path)
+fn validate_staged_directory(
+    staged_root: &Dir,
+    staged_path: &Path,
+) -> Result<(), AtomicDirectoryError> {
+    let metadata = staged_root
+        .dir_metadata()
         .map_err(|err| AtomicDirectoryError::io_path("metadata", staged_path, err))?;
     if metadata.is_dir() {
         return Ok(());
@@ -473,52 +607,66 @@ fn validate_staged_directory(staged_path: &Path) -> Result<(), AtomicDirectoryEr
 }
 
 fn commit_replace(
-    staged_path: tempfile::TempPath,
+    parent_root: &RootDir,
+    staged_leaf: &Path,
+    destination_leaf: &Path,
     destination: &Path,
     overwrite_existing: bool,
 ) -> Result<(), AtomicWriteError> {
     if overwrite_existing {
-        staged_path
-            .persist(destination)
-            .map_err(|err| AtomicWriteError::io_path("persist", destination, err.error))?;
+        parent_root
+            .dir()
+            .rename(staged_leaf, parent_root.dir(), destination_leaf)
+            .map_err(|err| AtomicWriteError::io_path("rename", destination, err))?;
     } else {
-        staged_path.persist_noclobber(destination).map_err(|err| {
-            AtomicWriteError::io_path("persist_noclobber", destination, err.error)
-        })?;
+        if let Ok(_) = parent_root.dir().symlink_metadata(destination_leaf) {
+            return Err(AtomicWriteError::io_path(
+                "rename_noclobber",
+                destination,
+                io::Error::new(io::ErrorKind::AlreadyExists, "destination already exists"),
+            ));
+        }
+        parent_root
+            .dir()
+            .rename(staged_leaf, parent_root.dir(), destination_leaf)
+            .map_err(|err| AtomicWriteError::io_path("rename_noclobber", destination, err))?;
     }
-    sync_parent_directory(destination)
+    sync_root_directory(parent_root)
         .map_err(|err| AtomicWriteError::committed_but_unsynced("sync_parent", destination, err))
 }
 
 fn commit_replace_directory(
-    staged_dir: tempfile::TempDir,
+    parent_root: &RootDir,
+    staged_leaf: &Path,
+    destination_leaf: &Path,
     destination: &Path,
     options: &AtomicDirectoryOptions,
 ) -> Result<(), AtomicDirectoryError> {
     commit_replace_directory_with_backup_root_cleanup(
-        staged_dir,
+        parent_root,
+        staged_leaf,
+        destination_leaf,
         destination,
         options,
-        close_backup_root,
+        remove_backup_root,
     )
 }
 
 fn commit_replace_directory_with_backup_root_cleanup(
-    staged_dir: tempfile::TempDir,
+    parent_root: &RootDir,
+    staged_leaf: &Path,
+    destination_leaf: &Path,
     destination: &Path,
     options: &AtomicDirectoryOptions,
-    backup_root_cleanup: fn(tempfile::TempDir) -> io::Result<()>,
+    backup_root_cleanup: fn(RootDir) -> io::Result<()>,
 ) -> Result<(), AtomicDirectoryError> {
-    let staged_path = staged_dir.keep();
     let mut backup_root = None;
-    let mut backup_path = None;
 
     if options.overwrite_existing {
-        let destination_metadata = match fs::symlink_metadata(destination) {
+        let destination_metadata = match parent_root.dir().symlink_metadata(destination_leaf) {
             Ok(metadata) => Some(metadata),
             Err(err) if err.kind() == io::ErrorKind::NotFound => None,
             Err(err) => {
-                remove_path_if_exists(&staged_path);
                 return Err(AtomicDirectoryError::io_path(
                     "symlink_metadata",
                     destination,
@@ -529,34 +677,37 @@ fn commit_replace_directory_with_backup_root_cleanup(
 
         if let Some(metadata) = destination_metadata {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                remove_path_if_exists(&staged_path);
                 return Err(AtomicDirectoryError::Validation(format!(
                     "directory destination `{}` must be an existing directory or absent",
                     destination.display()
                 )));
             }
-            let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-            let holder = tempfile::Builder::new()
-                .prefix(".directory-backup-")
-                .tempdir_in(parent)
+            let (_, holder) = create_staged_directory_in_root(parent_root, ".directory-backup-")
                 .map_err(|err| {
                     AtomicDirectoryError::io_path("create_backup_dir", destination, err)
                 })?;
-            let path = holder.path().join("previous");
-            fs::rename(destination, &path).map_err(|err| {
-                AtomicDirectoryError::io_path("rename_existing", destination, err)
-            })?;
-            backup_path = Some(path);
+            parent_root
+                .dir()
+                .rename(destination_leaf, holder.dir(), Path::new("previous"))
+                .map_err(|err| {
+                    AtomicDirectoryError::io_path("rename_existing", destination, err)
+                })?;
             backup_root = Some(holder);
         }
     }
 
-    if let Err(err) = fs::rename(&staged_path, destination) {
-        let restore_error = match backup_path.as_ref() {
-            Some(path) => fs::rename(path, destination).err(),
+    if let Err(err) = parent_root
+        .dir()
+        .rename(staged_leaf, parent_root.dir(), destination_leaf)
+    {
+        let restore_error = match backup_root.as_ref() {
+            Some(holder) => holder
+                .dir()
+                .rename(Path::new("previous"), parent_root.dir(), destination_leaf)
+                .err(),
             None => None,
         };
-        remove_path_if_exists(&staged_path);
+        let _ = parent_root.dir().remove_dir_all(staged_leaf);
         let mut error = AtomicDirectoryError::io_path("rename_staged", destination, err);
         if let Some(restore_error) = restore_error {
             error = AtomicDirectoryError::Validation(format!(
@@ -577,41 +728,26 @@ fn commit_replace_directory_with_backup_root_cleanup(
         })?;
     }
 
-    sync_parent_directory(destination).map_err(|err| {
+    sync_root_directory(parent_root).map_err(|err| {
         AtomicDirectoryError::committed_but_unsynced("sync_parent", destination, err)
     })
 }
 
-fn close_backup_root(holder: tempfile::TempDir) -> io::Result<()> {
-    holder.close()
-}
-
-fn remove_path_if_exists(path: &Path) {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return;
-    };
-    let result = if metadata.file_type().is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    };
-    let _ = result;
+fn remove_backup_root(holder: RootDir) -> io::Result<()> {
+    holder.into_dir().remove_open_dir_all()
 }
 
 #[cfg(all(not(windows), unix))]
-fn sync_parent_directory(path: &Path) -> io::Result<()> {
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-    if parent.as_os_str().is_empty() {
-        return Ok(());
+fn sync_root_directory(root: &RootDir) -> io::Result<()> {
+    match rustix::fs::fsync(root.dir()) {
+        Ok(()) => Ok(()),
+        Err(rustix::io::Errno::BADF) | Err(rustix::io::Errno::INVAL) => Ok(()),
+        Err(err) => Err(io::Error::from(err)),
     }
-    let parent_dir = fs::File::open(parent)?;
-    parent_dir.sync_all()
 }
 
 #[cfg(not(all(not(windows), unix)))]
-fn sync_parent_directory(_path: &Path) -> io::Result<()> {
+fn sync_root_directory(_root: &RootDir) -> io::Result<()> {
     Ok(())
 }
 
@@ -710,8 +846,7 @@ mod tests {
         .expect("stage file");
 
         let name = staged
-            .staged
-            .path()
+            .staged_path()
             .file_name()
             .and_then(|value| value.to_str())
             .expect("temp file name");
@@ -775,7 +910,9 @@ mod tests {
         std::fs::write(staged.path().join("bin/tool"), b"new").expect("write staged file");
 
         let err = super::commit_replace_directory_with_backup_root_cleanup(
-            staged.staged,
+            &staged.parent_root,
+            &staged.staged_leaf,
+            &staged.destination_leaf,
             &destination,
             &staged.options,
             |_| Err(std::io::Error::other("cleanup failed")),
@@ -905,6 +1042,68 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_atomic_file_commit_does_not_follow_parent_swap_to_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = temp.path().join("parent");
+        let moved_parent = temp.path().join("parent-real");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&parent).expect("mkdir parent");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        let destination = parent.join("tool");
+
+        let mut staged = stage_file_atomically(&destination, &AtomicWriteOptions::default())
+            .expect("stage file");
+        staged.file_mut().write_all(b"tool").expect("write staged");
+
+        std::fs::rename(&parent, &moved_parent).expect("move parent");
+        symlink(&outside, &parent).expect("replace parent with symlink");
+
+        staged.commit().expect("commit staged file");
+
+        assert!(!outside.join("tool").exists());
+        assert_eq!(
+            std::fs::read(moved_parent.join("tool")).expect("read committed file"),
+            b"tool"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_atomic_directory_commit_does_not_follow_parent_swap_to_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = temp.path().join("parent");
+        let moved_parent = temp.path().join("parent-real");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&parent).expect("mkdir parent");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        let destination = parent.join("tree");
+
+        let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+            .expect("stage directory");
+        let staged_dir = staged.try_clone_dir().expect("clone staged dir");
+        staged_dir.create_dir("bin").expect("mkdir staged bin");
+        staged_dir
+            .write("bin/tool", b"tool")
+            .expect("write staged file");
+
+        std::fs::rename(&parent, &moved_parent).expect("move parent");
+        symlink(&outside, &parent).expect("replace parent with symlink");
+
+        staged.commit().expect("commit staged directory");
+
+        assert!(!outside.join("tree").exists());
+        assert_eq!(
+            std::fs::read(moved_parent.join("tree/bin/tool")).expect("read committed tree"),
+            b"tool"
+        );
     }
 
     #[cfg(target_os = "macos")]

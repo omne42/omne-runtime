@@ -11,10 +11,12 @@ use std::path::{Component, Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use omne_fs_primitives::{
-    AtomicDirectoryOptions, AtomicWriteOptions, Dir, MissingRootPolicy, create_directory_component,
-    create_regular_file_at, lock_advisory_file_in_ambient_root, open_ambient_root,
-    open_directory_component, stage_directory_atomically, stage_file_atomically_with_name,
+    AtomicDirectoryOptions, AtomicWriteOptions, Dir, create_directory_component,
+    create_regular_file_at, lock_advisory_file_in_ambient_root, open_directory_component,
+    stage_directory_atomically, stage_file_atomically_with_name,
 };
+#[cfg(test)]
+use omne_fs_primitives::{MissingRootPolicy, open_ambient_root};
 use omne_integrity_primitives::{Sha256Digest, hash_sha256, verify_sha256_reader};
 use tar::Archive as TarArchive;
 use xz2::read::XzDecoder;
@@ -158,11 +160,20 @@ where
     let staged = stage_directory_atomically(destination, &archive_tree_stage_options())
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     let extract_result = if asset_name.ends_with(".zip") {
-        extract_zip_tree(reader, staged.path(), limits)
+        let staged_root = staged
+            .try_clone_dir()
+            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+        extract_zip_tree_into_root(reader, &staged_root, limits)
     } else if asset_name.ends_with(".tar.gz") {
-        extract_tar_tree(GzDecoder::new(reader), staged.path(), limits)
+        let staged_root = staged
+            .try_clone_dir()
+            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+        extract_tar_tree_into_root(GzDecoder::new(reader), &staged_root, limits)
     } else if asset_name.ends_with(".tar.xz") {
-        extract_tar_tree(XzDecoder::new(reader), staged.path(), limits)
+        let staged_root = staged
+            .try_clone_dir()
+            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+        extract_tar_tree_into_root(XzDecoder::new(reader), &staged_root, limits)
     } else {
         Err(ArtifactInstallError::install(format!(
             "unsupported archive tree asset `{asset_name}`"
@@ -305,6 +316,7 @@ fn archive_tree_lock_identity_bytes(path: &Path) -> Vec<u8> {
     path.to_string_lossy().into_owned().into_bytes()
 }
 
+#[cfg(test)]
 fn extract_zip_tree<R>(
     reader: R,
     destination: &Path,
@@ -314,6 +326,18 @@ where
     R: Read + Seek,
 {
     let destination_root = open_archive_destination_root(destination)?;
+    extract_zip_tree_into_root(reader, &destination_root, limits)
+}
+
+fn extract_zip_tree_into_root<R>(
+    reader: R,
+    destination_root: &Dir,
+    limits: ArchiveExtractionLimits,
+) -> Result<(), ArtifactInstallError>
+where
+    R: Read + Seek,
+{
+    let destination_root = open_archive_directory_root(destination_root)?;
     let mut budget = ExtractionBudget::new(limits);
     let mut archive =
         ZipArchive::new(reader).map_err(|err| ArtifactInstallError::install(err.to_string()))?;
@@ -351,6 +375,7 @@ where
     Ok(())
 }
 
+#[cfg(test)]
 fn extract_tar_tree<R>(
     reader: R,
     destination: &Path,
@@ -360,6 +385,18 @@ where
     R: Read,
 {
     let destination_root = open_archive_destination_root(destination)?;
+    extract_tar_tree_into_root(reader, &destination_root, limits)
+}
+
+fn extract_tar_tree_into_root<R>(
+    reader: R,
+    destination_root: &Dir,
+    limits: ArchiveExtractionLimits,
+) -> Result<(), ArtifactInstallError>
+where
+    R: Read,
+{
+    let destination_root = open_archive_directory_root(destination_root)?;
     let mut budget = ExtractionBudget::new(limits);
     let mut archive = TarArchive::new(reader);
     let mut pending_hard_links = Vec::new();
@@ -791,6 +828,7 @@ fn validate_archive_hard_link_target(
     Ok(sanitized)
 }
 
+#[cfg(test)]
 fn open_archive_destination_root(destination: &Path) -> Result<Dir, ArtifactInstallError> {
     open_ambient_root(
         destination,
@@ -995,7 +1033,9 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use omne_fs_primitives::lock_advisory_file_in_ambient_root;
+    use omne_fs_primitives::{
+        AtomicDirectoryOptions, lock_advisory_file_in_ambient_root, stage_directory_atomically,
+    };
 
     use crate::artifact_download::{
         ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactDownloader,
@@ -1004,7 +1044,8 @@ mod tests {
 
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
-        download_and_install_archive_tree, install_archive_tree_from_reader_with_limits,
+        download_and_install_archive_tree, extract_zip_tree_into_root,
+        install_archive_tree_from_reader_with_limits,
     };
     #[cfg(unix)]
     use super::{MAX_ZIP_SYMLINK_TARGET_BYTES, extract_tar_tree, extract_zip_tree};
@@ -1330,6 +1371,39 @@ mod tests {
             .expect("install should complete after lock release")?;
         handle.join().expect("install thread join");
         assert_eq!(fs::read(destination.join("bin/demo"))?, b"demo");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_tree_extract_and_commit_do_not_follow_parent_swap_to_symlink()
+    -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::symlink;
+
+        let archive = make_zip_archive(&[("bin/demo", b"demo".as_slice(), 0o755)])?;
+        let temp = tempfile::tempdir()?;
+        let parent = temp.path().join("parent");
+        let moved_parent = temp.path().join("parent-real");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&parent)?;
+        fs::create_dir_all(&outside)?;
+        let destination = parent.join("tree");
+
+        let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())?;
+        let staged_root = staged.try_clone_dir()?;
+
+        fs::rename(&parent, &moved_parent)?;
+        symlink(&outside, &parent)?;
+
+        extract_zip_tree_into_root(
+            Cursor::new(archive),
+            &staged_root,
+            ArchiveExtractionLimits::default(),
+        )?;
+        staged.commit()?;
+
+        assert!(!outside.join("tree").exists());
+        assert_eq!(fs::read(moved_parent.join("tree/bin/demo"))?, b"demo");
         Ok(())
     }
 
