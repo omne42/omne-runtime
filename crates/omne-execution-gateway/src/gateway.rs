@@ -3369,7 +3369,8 @@ mod tests {
             ..GatewayPolicy::default()
         };
         let workspace = tempdir().expect("create temp workspace");
-        let audit_path = workspace.path().join("audit.jsonl");
+        let workspace_root = canonical_test_root(&workspace);
+        let audit_path = workspace_root.join("audit.jsonl");
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             GatewayPolicy {
                 audit_log_path: Some(audit_path.clone()),
@@ -3377,17 +3378,17 @@ mod tests {
             },
             host_supported_test_isolation(),
         );
-        let program = workspace.path().join("tool.sh");
-        let replacement = workspace.path().join("tool-replacement.sh");
+        let program = workspace_root.join("tool.sh");
+        let replacement = workspace_root.join("tool-replacement.sh");
         write_unix_shell_executable(&program, "exit 0\n");
         write_unix_shell_executable(&replacement, "exit 1\n");
 
         let request = ExecRequest::new(
             &program,
             Vec::<OsString>::new(),
-            workspace.path(),
+            &workspace_root,
             host_supported_test_isolation(),
-            workspace.path(),
+            &workspace_root,
         )
         .with_declared_mutation(false);
         let command = Command::new(&program);
@@ -3720,7 +3721,8 @@ mod tests {
             ..GatewayPolicy::default()
         };
         let workspace = tempdir().expect("create temp workspace");
-        let audit_path = workspace.path().join("audit.jsonl");
+        let workspace_root = canonical_test_root(&workspace);
+        let audit_path = workspace_root.join("audit.jsonl");
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             GatewayPolicy {
                 audit_log_path: Some(audit_path.clone()),
@@ -3728,8 +3730,8 @@ mod tests {
             },
             host_supported_test_isolation(),
         );
-        let cwd = workspace.path().join("cwd");
-        let moved = workspace.path().join("cwd-moved");
+        let cwd = workspace_root.join("cwd");
+        let moved = workspace_root.join("cwd-moved");
         fs::create_dir_all(&cwd).expect("create cwd");
 
         let request = ExecRequest::new(
@@ -3737,7 +3739,7 @@ mod tests {
             vec!["-c", "exit 0"],
             &cwd,
             host_supported_test_isolation(),
-            workspace.path(),
+            &workspace_root,
         );
         let mut command = Command::new(dummy_program_absolute_path());
         command.args(["-c", "exit 0"]);
