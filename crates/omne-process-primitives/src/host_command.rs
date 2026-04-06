@@ -1554,7 +1554,7 @@ mod tests {
         let original_cwd = std::env::current_dir().expect("current_dir");
         std::env::set_current_dir(temp.path()).expect("set current_dir");
 
-        let test_result = (|| {
+        {
             let working_directory = PathBuf::from("cwd");
             let relative_bin = temp.path().join("cwd").join("bin");
             std::fs::create_dir_all(&relative_bin).expect("create relative PATH dir");
@@ -1579,10 +1579,9 @@ mod tests {
             assert!(output.output.status.success());
             let stdout = String::from_utf8_lossy(&output.output.stdout);
             assert!(stdout.contains(&temp.path().join("cwd").display().to_string()));
-        })();
+        }
 
         std::env::set_current_dir(original_cwd).expect("restore current_dir");
-        test_result
     }
 
     #[cfg(unix)]
