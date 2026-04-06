@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- replace the hard-coded `Gateway|Canonical|Mirror` candidate enum with caller-provided source
+  labels, so the primitive keeps candidate error attribution without baking product source strategy
+  into the public API
 - classify SHA-256 mismatches as install-phase failures once artifact bytes have been fetched, so aggregate errors no longer misreport integrity failures as pure download issues
 - reject empty artifact candidate lists up front so public install/download entrypoints report caller input errors instead of the misleading "all candidates failed" aggregate
 - make the public download/install entrypoints generic over a narrow `ArtifactDownloader` trait,

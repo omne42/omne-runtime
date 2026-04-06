@@ -5,27 +5,10 @@ use std::io::Write;
 use http_kit::write_response_body_limited;
 use omne_archive_primitives::{BinaryArchiveFormat, ExtractBinaryFromArchiveError};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArtifactDownloadCandidateKind {
-    Gateway,
-    Canonical,
-    Mirror,
-}
-
-impl ArtifactDownloadCandidateKind {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Gateway => "gateway",
-            Self::Canonical => "canonical",
-            Self::Mirror => "mirror",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactDownloadCandidate {
     pub url: String,
-    pub kind: ArtifactDownloadCandidateKind,
+    pub source_label: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +98,7 @@ impl ArtifactInstallErrorDetail {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactCandidateFailure {
     kind: ArtifactInstallErrorKind,
-    candidate_kind: ArtifactDownloadCandidateKind,
+    source_label: String,
     redacted_url: String,
     message: String,
     detail: Option<ArtifactInstallErrorDetail>,
@@ -128,8 +111,8 @@ impl ArtifactCandidateFailure {
     }
 
     #[must_use]
-    pub const fn candidate_kind(&self) -> ArtifactDownloadCandidateKind {
-        self.candidate_kind
+    pub fn source_label(&self) -> &str {
+        &self.source_label
     }
 
     #[must_use]
@@ -287,11 +270,11 @@ pub(crate) fn candidate_failure_message(
 ) -> ArtifactCandidateFailure {
     ArtifactCandidateFailure {
         kind: err.kind(),
-        candidate_kind: candidate.kind,
+        source_label: candidate.source_label.clone(),
         redacted_url: redact_url_for_error(&candidate.url),
         message: format!(
             "{}:{} -> {err}",
-            candidate.kind.label(),
+            candidate.source_label,
             redact_url_for_error(&candidate.url)
         ),
         detail: err.detail().cloned(),
@@ -371,11 +354,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        ArtifactCandidateFailure, ArtifactDownloadCandidate, ArtifactDownloadCandidateKind,
-        ArtifactDownloader, ArtifactInstallError, ArtifactInstallErrorDetail,
-        ArtifactInstallErrorKind, candidate_failure_message,
-        download_candidate_to_writer_with_options, failed_candidates_error,
-        require_download_candidates, run_blocking_install,
+        ArtifactCandidateFailure, ArtifactDownloadCandidate, ArtifactDownloader,
+        ArtifactInstallError, ArtifactInstallErrorDetail, ArtifactInstallErrorKind,
+        candidate_failure_message, download_candidate_to_writer_with_options,
+        failed_candidates_error, require_download_candidates, run_blocking_install,
     };
 
     struct RecordingDownloader {
@@ -416,7 +398,7 @@ mod tests {
     fn failed_candidates_error_stays_download_when_all_candidates_failed_to_download() {
         let candidate = ArtifactDownloadCandidate {
             url: "https://example.invalid/demo.zip".to_string(),
-            kind: ArtifactDownloadCandidateKind::Canonical,
+            source_label: "primary".to_string(),
         };
 
         let err = failed_candidates_error(
@@ -453,7 +435,7 @@ mod tests {
     fn failed_candidates_error_reports_install_when_any_candidate_reached_install_phase() {
         let candidate = ArtifactDownloadCandidate {
             url: "https://example.invalid/demo.zip".to_string(),
-            kind: ArtifactDownloadCandidateKind::Mirror,
+            source_label: "fallback".to_string(),
         };
 
         let err = failed_candidates_error(
@@ -477,11 +459,11 @@ mod tests {
     fn install_phase_failure_message_does_not_claim_everything_failed_in_download_phase() {
         let download_candidate = ArtifactDownloadCandidate {
             url: "https://example.invalid/demo.zip".to_string(),
-            kind: ArtifactDownloadCandidateKind::Canonical,
+            source_label: "primary".to_string(),
         };
         let install_candidate = ArtifactDownloadCandidate {
             url: "https://mirror.example.invalid/demo.zip".to_string(),
-            kind: ArtifactDownloadCandidateKind::Mirror,
+            source_label: "fallback".to_string(),
         };
 
         let err = failed_candidates_error(
@@ -510,7 +492,7 @@ mod tests {
     fn failed_candidate_messages_redact_url_credentials_and_query() {
         let candidate = ArtifactDownloadCandidate {
             url: "https://token@example.invalid/demo.zip?sig=secret#frag".to_string(),
-            kind: ArtifactDownloadCandidateKind::Canonical,
+            source_label: "signed-mirror".to_string(),
         };
 
         let failure =
@@ -528,10 +510,9 @@ mod tests {
             "https://example.invalid/demo.zip",
             vec![ArtifactCandidateFailure {
                 kind: ArtifactInstallErrorKind::Install,
-                candidate_kind: ArtifactDownloadCandidateKind::Canonical,
+                source_label: "primary".to_string(),
                 redacted_url: "https://example.invalid/demo.zip".to_string(),
-                message: "canonical:https://example.invalid/demo.zip -> archive missing"
-                    .to_string(),
+                message: "primary:https://example.invalid/demo.zip -> archive missing".to_string(),
                 detail: Some(ArtifactInstallErrorDetail::ArchiveBinaryNotFound {
                     archive_format: omne_archive_primitives::BinaryArchiveFormat::Zip,
                     binary_name: "demo".to_string(),
@@ -553,7 +534,7 @@ mod tests {
     async fn custom_downloader_can_stream_candidate_without_reqwest_client_surface() {
         let candidate = ArtifactDownloadCandidate {
             url: "https://example.invalid/demo.zip".to_string(),
-            kind: ArtifactDownloadCandidateKind::Canonical,
+            source_label: "primary".to_string(),
         };
         let downloader = RecordingDownloader::new(b"artifact-bytes");
         let mut buffer = Vec::new();

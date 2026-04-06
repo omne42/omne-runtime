@@ -319,8 +319,8 @@ mod tests {
     use tokio::time::timeout;
 
     use crate::artifact_download::{
-        ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactDownloader,
-        ArtifactInstallError, ArtifactInstallErrorDetail,
+        ArtifactDownloadCandidate, ArtifactDownloader, ArtifactInstallError,
+        ArtifactInstallErrorDetail,
     };
 
     use super::{
@@ -439,11 +439,11 @@ mod tests {
             &[
                 ArtifactDownloadCandidate {
                     url: canonical_url.clone(),
-                    kind: ArtifactDownloadCandidateKind::Canonical,
+                    source_label: "primary".to_string(),
                 },
                 ArtifactDownloadCandidate {
                     url: mirror_url,
-                    kind: ArtifactDownloadCandidateKind::Mirror,
+                    source_label: "fallback".to_string(),
                 },
             ],
             &DownloadBinaryRequest {
@@ -456,7 +456,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(selected.kind, ArtifactDownloadCandidateKind::Mirror);
+        assert_eq!(selected.source_label, "fallback");
         assert_eq!(std::fs::read(&destination)?, good_binary);
 
         handle.join().expect("mock server thread join");
@@ -479,7 +479,7 @@ mod tests {
             &downloader,
             &[ArtifactDownloadCandidate {
                 url: canonical_url.clone(),
-                kind: ArtifactDownloadCandidateKind::Canonical,
+                source_label: "primary".to_string(),
             }],
             &DownloadBinaryRequest {
                 canonical_url: &canonical_url,
@@ -525,7 +525,7 @@ mod tests {
             &downloader,
             &[ArtifactDownloadCandidate {
                 url: canonical_url.clone(),
-                kind: ArtifactDownloadCandidateKind::Canonical,
+                source_label: "primary".to_string(),
             }],
             &DownloadBinaryRequest {
                 canonical_url: &canonical_url,
@@ -537,7 +537,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(selected.kind, ArtifactDownloadCandidateKind::Canonical);
+        assert_eq!(selected.source_label, "primary");
         assert_eq!(std::fs::read(&destination)?, binary);
         Ok(())
     }
@@ -601,11 +601,11 @@ mod tests {
             &[
                 ArtifactDownloadCandidate {
                     url: canonical_url.clone(),
-                    kind: ArtifactDownloadCandidateKind::Canonical,
+                    source_label: "primary".to_string(),
                 },
                 ArtifactDownloadCandidate {
                     url: mirror_url,
-                    kind: ArtifactDownloadCandidateKind::Mirror,
+                    source_label: "fallback".to_string(),
                 },
             ],
             &BinaryArchiveInstallRequest {
@@ -620,7 +620,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(installed.source.kind, ArtifactDownloadCandidateKind::Mirror);
+        assert_eq!(installed.source.source_label, "fallback");
         assert_eq!(std::fs::read(&destination)?, b"good-binary");
 
         handle.join().expect("mock server thread join");
@@ -731,7 +731,7 @@ mod tests {
                     &client,
                     &[ArtifactDownloadCandidate {
                         url: canonical_url.clone(),
-                        kind: ArtifactDownloadCandidateKind::Canonical,
+                        source_label: "primary".to_string(),
                     }],
                     &DownloadBinaryRequest {
                         canonical_url: &canonical_url,

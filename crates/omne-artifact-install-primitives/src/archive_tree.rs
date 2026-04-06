@@ -1041,8 +1041,7 @@ mod tests {
     use omne_fs_primitives::{AtomicDirectoryOptions, stage_directory_atomically};
 
     use crate::artifact_download::{
-        ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactDownloader,
-        ArtifactInstallError,
+        ArtifactDownloadCandidate, ArtifactDownloader, ArtifactInstallError,
     };
 
     use super::{
@@ -1222,11 +1221,11 @@ mod tests {
             &[
                 ArtifactDownloadCandidate {
                     url: canonical_url.clone(),
-                    kind: ArtifactDownloadCandidateKind::Canonical,
+                    source_label: "primary".to_string(),
                 },
                 ArtifactDownloadCandidate {
                     url: mirror_url,
-                    kind: ArtifactDownloadCandidateKind::Mirror,
+                    source_label: "fallback".to_string(),
                 },
             ],
             &ArchiveTreeInstallRequest {
@@ -1239,7 +1238,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(selected.kind, ArtifactDownloadCandidateKind::Mirror);
+        assert_eq!(selected.source_label, "fallback");
         assert!(!destination.join("old.txt").exists());
         assert!(destination.join("bin/demo.exe").exists());
         assert!(destination.join("LICENSE").exists());
@@ -1263,7 +1262,7 @@ mod tests {
             &downloader,
             &[ArtifactDownloadCandidate {
                 url: canonical_url.clone(),
-                kind: ArtifactDownloadCandidateKind::Canonical,
+                source_label: "primary".to_string(),
             }],
             &ArchiveTreeInstallRequest {
                 canonical_url: &canonical_url,
@@ -1275,7 +1274,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(selected.kind, ArtifactDownloadCandidateKind::Canonical);
+        assert_eq!(selected.source_label, "primary");
         assert!(destination.join("bin/demo.exe").exists());
         Ok(())
     }
@@ -1297,7 +1296,7 @@ mod tests {
             &downloader,
             &[ArtifactDownloadCandidate {
                 url: canonical_url.clone(),
-                kind: ArtifactDownloadCandidateKind::Canonical,
+                source_label: "primary".to_string(),
             }],
             &ArchiveTreeInstallRequest {
                 canonical_url: &canonical_url,
