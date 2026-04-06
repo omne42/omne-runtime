@@ -2183,6 +2183,35 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn lexical_prefix_escape_does_not_trigger_auto_sudo() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let trusted_root = temp.path().join("usr").join("bin");
+        let escaped_root = temp.path().join("tmp");
+        std::fs::create_dir_all(&trusted_root).expect("create trusted root");
+        std::fs::create_dir_all(&escaped_root).expect("create escaped root");
+        let _trusted_program = write_test_command(&trusted_root, "apt-get");
+        let _escaped_program = write_test_command(&escaped_root, "apt-get");
+        let lexical_escape = trusted_root
+            .join("..")
+            .join("..")
+            .join("tmp")
+            .join("apt-get");
+        let request = HostCommandRequest {
+            program: lexical_escape.as_os_str(),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        assert!(
+            !should_try_sudo_for_request_with_status(&request, true),
+            "lexical prefix escapes must not regain IfNonRootSystemCommand semantics"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn ensure_sudo_target_rejects_missing_explicit_path() {
         let Some(program_name) = available_privileged_package_manager_name() else {
             return;

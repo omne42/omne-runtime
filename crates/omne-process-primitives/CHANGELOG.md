@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- add regression coverage proving explicit lexical escapes such as `/usr/bin/../tmp/apt-get`
+  still do not trigger `IfNonRootSystemCommand`, so high-level auto-sudo behavior stays aligned
+  with the canonical-path trust check
 - resolve request-scoped relative `PATH` entries against the same effective `working_directory`
   used for direct spawn, including relative `working_directory` inputs, so command probing,
   missing-program classification, and execution stay aligned

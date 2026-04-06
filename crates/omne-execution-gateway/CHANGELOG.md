@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- add regression coverage proving `preflight()` itself rejects explicit non-executable program
+  paths, so this fail-closed validation stays pinned before any execution attempt
 - add regression coverage proving `non_mutating_program_allowlist` requests also bind a preflight
   content fingerprint, so in-place rewrites still fail closed before spawn instead of only pinning
   the mutating allowlist path
