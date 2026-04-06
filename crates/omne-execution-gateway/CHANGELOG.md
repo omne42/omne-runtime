@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- remove the last crate-local policy/request/audit no-follow file-open implementations and route
+  them all through `omne-fs-primitives`, so audit sink validation and JSON input loading share the
+  same descriptor-backed ancestor walk instead of drifting across duplicated helpers
 - keep prepared-command execution inside the authoritative audit boundary by making
   `PreparedChild::wait()` / `try_wait()` and drop finalization append the terminal execution record,
   so `prepare_command()` no longer stops at a preflight-only audit entry
