@@ -42,6 +42,24 @@ pub enum HostLinuxLibc {
     Musl,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostPlatformTargetTripleError {
+    LinuxLibcUnknown,
+}
+
+impl fmt::Display for HostPlatformTargetTripleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LinuxLibcUnknown => write!(
+                f,
+                "linux host target triple is unknown because libc detection failed"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HostPlatformTargetTripleError {}
+
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LinuxLibcDetection {
@@ -70,29 +88,42 @@ impl HostPlatform {
         self.linux_libc
     }
 
-    pub const fn target_triple(self) -> &'static str {
+    pub const fn target_triple(self) -> Option<&'static str> {
+        match self.try_target_triple() {
+            Ok(target_triple) => Some(target_triple),
+            Err(_) => None,
+        }
+    }
+
+    pub const fn try_target_triple(self) -> Result<&'static str, HostPlatformTargetTripleError> {
         match (self.os, self.arch, self.linux_libc) {
-            (HostOperatingSystem::Macos, HostArchitecture::Aarch64, None) => "aarch64-apple-darwin",
-            (HostOperatingSystem::Macos, HostArchitecture::X86_64, None) => "x86_64-apple-darwin",
+            (HostOperatingSystem::Macos, HostArchitecture::Aarch64, None) => {
+                Ok("aarch64-apple-darwin")
+            }
+            (HostOperatingSystem::Macos, HostArchitecture::X86_64, None) => {
+                Ok("x86_64-apple-darwin")
+            }
             (HostOperatingSystem::Linux, HostArchitecture::Aarch64, Some(HostLinuxLibc::Gnu)) => {
-                "aarch64-unknown-linux-gnu"
+                Ok("aarch64-unknown-linux-gnu")
             }
             (HostOperatingSystem::Linux, HostArchitecture::Aarch64, Some(HostLinuxLibc::Musl)) => {
-                "aarch64-unknown-linux-musl"
+                Ok("aarch64-unknown-linux-musl")
             }
             (HostOperatingSystem::Linux, HostArchitecture::X86_64, Some(HostLinuxLibc::Gnu)) => {
-                "x86_64-unknown-linux-gnu"
+                Ok("x86_64-unknown-linux-gnu")
             }
             (HostOperatingSystem::Linux, HostArchitecture::X86_64, Some(HostLinuxLibc::Musl)) => {
-                "x86_64-unknown-linux-musl"
+                Ok("x86_64-unknown-linux-musl")
             }
             (HostOperatingSystem::Windows, HostArchitecture::Aarch64, None) => {
-                "aarch64-pc-windows-msvc"
+                Ok("aarch64-pc-windows-msvc")
             }
             (HostOperatingSystem::Windows, HostArchitecture::X86_64, None) => {
-                "x86_64-pc-windows-msvc"
+                Ok("x86_64-pc-windows-msvc")
             }
-            (HostOperatingSystem::Linux, _, None) => panic!("linux host platforms require libc"),
+            (HostOperatingSystem::Linux, _, None) => {
+                Err(HostPlatformTargetTripleError::LinuxLibcUnknown)
+            }
             (HostOperatingSystem::Macos, _, Some(_))
             | (HostOperatingSystem::Windows, _, Some(_)) => unreachable!(),
         }
@@ -185,7 +216,7 @@ pub fn detect_host_platform() -> Option<HostPlatform> {
 }
 
 pub fn detect_host_target_triple() -> Option<&'static str> {
-    detect_host_platform().map(HostPlatform::target_triple)
+    detect_host_platform().and_then(HostPlatform::target_triple)
 }
 
 pub fn try_resolve_target_triple(
@@ -259,9 +290,10 @@ fn host_platform_from_parts(
         "aarch64" => HostArchitecture::Aarch64,
         _ => return None,
     };
-    let linux_libc = match os {
-        HostOperatingSystem::Linux => Some(linux_libc?),
-        HostOperatingSystem::Macos | HostOperatingSystem::Windows => None,
+    let linux_libc = match (os, linux_libc) {
+        (HostOperatingSystem::Linux, linux_libc) => linux_libc,
+        (HostOperatingSystem::Macos | HostOperatingSystem::Windows, None) => None,
+        (HostOperatingSystem::Macos | HostOperatingSystem::Windows, Some(_)) => return None,
     };
     Some(HostPlatform {
         os,
@@ -319,24 +351,14 @@ fn detect_host_linux_libc_from_filesystem_markers<F>(path_exists: &F) -> LinuxLi
 where
     F: Fn(&std::path::Path) -> bool,
 {
-    let musl_loader_paths = [
-        "/lib/ld-musl-x86_64.so.1",
-        "/lib/ld-musl-aarch64.so.1",
-        "/lib64/ld-musl-x86_64.so.1",
-        "/lib64/ld-musl-aarch64.so.1",
-    ];
-    let musl_marker_present = musl_loader_paths
+    // Probe only fixed absolute paths. Do not execute ambient PATH-resolved tools such as
+    // `getconf` or `ldd`; if direct runtime evidence and trusted marker paths are both absent,
+    // the host libc stays unknown.
+    let musl_marker_present = MUSL_FILESYSTEM_MARKER_PATHS
         .iter()
         .any(|path| path_exists(std::path::Path::new(path)));
-    let alpine_marker_present = path_exists(std::path::Path::new("/etc/alpine-release"));
-
-    let gnu_loader_paths = [
-        "/lib64/ld-linux-x86-64.so.2",
-        "/lib/ld-linux-aarch64.so.1",
-        "/lib/ld-linux-x86-64.so.2",
-        "/lib64/ld-linux-aarch64.so.1",
-    ];
-    let gnu_marker_present = gnu_loader_paths
+    let alpine_marker_present = path_exists(std::path::Path::new(ALPINE_FILESYSTEM_MARKER_PATH));
+    let gnu_marker_present = GNU_FILESYSTEM_MARKER_PATHS
         .iter()
         .any(|path| path_exists(std::path::Path::new(path)));
 
@@ -346,6 +368,25 @@ where
 
     classify_linux_libc_markers(musl_marker_present, gnu_marker_present)
 }
+
+#[cfg(target_os = "linux")]
+const MUSL_FILESYSTEM_MARKER_PATHS: &[&str] = &[
+    "/lib/ld-musl-x86_64.so.1",
+    "/lib/ld-musl-aarch64.so.1",
+    "/lib64/ld-musl-x86_64.so.1",
+    "/lib64/ld-musl-aarch64.so.1",
+];
+
+#[cfg(target_os = "linux")]
+const ALPINE_FILESYSTEM_MARKER_PATH: &str = "/etc/alpine-release";
+
+#[cfg(target_os = "linux")]
+const GNU_FILESYSTEM_MARKER_PATHS: &[&str] = &[
+    "/lib64/ld-linux-x86-64.so.2",
+    "/lib/ld-linux-aarch64.so.1",
+    "/lib/ld-linux-x86-64.so.2",
+    "/lib64/ld-linux-aarch64.so.1",
+];
 
 #[cfg(target_os = "linux")]
 fn classify_linux_libc_markers(
@@ -396,10 +437,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        HostArchitecture, HostLinuxLibc, HostOperatingSystem, TargetTripleError,
-        detect_host_target_triple, executable_suffix_for_target, host_platform_from_parts,
-        resolve_home_dir_with, resolve_target_triple, try_executable_suffix_for_target,
-        try_resolve_target_triple,
+        HostArchitecture, HostLinuxLibc, HostOperatingSystem, HostPlatformTargetTripleError,
+        TargetTripleError, detect_host_target_triple, executable_suffix_for_target,
+        host_platform_from_parts, resolve_home_dir_with, resolve_target_triple,
+        try_executable_suffix_for_target, try_resolve_target_triple,
     };
 
     #[test]
@@ -409,30 +450,51 @@ mod tests {
         assert_eq!(linux.operating_system(), HostOperatingSystem::Linux);
         assert_eq!(linux.architecture(), HostArchitecture::X86_64);
         assert_eq!(linux.linux_libc(), Some(HostLinuxLibc::Gnu));
-        assert_eq!(linux.target_triple(), "x86_64-unknown-linux-gnu");
+        assert_eq!(linux.target_triple(), Some("x86_64-unknown-linux-gnu"));
+        assert_eq!(linux.try_target_triple(), Ok("x86_64-unknown-linux-gnu"));
 
         let macos = host_platform_from_parts("macos", "aarch64", None).expect("macos platform");
         assert_eq!(macos.operating_system(), HostOperatingSystem::Macos);
         assert_eq!(macos.architecture(), HostArchitecture::Aarch64);
-        assert_eq!(macos.target_triple(), "aarch64-apple-darwin");
+        assert_eq!(macos.target_triple(), Some("aarch64-apple-darwin"));
+        assert_eq!(macos.try_target_triple(), Ok("aarch64-apple-darwin"));
 
         let musl = host_platform_from_parts("linux", "aarch64", Some(HostLinuxLibc::Musl))
             .expect("musl platform");
         assert_eq!(musl.linux_libc(), Some(HostLinuxLibc::Musl));
-        assert_eq!(musl.target_triple(), "aarch64-unknown-linux-musl");
+        assert_eq!(musl.target_triple(), Some("aarch64-unknown-linux-musl"));
+        assert_eq!(musl.try_target_triple(), Ok("aarch64-unknown-linux-musl"));
     }
 
     #[test]
     fn host_platform_from_parts_rejects_unknown_pairs() {
         assert!(host_platform_from_parts("freebsd", "x86_64", None).is_none());
         assert!(host_platform_from_parts("linux", "riscv64", None).is_none());
-        assert!(host_platform_from_parts("linux", "x86_64", None).is_none());
+        assert!(host_platform_from_parts("windows", "x86_64", Some(HostLinuxLibc::Gnu)).is_none());
+        assert!(host_platform_from_parts("macos", "aarch64", Some(HostLinuxLibc::Musl)).is_none());
     }
 
     #[test]
-    fn host_platform_from_parts_fails_closed_for_linux_without_libc() {
-        assert!(host_platform_from_parts("linux", "aarch64", None).is_none());
-        assert!(host_platform_from_parts("linux", "x86_64", None).is_none());
+    fn host_platform_from_parts_preserves_linux_unknown_libc() {
+        let aarch64 = host_platform_from_parts("linux", "aarch64", None).expect("linux platform");
+        assert_eq!(aarch64.operating_system(), HostOperatingSystem::Linux);
+        assert_eq!(aarch64.architecture(), HostArchitecture::Aarch64);
+        assert_eq!(aarch64.linux_libc(), None);
+        assert_eq!(aarch64.target_triple(), None);
+        assert_eq!(
+            aarch64.try_target_triple(),
+            Err(HostPlatformTargetTripleError::LinuxLibcUnknown)
+        );
+
+        let x86_64 = host_platform_from_parts("linux", "x86_64", None).expect("linux platform");
+        assert_eq!(x86_64.operating_system(), HostOperatingSystem::Linux);
+        assert_eq!(x86_64.architecture(), HostArchitecture::X86_64);
+        assert_eq!(x86_64.linux_libc(), None);
+        assert_eq!(x86_64.target_triple(), None);
+        assert_eq!(
+            x86_64.try_target_triple(),
+            Err(HostPlatformTargetTripleError::LinuxLibcUnknown)
+        );
     }
 
     #[test]
@@ -488,6 +550,15 @@ mod tests {
             try_resolve_target_triple(Some("  custom-target  "), "x86_64-unknown-linux-gnu"),
             Err(TargetTripleError::Unsupported("custom-target".to_string()))
         );
+        assert_eq!(
+            try_resolve_target_triple(
+                Some("x86_64-unknown-linux-unknown"),
+                "x86_64-unknown-linux-gnu",
+            ),
+            Err(TargetTripleError::Unsupported(
+                "x86_64-unknown-linux-unknown".to_string()
+            ))
+        );
     }
 
     #[test]
@@ -509,6 +580,10 @@ mod tests {
         assert_eq!(
             resolve_target_triple(Some("custom-target"), "x86_64-unknown-linux-gnu"),
             "x86_64-unknown-linux-gnu".to_string()
+        );
+        assert_eq!(
+            resolve_target_triple(None, "x86_64-unknown-linux-unknown"),
+            String::new()
         );
     }
 
@@ -672,7 +747,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_only_checks_known_filesystem_markers() {
+    fn detect_host_linux_libc_only_checks_trusted_absolute_filesystem_markers() {
         let seen = std::cell::RefCell::new(Vec::new());
         let libc = super::detect_host_linux_libc_with_probes(&|| None, &|path| {
             seen.borrow_mut().push(path.to_path_buf());

@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- preserve Linux hosts with unknown libc as explicit `unknown` platform state instead of dropping
+  them or letting callers treat the host as implicit `*-unknown-linux-gnu`
+- make host-platform target-triple mapping checked: Linux hosts with unknown libc now surface a
+  dedicated error, while compatibility helpers fail closed by returning no host target triple
 - detect musl/Alpine Linux hosts before selecting the default target triple so callers do not
   incorrectly fall back to `*-unknown-linux-gnu`
 - make Linux host libc detection fail closed when musl and glibc loader markers coexist, instead

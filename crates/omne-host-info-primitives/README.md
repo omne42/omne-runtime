@@ -12,10 +12,17 @@ Low-level host platform and target-triple primitives shared across callers.
 ## Scope
 
 - host OS and architecture detection
-- canonical target-triple mapping, including Linux `gnu` vs `musl` detection from current-process
-  loader/libc mappings with fail-closed filesystem-marker fallback only when direct runtime
-  evidence is unavailable; current-process evidence stays authoritative even if unrelated musl
-  loader files exist on disk, and conflicting runtime evidence still fails closed
+- canonical host-platform mapping, including Linux hosts whose libc stays explicitly unknown when
+  direct runtime evidence and trusted absolute filesystem markers cannot distinguish `gnu` vs
+  `musl`
+- canonical target-triple mapping for host platforms with known Linux libc, with checked host
+  APIs that surface `LinuxLibcUnknown` instead of collapsing unknown Linux hosts into
+  `*-unknown-linux-gnu`
+- Linux `gnu` vs `musl` detection from current-process loader/libc mappings with fail-closed
+  filesystem-marker fallback only when direct runtime evidence is unavailable; current-process
+  evidence stays authoritative even if unrelated musl loader files exist on disk, conflicting
+  runtime evidence still fails closed, and detection never executes ambient PATH-resolved
+  `getconf`/`ldd`
 - validated target override normalization for the crate's supported canonical triples, with checked
   APIs that return structured errors and compatibility helpers that fail closed
 - home-directory resolution
