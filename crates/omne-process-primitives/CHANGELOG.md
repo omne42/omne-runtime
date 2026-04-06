@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- resolve request-scoped relative `PATH` entries against the same effective `working_directory`
+  used for direct spawn, including relative `working_directory` inputs, so command probing,
+  missing-program classification, and execution stay aligned
+
 - treat Windows drive-relative program paths such as `C:tool.exe` as explicit relative paths
   instead of bare commands, so request-scoped probes and execution stop falling back to `PATH`
 - fail closed on Linux once process-tree cleanup can no longer revalidate the original leader
