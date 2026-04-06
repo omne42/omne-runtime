@@ -823,7 +823,7 @@ fn ensure_sudo_target_is_available(
     request: &HostCommandRequest<'_>,
 ) -> Result<(), HostCommandError> {
     if is_explicit_command_path(request.program) {
-        return Ok(());
+        return ensure_explicit_sudo_target_is_available(request);
     }
 
     if resolve_host_system_package_manager_path(request.program).is_some() {
@@ -833,6 +833,39 @@ fn ensure_sudo_target_is_available(
     Err(HostCommandError::CommandNotFound {
         program: request.program.to_os_string(),
     })
+}
+
+fn ensure_explicit_sudo_target_is_available(
+    request: &HostCommandRequest<'_>,
+) -> Result<(), HostCommandError> {
+    let target = resolve_program_for_sudo_target(request);
+    if !target.exists() {
+        return Err(HostCommandError::CommandNotFound {
+            program: request.program.to_os_string(),
+        });
+    }
+    if !is_spawnable_command_path(&target) {
+        return Err(HostCommandError::SpawnFailed {
+            program: request.program.to_os_string(),
+            execution: HostCommandExecution::Sudo,
+            source: io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "sudo target must be an executable regular file",
+            ),
+        });
+    }
+    if !explicit_system_package_manager_path(&target) {
+        return Err(HostCommandError::SpawnFailed {
+            program: request.program.to_os_string(),
+            execution: HostCommandExecution::Sudo,
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "sudo target must resolve to the trusted system package manager path",
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 fn is_explicit_command_path(command: &OsStr) -> bool {
@@ -2149,6 +2182,119 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn ensure_sudo_target_rejects_missing_explicit_path() {
+        let Some(program_name) = available_privileged_package_manager_name() else {
+            return;
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join(program_name);
+        let request = HostCommandRequest {
+            program: missing.as_os_str(),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let err =
+            ensure_sudo_target_is_available(&request).expect_err("missing sudo target must fail");
+        assert!(matches!(err, HostCommandError::CommandNotFound { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_sudo_target_rejects_missing_relative_explicit_path() {
+        let Some(program_name) = available_privileged_package_manager_name() else {
+            return;
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let relative_program = Path::new("bin").join(program_name);
+        let request = HostCommandRequest {
+            program: relative_program.as_os_str(),
+            args: &[],
+            env: &[],
+            working_directory: Some(temp.path()),
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let err = ensure_sudo_target_is_available(&request)
+            .expect_err("missing relative sudo target must fail");
+        assert!(matches!(err, HostCommandError::CommandNotFound { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_sudo_target_rejects_non_executable_explicit_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let Some(program_name) = available_privileged_package_manager_name() else {
+            return;
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join(program_name);
+        std::fs::write(&target, "#!/bin/sh\nexit 0\n").expect("write target");
+        let mut permissions = std::fs::metadata(&target)
+            .expect("stat target")
+            .permissions();
+        permissions.set_mode(0o644);
+        std::fs::set_permissions(&target, permissions).expect("chmod target");
+        let request = HostCommandRequest {
+            program: target.as_os_str(),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let err = ensure_sudo_target_is_available(&request)
+            .expect_err("non-executable sudo target must fail");
+        match err {
+            HostCommandError::SpawnFailed {
+                execution, source, ..
+            } => {
+                assert_eq!(execution, HostCommandExecution::Sudo);
+                assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_sudo_target_rejects_untrusted_explicit_path() {
+        let Some(program_name) = available_privileged_package_manager_name() else {
+            return;
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = write_shell_executable(temp.path(), program_name, "exit 0\n");
+        let request = HostCommandRequest {
+            program: target.as_os_str(),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let err =
+            ensure_sudo_target_is_available(&request).expect_err("untrusted sudo target must fail");
+        match err {
+            HostCommandError::SpawnFailed {
+                execution, source, ..
+            } => {
+                assert_eq!(execution, HostCommandExecution::Sudo);
+                assert_eq!(source.kind(), io::ErrorKind::InvalidInput);
+                assert!(
+                    source
+                        .to_string()
+                        .contains("trusted system package manager path")
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
         write_shell_executable(
             dir,
@@ -2237,6 +2383,13 @@ mod tests {
     fn unix_test_shell_path() -> PathBuf {
         crate::command_path::resolve_command_path_or_standard_location_os(OsStr::new("sh"))
             .expect("resolve test shell")
+    }
+
+    #[cfg(unix)]
+    fn available_privileged_package_manager_name() -> Option<&'static str> {
+        ["apt-get", "dnf", "yum", "apk", "pacman", "zypper"]
+            .into_iter()
+            .find(|name| resolve_host_system_package_manager_path(OsStr::new(name)).is_some())
     }
 
     #[cfg(unix)]

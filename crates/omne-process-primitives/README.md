@@ -26,6 +26,9 @@ Low-level host-command and process-tree primitives shared across callers.
 - explicit relative program paths that resolve only against an explicit `working_directory`, instead of silently inheriting the caller process cwd
 - sudo-style escalation that resolves the privileged target from trusted host locations and drops all request env at the sudo boundary, so elevated commands never reintroduce caller-controlled `PATH` or other request-scoped environment into the root-side target process
 - fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved from trusted standard install locations as a canonical system package manager command
+- fail-closed local validation for explicit `IfNonRootSystemCommand` paths before invoking
+  `sudo`, so missing, non-executable, or untrusted package-manager paths cannot escape into
+  elevated child-process errors
 - direct explicit-path spawns only collapse `ENOENT` into `CommandNotFound` when the resolved target path itself is gone; if the file still exists, interpreter/loader failures remain structured spawn errors
 - sudo resolution that ignores both request-scoped and ambient `PATH` pollution when choosing the `sudo` binary or the elevated bare-command target, and only auto-escalates canonical system package manager commands whose explicit paths match the same binary identity trusted standard locations resolve for that manager name
 - default sudo-mode selection driven by the canonical `omne-system-package-primitives` manager catalog

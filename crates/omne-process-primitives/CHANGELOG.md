@@ -33,6 +33,9 @@
 - stop formatting full host recipe `stdout`/`stderr` into `HostRecipeError::Display`; surface only exit status and captured byte counts while preserving raw `Output` for callers
 - make `command_available` / `command_available_os` / `command_available_for_request` require spawnable commands instead of treating any regular file as available
 - keep draining oversized stdout/stderr streams until EOF before returning the capture-limit error, so bounded capture cannot deadlock on a full pipe
+- make explicit `IfNonRootSystemCommand` sudo targets fail closed before spawn when the path is
+  missing, non-executable, or not the trusted system package manager binary for that name, instead
+  of silently letting explicit-path requests bypass local target validation
 - reject explicit relative request program paths unless callers also provide `working_directory`, so request-scoped probes and execution no longer fall back to the host process cwd behind the API boundary
 - stop trusting request `PATH` overrides to locate `sudo` or the elevated bare command target; resolve both from the host environment and pass the elevated target as a concrete path
 - require explicit `sudo` system-package-manager paths to match the same canonical binary the host resolves for that manager name, so lexical aliases cannot smuggle a different executable across the privilege boundary
