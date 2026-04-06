@@ -12,7 +12,7 @@
   drive-relative 路径（例如 `C:tool.exe`）也按显式相对路径处理，不会误判成 bare command。
 - 对宿主命令 request/recipe 维持 `OsStr` / `OsString` 边界，不把 argv/env 先强制收窄成 UTF-8 `String`。
 - 运行宿主机命令并捕获输出；捕获实现以临时文件为边界，因此 direct child 退出后不会再被继续持有 stdout/stderr 的后台后代进程永久卡住；当 stdout/stderr 超过上限且 direct child 仍在运行时，会先 best-effort 终止 child，再返回超限错误。
-- 在调用方显式声明时，对宿主机命令执行应用 request-scoped env removal 和 hard timeout；timeout 命中后会 best-effort 终止 direct child，并把已捕获的 bounded stdout/stderr 一并回传给上层。
+- 在调用方显式声明时，对宿主机命令执行应用 request-scoped env removal、hard timeout 和 per-stream capture limit；timeout 命中后会 best-effort 终止 direct child，并把已捕获的 bounded stdout/stderr 一并回传给上层。默认便利 API 仍保留 8 MiB/stream 的保守上限，但调用方可以显式收紧、放宽或关闭这个上限。
 - 把“命令根本没能启动”与“命令已执行但输出采集失败”区分成不同错误面，避免把 capture-limit/读取失败错误错误归类成 `SpawnFailed`。
 - 把“命令超时被终止”与“命令启动失败/输出采集失败”继续分开建模，避免调用方只能从字符串猜测 timeout。
 - 对显式相对程序路径要求调用方显式提供 `working_directory` 作为解析基准；如果 request 没给这个基准，本 crate 会 fail closed，而不是偷偷退回调用方进程的 ambient cwd。
@@ -36,7 +36,7 @@
 ## 不负责什么
 
 - 命令 allowlist。
-- 默认超时、取消或重试策略；这里只执行调用方显式给出的 timeout。
+- 默认超时、取消、重试或 stdout/stderr capture budget 策略；这里只执行调用方显式给出的 timeout/capture 约束，默认便利 API 的 8 MiB/stream 只是保守默认值，不是强制产品策略。
 - general direct-execution 环境变量过滤；这里仍保留 direct command 的宿主原生 env 语义，只在 sudo privilege boundary fail closed 丢弃 request env。
 - stdout/stderr 的产品级脱敏、裁剪或持久化策略；这里仅避免在默认 `Display` 中直接倾倒完整捕获内容。
 - sandbox / isolation 选择。
