@@ -116,11 +116,94 @@ impl AuditLogger {
 }
 
 fn validate_appendable_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    reject_unsafe_audit_log_existing_ancestors(path)?;
     validate_appendable_regular_file_in_ambient_root(path, "audit log").map_err(|err| err.into())
 }
 
 fn open_appendable_regular_file_nofollow(path: &Path) -> Result<std::fs::File, std::io::Error> {
+    reject_unsafe_audit_log_existing_ancestors(path)?;
     open_appendable_regular_file_in_ambient_root(path, "audit log").map(|file| file.into_std())
+}
+
+fn reject_unsafe_audit_log_existing_ancestors(path: &Path) -> std::io::Result<()> {
+    let absolute = absolute_path_lexical(path)?;
+    let Some(parent) = absolute.parent() else {
+        return Ok(());
+    };
+
+    let mut current = PathBuf::new();
+    for component in parent.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            std::path::Component::RootDir => current.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "audit log must be a normalized absolute path without parent traversal: {}",
+                        path.display()
+                    ),
+                ));
+            }
+            std::path::Component::Normal(segment) => {
+                current.push(segment);
+                match std::fs::symlink_metadata(&current) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!(
+                                "audit log must not traverse symlink ancestors: {}",
+                                current.display()
+                            ),
+                        ));
+                    }
+                    Ok(metadata) if !metadata.is_dir() => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!(
+                                "audit log ancestor must be a directory: {}",
+                                current.display()
+                            ),
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn absolute_path_lexical(path: &Path) -> std::io::Result<PathBuf> {
+    let mut absolute = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        std::env::current_dir()?
+    };
+
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => absolute.push(prefix.as_os_str()),
+            std::path::Component::RootDir => absolute.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "audit log must be a normalized absolute path without parent traversal: {}",
+                        path.display()
+                    ),
+                ));
+            }
+            std::path::Component::Normal(segment) => absolute.push(segment),
+        }
+    }
+
+    Ok(absolute)
 }
 
 impl PreparedAuditSink {
@@ -569,6 +652,105 @@ mod tests {
             ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_ready_rejects_nonterminal_symlink_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_test_root(&dir);
+        let real_root = root.join("real-root");
+        fs::create_dir_all(real_root.join("deep").join("existing")).expect("create real tree");
+        let alias_root = root.join("alias-root");
+        symlink(&real_root, &alias_root).expect("create root symlink");
+        let audit_path = alias_root.join("deep").join("existing").join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .ensure_ready()
+            .expect_err("nonterminal symlink ancestor must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn ensure_ready_rejects_nonterminal_non_directory_ancestor() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_test_root(&dir);
+        let blocker = root.join("blocker");
+        fs::write(&blocker, "not a directory").expect("write blocker");
+        let audit_path = blocker.join("nested").join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .ensure_ready()
+            .expect_err("non-directory ancestor must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_ready_rejects_symlink_ancestor_even_when_nested_directory_exists() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_test_root(&dir);
+        let target_parent = root.join("real-parent");
+        fs::create_dir_all(target_parent.join("existing").join("nested"))
+            .expect("create nested target directories");
+        let symlink_parent = root.join("linked-parent");
+        symlink(&target_parent, &symlink_parent).expect("create parent symlink");
+        let audit_path = symlink_parent
+            .join("existing")
+            .join("nested")
+            .join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .ensure_ready()
+            .expect_err("audit path with deep symlink ancestor must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_ready_rejects_symlink_ancestor_even_when_nested_directory_exists() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_test_root(&dir);
+        let target_parent = root.join("real-parent");
+        fs::create_dir_all(target_parent.join("existing").join("nested"))
+            .expect("create nested target directories");
+        let symlink_parent = root.join("linked-parent");
+        symlink(&target_parent, &symlink_parent).expect("create parent symlink");
+        let audit_path = symlink_parent
+            .join("existing")
+            .join("nested")
+            .join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .validate_ready_without_side_effects()
+            .expect_err("validation must reject deep symlink ancestor");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+        assert!(
+            !audit_path.exists(),
+            "validation must not create the audit file"
+        );
     }
 
     #[test]
