@@ -10,6 +10,7 @@
 - 对外通过 crate-local `ArtifactDownloader` 边界接收下载能力，而不是把具体 HTTP client 类型固定进 public API。
 - 以受限响应体流式下载 artifact。
 - 对下载结果执行可选的 SHA-256 校验。
+- 对关键安装失败保留结构化错误细节和 candidate-level failure 列表，例如 archive binary 未找到时可通过 `ArtifactInstallErrorDetail::ArchiveBinaryNotFound` 分流，而不是只能解析字符串。
 - 把直接二进制资产原子安装到目标路径，并对同一 binary 目标的 install phase 做 advisory lock 串行化，避免并发 commit 互相踩坏最终落点。
 - 从受支持的 archive 中提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束；同一 binary 目标的 install phase 同样按 destination 做 advisory lock 串行化。
 - 把受支持的 archive 目录树解到 `omne-fs-primitives` 提供的 staged 目录，并在默认 extracted-byte / entry-count 预算内成功后替换目标目录。
