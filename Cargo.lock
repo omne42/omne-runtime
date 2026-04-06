@@ -1233,12 +1233,10 @@ version = "0.1.0"
 dependencies = [
  "fs2",
  "libc",
- "omne-fs-primitives",
  "policy-meta",
  "same-file",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "thiserror 1.0.69",
  "windows-sys 0.59.0",
@@ -1309,7 +1307,6 @@ dependencies = [
 name = "omne-process-primitives"
 version = "0.1.0"
 dependencies = [
- "omne-system-package-primitives",
  "rustix",
  "sysinfo",
  "tempfile",
