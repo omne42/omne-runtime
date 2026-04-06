@@ -22,9 +22,9 @@ fn open_policy_file(path: &Path) -> Result<omne_fs_primitives::File> {
             path.display()
         ))
     })?;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = normalize_policy_parent(path.parent().unwrap_or_else(|| Path::new(".")));
     let root = open_root(
-        parent,
+        &parent,
         "policy file parent",
         MissingRootPolicy::Error,
         |_, _, _, error| error,
@@ -43,6 +43,64 @@ fn open_policy_file(path: &Path) -> Result<omne_fs_primitives::File> {
 
     open_regular_file_at(root.dir(), Path::new(leaf))
         .map_err(|err| map_policy_path_error(path, "open", err))
+}
+
+fn normalize_policy_parent(parent: &Path) -> std::path::PathBuf {
+    #[cfg(not(target_os = "macos"))]
+    {
+        parent.to_path_buf()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        normalize_macos_root_alias(parent)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn normalize_macos_root_alias(path: &Path) -> std::path::PathBuf {
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let mut visited = std::path::PathBuf::new();
+    let mut normal_index = 0usize;
+    let mut components = path.components().peekable();
+
+    while let Some(component) = components.next() {
+        visited.push(component.as_os_str());
+        if !matches!(component, std::path::Component::Normal(_)) {
+            continue;
+        }
+
+        match std::fs::symlink_metadata(&visited) {
+            Ok(metadata)
+                if metadata.file_type().is_symlink()
+                    && normal_index == 0
+                    && is_macos_root_alias_component(component) =>
+            {
+                let mut canonical = std::fs::canonicalize(&visited).unwrap_or(visited);
+                for remainder in components {
+                    canonical.push(remainder.as_os_str());
+                }
+                return canonical;
+            }
+            Ok(_) => {}
+            Err(_) => return path.to_path_buf(),
+        }
+
+        normal_index += 1;
+    }
+
+    path.to_path_buf()
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_root_alias_component(component: std::path::Component<'_>) -> bool {
+    matches!(
+        component,
+        std::path::Component::Normal(part) if part == "var" || part == "tmp"
+    )
 }
 
 fn map_policy_path_error(path: &Path, op: &'static str, err: std::io::Error) -> Error {
@@ -192,30 +250,9 @@ fn initial_policy_capacity(meta_len: u64, max_bytes: u64) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        PolicyFormat, initial_policy_capacity, load_policy_limited, parse_policy,
-        parse_policy_unvalidated,
-    };
-    use crate::Error;
+    use super::{PolicyFormat, initial_policy_capacity, parse_policy, parse_policy_unvalidated};
 
     use policy_meta::{Decision, ExecutionIsolation, RiskProfile};
-    use std::fs;
-    use std::path::Path;
-
-    fn valid_toml_policy(root_path: &Path) -> String {
-        let root_path = root_path.display().to_string().replace('\\', "\\\\");
-        format!(
-            r#"
-[[roots]]
-id = "workspace"
-path = "{root_path}"
-write_scope = "read_only"
-
-[permissions]
-read = true
-"#
-        )
-    }
 
     #[test]
     fn initial_policy_capacity_keeps_small_values() {
@@ -340,7 +377,25 @@ decision = "prompt"
     #[cfg(unix)]
     #[test]
     fn load_policy_limited_rejects_symlinked_parent_ancestor() {
+        use super::load_policy_limited;
+        use crate::Error;
         use std::os::unix::fs::symlink;
+        use std::{fs, path::Path};
+
+        fn valid_toml_policy(root_path: &Path) -> String {
+            let root_path = root_path.display().to_string().replace('\\', "\\\\");
+            format!(
+                r#"
+[[roots]]
+id = "workspace"
+path = "{root_path}"
+write_scope = "read_only"
+
+[permissions]
+read = true
+"#
+            )
+        }
 
         let dir = tempfile::tempdir().expect("tempdir");
         let real_parent = dir.path().join("real");
