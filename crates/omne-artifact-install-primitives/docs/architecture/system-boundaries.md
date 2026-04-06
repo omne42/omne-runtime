@@ -7,6 +7,7 @@
 ## 负责什么
 
 - 消费调用方给定的有序下载候选列表。
+- 对公开 download/install 入口要求候选列表非空；空列表被视为调用方输入错误，直接返回明确错误，而不是伪装成“所有候选都失败”。
 - 对外通过 crate-local `ArtifactDownloader` 边界接收下载能力，而不是把具体 HTTP client 类型固定进 public API。
 - 以受限响应体流式下载 artifact。
 - 对下载结果执行可选的 SHA-256 校验。

@@ -24,7 +24,8 @@ use zip::ZipArchive;
 
 use crate::artifact_download::{
     ArtifactDownloadCandidate, ArtifactDownloader, ArtifactInstallError, candidate_failure_message,
-    download_candidate_to_writer_with_options, failed_candidates_error, run_blocking_install,
+    download_candidate_to_writer_with_options, failed_candidates_error,
+    require_download_candidates, run_blocking_install,
 };
 
 pub const DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
@@ -76,6 +77,8 @@ where
             request.asset_name
         )));
     }
+
+    require_download_candidates(candidates, request.canonical_url)?;
 
     let mut errors = Vec::new();
     for candidate in candidates {
@@ -1274,6 +1277,39 @@ mod tests {
 
         assert_eq!(selected.kind, ArtifactDownloadCandidateKind::Canonical);
         assert!(destination.join("bin/demo.exe").exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn archive_tree_download_rejects_empty_candidate_lists() -> Result<(), Box<dyn Error>> {
+        let archive_name = "demo-tree.zip";
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        let canonical_url = format!("https://example.invalid/{archive_name}");
+        let downloader = StubDownloader {
+            routes: HashMap::new(),
+        };
+
+        let err = download_and_install_archive_tree(
+            &downloader,
+            &[],
+            &ArchiveTreeInstallRequest {
+                canonical_url: &canonical_url,
+                destination: &destination,
+                asset_name: archive_name,
+                expected_sha256: None,
+                max_download_bytes: None,
+            },
+        )
+        .await
+        .expect_err("empty candidate lists must be rejected");
+
+        assert!(err.candidate_failures().is_empty());
+        assert!(
+            err.to_string()
+                .contains("requires at least one download candidate"),
+            "unexpected message: {err}"
+        );
         Ok(())
     }
 

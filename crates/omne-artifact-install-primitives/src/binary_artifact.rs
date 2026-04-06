@@ -13,7 +13,8 @@ use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 use crate::artifact_download::{
     ArtifactDownloadCandidate, ArtifactDownloader, ArtifactInstallError,
     ArtifactInstallErrorDetail, candidate_failure_message,
-    download_candidate_to_writer_with_options, failed_candidates_error, run_blocking_install,
+    download_candidate_to_writer_with_options, failed_candidates_error,
+    require_download_candidates, run_blocking_install,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -67,6 +68,8 @@ pub async fn download_binary_to_destination<D>(
 where
     D: ArtifactDownloader + ?Sized,
 {
+    require_download_candidates(candidates, request.canonical_url)?;
+
     let mut errors = Vec::new();
     for candidate in candidates {
         let expected_sha256 = request.expected_sha256.cloned();
@@ -113,6 +116,8 @@ pub async fn download_and_install_binary_from_archive<D>(
 where
     D: ArtifactDownloader + ?Sized,
 {
+    require_download_candidates(candidates, request.canonical_url)?;
+
     let mut errors = Vec::new();
     for candidate in candidates {
         let expected_sha256 = request.expected_sha256.cloned();
@@ -492,6 +497,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn direct_binary_download_rejects_empty_candidate_lists() -> Result<(), Box<dyn Error>> {
+        let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join(&asset_name);
+        let canonical_url = format!("https://example.invalid/{asset_name}");
+        let downloader = StubDownloader {
+            routes: HashMap::new(),
+        };
+
+        let err = download_binary_to_destination(
+            &downloader,
+            &[],
+            &DownloadBinaryRequest {
+                canonical_url: &canonical_url,
+                destination: &destination,
+                asset_name: &asset_name,
+                expected_sha256: None,
+                max_download_bytes: None,
+            },
+        )
+        .await
+        .expect_err("empty candidate lists must be rejected");
+
+        assert!(err.candidate_failures().is_empty());
+        assert!(
+            err.to_string()
+                .contains("requires at least one download candidate"),
+            "unexpected message: {err}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn archive_binary_download_retries_after_extract_failure() -> Result<(), Box<dyn Error>> {
         let asset_name = "demo.zip";
         let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
@@ -540,6 +578,42 @@ mod tests {
         assert_eq!(std::fs::read(&destination)?, b"good-binary");
 
         handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn archive_binary_download_rejects_empty_candidate_lists() -> Result<(), Box<dyn Error>> {
+        let asset_name = "demo.zip";
+        let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join(&binary_name);
+        let canonical_url = format!("https://example.invalid/{asset_name}");
+        let downloader = StubDownloader {
+            routes: HashMap::new(),
+        };
+
+        let err = download_and_install_binary_from_archive(
+            &downloader,
+            &[],
+            &BinaryArchiveInstallRequest {
+                canonical_url: &canonical_url,
+                destination: &destination,
+                asset_name,
+                binary_name: &binary_name,
+                archive_binary_hint: None,
+                expected_sha256: None,
+                max_download_bytes: None,
+            },
+        )
+        .await
+        .expect_err("empty candidate lists must be rejected");
+
+        assert!(err.candidate_failures().is_empty());
+        assert!(
+            err.to_string()
+                .contains("requires at least one download candidate"),
+            "unexpected message: {err}"
+        );
         Ok(())
     }
 

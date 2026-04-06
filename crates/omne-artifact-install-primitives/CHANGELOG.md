@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- reject empty artifact candidate lists up front so public install/download entrypoints report caller input errors instead of the misleading "all candidates failed" aggregate
 - make the public download/install entrypoints generic over a narrow `ArtifactDownloader` trait,
   so callers are no longer forced to expose `reqwest::Client` at the primitive boundary while the
   built-in `reqwest` adapter remains available for current integrations
