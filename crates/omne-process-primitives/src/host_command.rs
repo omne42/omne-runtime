@@ -32,7 +32,6 @@ pub enum HostCommandExecution {
 pub struct HostCommandRunOptions<'a> {
     pub env_remove: &'a [OsString],
     pub timeout: Option<Duration>,
-    pub max_captured_output_bytes_per_stream: Option<usize>,
 }
 
 impl Default for HostCommandRunOptions<'_> {
@@ -40,7 +39,6 @@ impl Default for HostCommandRunOptions<'_> {
         Self {
             env_remove: &[],
             timeout: None,
-            max_captured_output_bytes_per_stream: Some(DEFAULT_CAPTURED_OUTPUT_BYTES_PER_STREAM),
         }
     }
 }
@@ -58,6 +56,25 @@ impl<'a> HostCommandRunOptions<'a> {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct HostCommandCaptureOptions {
+    pub max_captured_output_bytes_per_stream: Option<usize>,
+}
+
+impl Default for HostCommandCaptureOptions {
+    fn default() -> Self {
+        Self {
+            max_captured_output_bytes_per_stream: Some(DEFAULT_CAPTURED_OUTPUT_BYTES_PER_STREAM),
+        }
+    }
+}
+
+impl HostCommandCaptureOptions {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn with_capture_limit_bytes_per_stream(mut self, max_bytes: usize) -> Self {
@@ -272,12 +289,24 @@ impl std::error::Error for HostRecipeError {
 pub fn run_host_command(
     request: &HostCommandRequest<'_>,
 ) -> Result<HostCommandOutput, HostCommandError> {
-    run_host_command_with_options(request, HostCommandRunOptions::default())
+    run_host_command_with_capture_options(
+        request,
+        HostCommandRunOptions::default(),
+        HostCommandCaptureOptions::default(),
+    )
 }
 
 pub fn run_host_command_with_options(
     request: &HostCommandRequest<'_>,
     options: HostCommandRunOptions<'_>,
+) -> Result<HostCommandOutput, HostCommandError> {
+    run_host_command_with_capture_options(request, options, HostCommandCaptureOptions::default())
+}
+
+pub fn run_host_command_with_capture_options(
+    request: &HostCommandRequest<'_>,
+    options: HostCommandRunOptions<'_>,
+    capture_options: HostCommandCaptureOptions,
 ) -> Result<HostCommandOutput, HostCommandError> {
     validate_direct_request_program(request)?;
     let execution = if should_try_sudo(request) {
@@ -288,7 +317,7 @@ pub fn run_host_command_with_options(
     if execution == HostCommandExecution::Sudo {
         ensure_sudo_target_is_available(request)?;
     }
-    let output = run_command_output(request, execution, options)
+    let output = run_command_output(request, execution, options, capture_options)
         .map_err(|source| map_command_output_error(request, execution, source))?;
     Ok(HostCommandOutput { execution, output })
 }
@@ -296,14 +325,26 @@ pub fn run_host_command_with_options(
 pub fn run_host_recipe(
     request: &HostRecipeRequest<'_>,
 ) -> Result<HostCommandOutput, HostRecipeError> {
-    run_host_recipe_with_options(request, HostCommandRunOptions::default())
+    run_host_recipe_with_capture_options(
+        request,
+        HostCommandRunOptions::default(),
+        HostCommandCaptureOptions::default(),
+    )
 }
 
 pub fn run_host_recipe_with_options(
     request: &HostRecipeRequest<'_>,
     options: HostCommandRunOptions<'_>,
 ) -> Result<HostCommandOutput, HostRecipeError> {
-    let output = run_host_command_with_options(
+    run_host_recipe_with_capture_options(request, options, HostCommandCaptureOptions::default())
+}
+
+pub fn run_host_recipe_with_capture_options(
+    request: &HostRecipeRequest<'_>,
+    options: HostCommandRunOptions<'_>,
+    capture_options: HostCommandCaptureOptions,
+) -> Result<HostCommandOutput, HostRecipeError> {
+    let output = run_host_command_with_capture_options(
         &HostCommandRequest {
             program: request.program,
             args: request.args,
@@ -312,6 +353,7 @@ pub fn run_host_recipe_with_options(
             sudo_mode: request.sudo_mode,
         },
         options,
+        capture_options,
     )
     .map_err(HostRecipeError::Command)?;
 
@@ -429,6 +471,7 @@ fn run_command_output(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
     options: HostCommandRunOptions<'_>,
+    capture_options: HostCommandCaptureOptions,
 ) -> Result<Output, CommandOutputError> {
     #[cfg(unix)]
     {
@@ -436,7 +479,7 @@ fn run_command_output(
         const EXECUTABLE_BUSY_BACKOFF_MS: u64 = 10;
 
         for attempt in 0..=EXECUTABLE_BUSY_RETRIES {
-            match spawn_and_capture_output(request, execution, options) {
+            match spawn_and_capture_output(request, execution, options, capture_options) {
                 Ok(output) => return Ok(output),
                 Err(err) if err.is_executable_file_busy() && attempt < EXECUTABLE_BUSY_RETRIES => {
                     std::thread::sleep(std::time::Duration::from_millis(
@@ -452,7 +495,7 @@ fn run_command_output(
 
     #[cfg(not(unix))]
     {
-        spawn_and_capture_output(request, execution, options)
+        spawn_and_capture_output(request, execution, options, capture_options)
     }
 }
 
@@ -460,6 +503,7 @@ fn spawn_and_capture_output(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
     options: HostCommandRunOptions<'_>,
+    capture_options: HostCommandCaptureOptions,
 ) -> Result<Output, CommandOutputError> {
     let (stdout_capture, stdout_writer) =
         create_output_capture_file().map_err(CommandOutputError::Spawn)?;
@@ -472,7 +516,7 @@ fn spawn_and_capture_output(
     let status = match wait_for_child(
         &mut child,
         options.timeout,
-        options.max_captured_output_bytes_per_stream,
+        capture_options.max_captured_output_bytes_per_stream,
         &stdout_capture,
         &stderr_capture,
     ) {
@@ -484,13 +528,13 @@ fn spawn_and_capture_output(
             let stdout = read_captured_output(
                 stdout_capture,
                 "stdout",
-                options.max_captured_output_bytes_per_stream,
+                capture_options.max_captured_output_bytes_per_stream,
             )
             .map_err(CommandOutputError::Capture)?;
             let stderr = read_captured_output(
                 stderr_capture,
                 "stderr",
-                options.max_captured_output_bytes_per_stream,
+                capture_options.max_captured_output_bytes_per_stream,
             )
             .map_err(CommandOutputError::Capture)?;
             return Err(CommandOutputError::TimedOut {
@@ -509,13 +553,13 @@ fn spawn_and_capture_output(
         stdout: read_captured_output(
             stdout_capture,
             "stdout",
-            options.max_captured_output_bytes_per_stream,
+            capture_options.max_captured_output_bytes_per_stream,
         )
         .map_err(CommandOutputError::Capture)?,
         stderr: read_captured_output(
             stderr_capture,
             "stderr",
-            options.max_captured_output_bytes_per_stream,
+            capture_options.max_captured_output_bytes_per_stream,
         )
         .map_err(CommandOutputError::Capture)?,
     })
@@ -1072,15 +1116,19 @@ mod tests {
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
     use super::{
-        HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandRunOptions,
-        HostCommandSudoMode, HostRecipeError, HostRecipeRequest, build_command,
-        build_command_with_options, command_available, command_available_for_request,
-        command_exists, command_exists_for_request, command_path_exists,
-        default_recipe_sudo_mode_for_program, resolve_program_for_direct_spawn, run_host_command,
-        run_host_recipe, should_try_sudo_with_status,
+        HostCommandCaptureOptions, HostCommandError, HostCommandExecution, HostCommandRequest,
+        HostCommandRunOptions, HostCommandSudoMode, HostRecipeError, HostRecipeRequest,
+        build_command, build_command_with_options, command_available,
+        command_available_for_request, command_exists, command_exists_for_request,
+        command_path_exists, default_recipe_sudo_mode_for_program,
+        resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
+        should_try_sudo_with_status,
     };
     #[cfg(unix)]
-    use super::{run_host_command_with_options, run_host_recipe_with_options};
+    use super::{
+        run_host_command_with_capture_options, run_host_command_with_options,
+        run_host_recipe_with_options,
+    };
 
     #[test]
     fn command_probe_reports_missing_command_as_absent() {
@@ -1588,9 +1636,10 @@ mod tests {
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let output = run_host_command_with_options(
+        let output = run_host_command_with_capture_options(
             &request,
-            HostCommandRunOptions::new().without_capture_limit(),
+            HostCommandRunOptions::new(),
+            HostCommandCaptureOptions::new().without_capture_limit(),
         )
         .expect("disabling the capture limit should allow large output");
         assert!(output.output.status.success());
@@ -1610,9 +1659,10 @@ mod tests {
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let err = run_host_command_with_options(
+        let err = run_host_command_with_capture_options(
             &request,
-            HostCommandRunOptions::new().with_capture_limit_bytes_per_stream(1024),
+            HostCommandRunOptions::new(),
+            HostCommandCaptureOptions::new().with_capture_limit_bytes_per_stream(1024),
         )
         .expect_err("custom capture limit should be enforced");
         match err {
