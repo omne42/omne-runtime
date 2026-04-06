@@ -111,7 +111,7 @@ where
                     .seek(SeekFrom::Start(0))
                     .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
                 verify_sha256_reader(staged.file_mut(), expected_sha256)
-                    .map_err(|err| ArtifactInstallError::download(err.to_string()))?;
+                    .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
             }
 
             staged
@@ -1277,6 +1277,53 @@ mod tests {
 
         assert_eq!(selected.kind, ArtifactDownloadCandidateKind::Canonical);
         assert!(destination.join("bin/demo.exe").exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn archive_tree_checksum_failure_is_reported_as_install_error()
+    -> Result<(), Box<dyn Error>> {
+        let archive_name = "demo-tree.zip";
+        let good_archive = make_zip_archive(&[("bin/demo.exe", b"MZ".as_slice(), 0o755)])?;
+        let expected_sha256 = omne_integrity_primitives::hash_sha256(b"other-archive");
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        let canonical_url = format!("https://example.invalid/{archive_name}");
+        let downloader = StubDownloader {
+            routes: HashMap::from([(canonical_url.clone(), good_archive)]),
+        };
+
+        let err = download_and_install_archive_tree(
+            &downloader,
+            &[ArtifactDownloadCandidate {
+                url: canonical_url.clone(),
+                kind: ArtifactDownloadCandidateKind::Canonical,
+            }],
+            &ArchiveTreeInstallRequest {
+                canonical_url: &canonical_url,
+                destination: &destination,
+                asset_name: archive_name,
+                expected_sha256: Some(&expected_sha256),
+                max_download_bytes: None,
+            },
+        )
+        .await
+        .expect_err("checksum mismatch must fail");
+
+        assert_eq!(
+            err.kind(),
+            crate::artifact_download::ArtifactInstallErrorKind::Install
+        );
+        assert_eq!(err.candidate_failures().len(), 1);
+        assert_eq!(
+            err.candidate_failures()[0].kind(),
+            crate::artifact_download::ArtifactInstallErrorKind::Install
+        );
+        assert!(
+            err.to_string()
+                .contains("at least one candidate reached install phase"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 
