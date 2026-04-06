@@ -1010,9 +1010,21 @@ mod tests {
             true,
             true,
         ));
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         assert!(should_try_sudo_with_status(
             OsStr::new("/usr/bin/apt-get"),
+            HostCommandSudoMode::IfNonRootSystemCommand,
+            true,
+            true,
+        ));
+        assert!(!should_try_sudo_with_status(
+            OsStr::new("sh"),
+            HostCommandSudoMode::IfNonRootSystemCommand,
+            true,
+            true,
+        ));
+        assert!(!should_try_sudo_with_status(
+            OsStr::new("brew"),
             HostCommandSudoMode::IfNonRootSystemCommand,
             true,
             true,
@@ -1262,7 +1274,7 @@ mod tests {
             default_recipe_sudo_mode_for_program(OsStr::new("apt-get")),
             HostCommandSudoMode::IfNonRootSystemCommand
         );
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         assert_eq!(
             default_recipe_sudo_mode_for_program(OsStr::new("/usr/bin/apt-get")),
             HostCommandSudoMode::IfNonRootSystemCommand
@@ -1965,11 +1977,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_does_not_forward_request_environment() {
+    fn sudo_discards_non_utf8_request_environment_values() {
         let non_utf8_value = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
         let env = vec![(OsString::from("OMNE_TEST_VALUE"), non_utf8_value)];
+        let explicit_program = std::env::current_exe().expect("current exe");
         let request = HostCommandRequest {
-            program: OsStr::new("apt-get"),
+            program: explicit_program.as_os_str(),
             args: &[],
             env: &env,
             working_directory: None,
@@ -1983,13 +1996,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(collected_args[0], OsString::from("-n"));
-        assert_eq!(
-            collected_args[1],
-            resolve_host_system_package_manager_path(OsStr::new("apt-get"))
-                .expect("trusted apt-get path")
-                .into_os_string()
-        );
-        assert_eq!(command.get_envs().count(), 0);
+        assert_eq!(collected_args[1], explicit_program.into_os_string());
+        assert_eq!(collected_args.len(), 2);
     }
 
     #[cfg(unix)]
