@@ -1214,7 +1214,7 @@ dependencies = [
 name = "omne-artifact-install-primitives"
 version = "0.1.0"
 dependencies = [
- "flate2",
+ "cap-std",
  "http-kit",
  "omne-archive-primitives",
  "omne-fs-primitives",
@@ -1223,7 +1223,6 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
- "xz2",
  "zip",
 ]
 
@@ -1233,10 +1232,12 @@ version = "0.1.0"
 dependencies = [
  "fs2",
  "libc",
+ "omne-fs-primitives",
  "policy-meta",
  "same-file",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 1.0.69",
  "windows-sys 0.59.0",
@@ -1307,7 +1308,9 @@ dependencies = [
 name = "omne-process-primitives"
 version = "0.1.0"
 dependencies = [
+ "omne-system-package-primitives",
  "rustix",
+ "same-file",
  "sysinfo",
  "tempfile",
  "tokio",
