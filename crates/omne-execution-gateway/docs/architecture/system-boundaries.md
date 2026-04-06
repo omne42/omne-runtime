@@ -8,7 +8,7 @@
 
 - `ExecRequest`、`ExecEvent`、`ExecGateway`、`GatewayPolicy` 和能力报告模型。
 - `cwd`、`workspace_root`、隔离级别和 `policy_default` 来源一致性校验。
-- 请求里的 `program` 只能是 bare command name 或绝对路径；像 `./tool`、`bin/tool` 这类相对路径会 fail-closed 拒绝，避免执行语义依赖 gateway 进程自身的工作目录。
+- 请求里的 `program` 只能是 bare command name 或绝对路径；像 `./tool`、`bin/tool`，以及 Windows `C:tool.exe` 这类 drive-relative 路径都会 fail-closed 拒绝，避免执行语义依赖 gateway 进程自身的工作目录或宿主 drive cwd。
 - 对显式绝对 `program` 路径做“必须是可 spawn 的可执行文件”校验、解析到 canonical real executable path、绑定 file identity，并在真正 spawn 前再次校验；bare command name 也会在 preflight 阶段解析成 canonical 绝对执行体并绑定 identity，如果无法稳定解析就 fail-closed 拒绝。mutating allowlist 仍按最终可执行文件 identity 匹配，而不是按 basename 或原始路径字面量放行，避免 preflight 通过后被换文件或通过稳定别名漂移到别的可执行文件；但在最终 revalidate 到内核 `spawn/exec` 之间仍存在无法完全消除的 OS 级 TOCTOU 窗口，这里只承诺尽量缩小而不是假装消灭它。
 - 对 `cwd` / `workspace_root` 先做“不得穿过 symlink/reparse-point 祖先目录”的 fail-closed 校验，再做 canonical path + 目录 identity 绑定，并在真正 spawn 前重新校验；macOS 只对系统根别名 `/var`、`/tmp` 做最小例外，避免把平台自带 temp/workspace 路径误判成调用方可控别名。
 - 声明式变更命令门控，以及显式 mutation declaration、`mutating_program_allowlist` / `non_mutating_program_allowlist` 和 opaque launcher 之间的一致性校验；其中 opaque launcher/interpreter 会按最终绑定到的 real executable identity 做判断，所以就算 allowlisted 显式路径经过稳定 symlink/alias 最终落到 `sh`、`python`、`env` 之类 launcher，也会直接 fail-closed，不能靠别名名字绕过授权边界。
