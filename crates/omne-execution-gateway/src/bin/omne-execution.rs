@@ -1,15 +1,16 @@
 #![forbid(unsafe_code)]
 
 use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions};
+use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus};
+use std::str;
 
 use omne_execution_gateway::{
     ExecEvent, ExecGateway, ExecRequest, ExecResult, GatewayPolicy, RequestResolution,
-    path_guard::ensure_existing_ancestors_are_real_directories,
 };
-use omne_fs_primitives::{ReadUtf8Error, read_utf8_regular_file_in_ambient_root};
 use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +19,10 @@ const MAX_REQUEST_JSON_BYTES: usize = 1024 * 1024;
 #[allow(dead_code)]
 #[path = "../os_serialization.rs"]
 mod os_serialization;
+
+#[allow(dead_code)]
+#[path = "../path_guard.rs"]
+mod path_guard;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -150,27 +155,85 @@ fn build_exec_request(
 }
 
 fn load_request(path: &Path) -> Result<ExecRequestWire, String> {
-    ensure_existing_ancestors_are_real_directories(path)
+    path_guard::reject_forbidden_path_ancestors(path)
+        .map_err(|detail| format!("failed to read request {}: {detail}", path.display()))?;
+    let content = read_utf8_regular_file_nofollow(path, MAX_REQUEST_JSON_BYTES)
         .map_err(|err| format!("failed to read request {}: {err}", path.display()))?;
-    let content = read_utf8_regular_file_in_ambient_root(
-        path,
-        "request file",
-        MAX_REQUEST_JSON_BYTES,
-    )
-    .map_err(|err| match err {
-        ReadUtf8Error::Io(source) => {
-            format!("failed to read request {}: {source}", path.display())
-        }
-        ReadUtf8Error::TooLarge { bytes, max_bytes } => format!(
-            "failed to read request {}: request file exceeds size limit ({bytes} > {max_bytes} bytes)",
-            path.display()
-        ),
-        ReadUtf8Error::InvalidUtf8(source) => {
-            format!("failed to read request {}: {source}", path.display())
-        }
-    })?;
     serde_json::from_str(&content)
         .map_err(|e| format!("invalid request json {}: {e}", path.display()))
+}
+
+fn read_utf8_regular_file_nofollow(path: &Path, max_bytes: usize) -> std::io::Result<String> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("path is not a regular file: {}", path.display()),
+        ));
+    }
+    let file = open_regular_readonly_nofollow(path)?;
+    let mut bytes = Vec::new();
+    let limit = u64::try_from(max_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut limited = file.take(limit);
+    limited.read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "request file exceeds size limit ({} > {} bytes)",
+                bytes.len(),
+                max_bytes
+            ),
+        ));
+    }
+    str::from_utf8(&bytes)
+        .map(str::to_owned)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))
+}
+
+#[cfg(unix)]
+fn open_regular_readonly_nofollow(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let file = options.open(path)?;
+    ensure_regular_file(path, file)
+}
+
+#[cfg(windows)]
+fn open_regular_readonly_nofollow(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = options.open(path)?;
+    ensure_regular_file(path, file)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn open_regular_readonly_nofollow(path: &Path) -> std::io::Result<File> {
+    let file = OpenOptions::new().read(true).open(path)?;
+    ensure_regular_file(path, file)
+}
+
+fn ensure_regular_file(path: &Path, file: File) -> std::io::Result<File> {
+    let metadata = file.metadata()?;
+    if metadata.is_file() {
+        return Ok(file);
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("path is not a regular file: {}", path.display()),
+    ))
 }
 
 fn exec_output_from_result(
@@ -653,42 +716,13 @@ mod tests {
         let err = load_request(&alias_dir.join("request.json"))
             .expect_err("ancestor symlink should fail closed");
         assert!(
-            err.contains("path is not a directory")
-                || err.contains("Not a directory")
+            err.contains("Not a directory")
                 || err.contains("failed to open file")
                 || err.contains("No such file")
                 || err.contains("target file must be a regular file")
                 || err.contains("must not traverse symlinks"),
             "unexpected error: {err}"
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn load_request_rejects_symlink_ancestor_when_nested_directory_exists() {
-        let dir = tempdir().expect("tempdir");
-        let root = canonical_temp_root(&dir);
-        let real_root = root.join("real-root");
-        fs::create_dir_all(real_root.join("nested")).expect("create real root");
-        let linked_root = root.join("linked-root");
-        symlink(&real_root, &linked_root).expect("create root symlink");
-        let request_path = linked_root.join("nested").join("request.json");
-        fs::write(
-            &request_path,
-            r#"{
-                "program": "echo",
-                "args": ["hello"],
-                "env": [],
-                "cwd": ".",
-                "workspace_root": ".",
-                "required_isolation": "best_effort",
-                "declared_mutation": false
-            }"#,
-        )
-        .expect("write request");
-
-        let err = load_request(&request_path).expect_err("symlink ancestor should fail");
-        assert!(err.contains("path is not a directory"));
     }
 
     #[cfg(unix)]

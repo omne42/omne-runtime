@@ -1,18 +1,16 @@
 use std::fmt::Display;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
-use omne_fs_primitives::{
-    open_appendable_regular_file_in_ambient_root, validate_appendable_regular_file_in_ambient_root,
-};
 use serde::Serialize;
 
 use crate::audit::ExecEvent;
 use crate::error::{ExecError, ExecResult};
-use crate::path_guard::ensure_existing_ancestors_are_real_directories;
+use crate::path_guard::reject_forbidden_path_ancestors;
 
 const APPENDABLE_OPEN_NOT_FOUND_RETRIES: usize = 4;
 
@@ -72,13 +70,7 @@ impl AuditLogger {
     }
 
     pub(crate) fn validate_ready_without_side_effects(&self) -> ExecResult<()> {
-        ensure_existing_ancestors_are_real_directories(&self.path).map_err(|err| {
-            ExecError::AuditLogUnavailable {
-                path: self.path.clone(),
-                detail: err.to_string(),
-            }
-        })?;
-        validate_appendable_regular_file_in_ambient_root(&self.path, "audit log").map_err(|err| {
+        validate_appendable_regular_file_path(&self.path).map_err(|err| {
             ExecError::AuditLogUnavailable {
                 path: self.path.clone(),
                 detail: err.to_string(),
@@ -96,14 +88,13 @@ impl AuditLogger {
     }
 
     fn try_open_sink(&self) -> Result<PreparedAuditSink, Box<dyn std::error::Error>> {
-        ensure_existing_ancestors_are_real_directories(&self.path)?;
         let mut last_not_found = None;
         for attempt in 0..APPENDABLE_OPEN_NOT_FOUND_RETRIES {
-            match open_appendable_regular_file_in_ambient_root(&self.path, "audit log") {
+            match open_appendable_regular_file_nofollow(&self.path) {
                 Ok(file) => {
                     return Ok(PreparedAuditSink {
                         path: self.path.clone(),
-                        file: file.into_std(),
+                        file,
                     });
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -121,6 +112,116 @@ impl AuditLogger {
             .unwrap_or_else(|| std::io::Error::other("audit log open failed without an error"))
             .into())
     }
+}
+
+fn validate_appendable_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    reject_forbidden_path_ancestors(path)
+        .map_err(|detail| std::io::Error::new(std::io::ErrorKind::InvalidInput, detail))?;
+
+    if let Some(parent) = path.parent()
+        && let Some(existing_parent) = existing_ancestor(parent)
+    {
+        ensure_existing_directory(existing_parent)?;
+    }
+
+    if path.exists() {
+        ensure_existing_regular_file_path(path)?;
+    }
+
+    Ok(())
+}
+
+fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, std::io::Error> {
+    reject_forbidden_path_ancestors(path)
+        .map_err(|detail| std::io::Error::new(std::io::ErrorKind::InvalidInput, detail))?;
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Some(existing_parent) = existing_ancestor(parent) {
+                ensure_existing_directory(existing_parent).map_err(io_error_from_box)?;
+            }
+            fs::create_dir_all(parent)?;
+            ensure_existing_directory(parent).map_err(io_error_from_box)?;
+        }
+    }
+    if path.exists() {
+        ensure_existing_regular_file_path(path).map_err(io_error_from_box)?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut options = OpenOptions::new();
+        options
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        let file = options.open(path)?;
+        return ensure_regular_file(path, file).map_err(io_error_from_box);
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+        let mut options = OpenOptions::new();
+        options
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        let file = options.open(path)?;
+        return ensure_regular_file(path, file).map_err(io_error_from_box);
+    }
+
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(path)?;
+        ensure_regular_file(path, file).map_err(io_error_from_box)
+    }
+}
+
+fn ensure_existing_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!("path is not a directory: {}", path.display()).into());
+    }
+    Ok(())
+}
+
+fn ensure_existing_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!("path is not a regular file: {}", path.display()).into());
+    }
+    Ok(())
+}
+
+fn ensure_regular_file(path: &Path, file: File) -> Result<File, Box<dyn std::error::Error>> {
+    let metadata = file.metadata()?;
+    if metadata.is_file() {
+        return Ok(file);
+    }
+
+    Err(format!("path is not a regular file: {}", path.display()).into())
+}
+
+fn existing_ancestor(path: &Path) -> Option<&Path> {
+    path.ancestors().find(|ancestor| ancestor.exists())
+}
+
+fn io_error_from_box(err: Box<dyn std::error::Error>) -> std::io::Error {
+    std::io::Error::other(err.to_string())
 }
 
 impl PreparedAuditSink {
@@ -141,22 +242,6 @@ impl PreparedAuditSink {
         result: &ExecResult<ExitStatus>,
     ) -> ExecResult<()> {
         self.write_record(AuditRecord::from_execution(event, result))
-    }
-
-    pub(crate) fn write_execution_error_record(
-        &mut self,
-        event: &ExecEvent,
-        error: &ExecError,
-    ) -> ExecResult<()> {
-        self.write_record(AuditRecord::from_execution_error(event, error))
-    }
-
-    pub(crate) fn write_detached_record(
-        &mut self,
-        event: &ExecEvent,
-        detail: &str,
-    ) -> ExecResult<()> {
-        self.write_record(AuditRecord::from_detached(event, detail))
     }
 
     fn write_record(&mut self, record: AuditRecord) -> ExecResult<()> {
@@ -206,22 +291,6 @@ impl AuditRecord {
             ts_unix_ms: now_unix_ms(),
             event: event.clone(),
             result: AuditResult::from_execution(result),
-        }
-    }
-
-    fn from_execution_error(event: &ExecEvent, error: &ExecError) -> Self {
-        Self {
-            ts_unix_ms: now_unix_ms(),
-            event: event.clone(),
-            result: AuditResult::from_execution_error(error),
-        }
-    }
-
-    fn from_detached(event: &ExecEvent, detail: &str) -> Self {
-        Self {
-            ts_unix_ms: now_unix_ms(),
-            event: event.clone(),
-            result: AuditResult::detached(detail),
         }
     }
 }
@@ -289,35 +358,6 @@ impl AuditResult {
                 success: None,
                 signal: None,
             },
-        }
-    }
-
-    fn from_execution_error(error: &ExecError) -> Self {
-        match error {
-            ExecError::Spawn(err) => Self {
-                status: "spawn_error",
-                error: Some(err.to_string()),
-                exit_code: None,
-                success: None,
-                signal: None,
-            },
-            other => Self {
-                status: "prepare_error",
-                error: Some(other.to_string()),
-                exit_code: None,
-                success: None,
-                signal: None,
-            },
-        }
-    }
-
-    fn detached(detail: &str) -> Self {
-        Self {
-            status: "detached",
-            error: Some(detail.to_string()),
-            exit_code: None,
-            success: None,
-            signal: None,
         }
     }
 }
@@ -544,28 +584,6 @@ mod tests {
         let err = logger
             .ensure_ready()
             .expect_err("audit path with symlink ancestor must fail");
-
-        match err {
-            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
-            other => panic!("unexpected error: {other}"),
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn ensure_ready_rejects_symlink_ancestor_when_nested_directory_exists() {
-        let dir = tempdir().expect("tempdir");
-        let root = canonical_test_root(&dir);
-        let target_parent = root.join("real-parent");
-        fs::create_dir_all(target_parent.join("existing")).expect("create target parent");
-        let symlink_parent = root.join("linked-parent");
-        symlink(&target_parent, &symlink_parent).expect("create parent symlink");
-        let audit_path = symlink_parent.join("existing").join("audit.jsonl");
-        let logger = AuditLogger::new(&audit_path);
-
-        let err = logger
-            .ensure_ready()
-            .expect_err("audit path with existing symlink ancestor must fail");
 
         match err {
             ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),

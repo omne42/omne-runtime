@@ -1309,7 +1309,6 @@ dependencies = [
 name = "omne-process-primitives"
 version = "0.1.0"
 dependencies = [
- "omne-system-package-primitives",
  "rustix",
  "sysinfo",
  "tempfile",
