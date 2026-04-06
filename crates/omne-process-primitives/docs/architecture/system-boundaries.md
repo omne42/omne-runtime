@@ -22,6 +22,7 @@
 - 当命中 `sudo` 路径时，在提权边界内完全丢弃 request env；提权后的目标命令只接收受信任解析出的目标路径和 argv，避免把 request `PATH` 或其他调用方环境变量重新带进 root 侧进程语义。
 - `sudo` 可用性判定、`sudo` 可执行路径选择以及提权后的 bare target 解析都不使用 request 里显式覆盖的 `PATH`，也不信任 ambient `PATH` 里的 shadow binary；这些 control-plane 程序只会从受信任的标准安装目录解析。
 - 对需要走 `sudo` 的 bare command，如果受信任标准目录里解析不到对应的 canonical manager 二进制，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
+- 对显式 `IfNonRootSystemCommand` 路径，也会在真正调用 `sudo` 之前做本地 fail-closed 校验：缺失目标、不可执行 regular file，或与受信标准目录解析到的 canonical manager 二进制不一致的路径，都会在本地直接拒绝，而不是把错误推迟成提权后子进程的运行期失败。
 - 对显式 package-manager 路径，只有它与受信标准目录对该 manager 名称解析到的 canonical 二进制是同一个文件时，才保留 `IfNonRootSystemCommand` 语义；相对路径、别名到不同目标的 symlink，或名字相同但不是这组 canonical manager 目标的其他可执行体都不会被误判成系统命令。
 - 运行 host recipe，并把非零退出统一建模成结构化错误。
 - `HostRecipeError::Display` 只输出退出状态和捕获字节数，不把完整 stdout/stderr 直接拼进错误字符串；需要原始输出的调用方仍可从结构化 `Output` 读取。
