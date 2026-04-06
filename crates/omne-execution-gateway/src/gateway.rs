@@ -2371,6 +2371,47 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn prepared_non_mutating_allowlisted_program_rejects_in_place_content_change() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("readonly-allowlisted.sh");
+        write_unix_shell_executable(&program, "exit 0\n");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                non_mutating_program_allowlist: vec![program.display().to_string()],
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+        let command = Command::new(&program);
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let prepared = result.expect("prepare command");
+
+        write_unix_shell_executable(&program, "exit 1\n");
+
+        let err = prepared
+            .spawn()
+            .expect_err("content drift should be rejected before spawn");
+        assert!(matches!(
+            err,
+            ExecError::RequestPathChanged {
+                kind: "program",
+                ref detail,
+                ..
+            } if detail == "file contents changed"
+        ));
+    }
+
     #[test]
     fn denies_mutation_for_bare_program_even_when_same_name_is_allowlisted() {
         let policy = GatewayPolicy {
