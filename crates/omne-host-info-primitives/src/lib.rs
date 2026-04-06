@@ -662,6 +662,16 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn detect_host_linux_libc_keeps_process_maps_authoritative_when_musl_files_exist() {
+        let libc = super::detect_host_linux_libc_with_probes(
+            &|| Some("/lib64/ld-linux-x86-64.so.2\n/usr/lib64/libc.so.6\n".to_string()),
+            &|path| path == std::path::Path::new("/lib64/ld-musl-x86_64.so.1"),
+        );
+        assert_eq!(libc, Some(HostLinuxLibc::Gnu));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn detect_host_linux_libc_only_checks_known_filesystem_markers() {
         let seen = std::cell::RefCell::new(Vec::new());
         let libc = super::detect_host_linux_libc_with_probes(&|| None, &|path| {

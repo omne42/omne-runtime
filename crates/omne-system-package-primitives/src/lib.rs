@@ -200,7 +200,7 @@ pub enum SystemPackageManager {
 
 impl SystemPackageManager {
     pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
+        match raw {
             "apt-get" => Some(Self::AptGet),
             "dnf" => Some(Self::Dnf),
             "yum" => Some(Self::Yum),
@@ -305,6 +305,9 @@ mod tests {
     #[test]
     fn parse_accepts_only_canonical_manager_names() {
         assert_eq!(SystemPackageManager::parse("apt"), None);
+        assert_eq!(SystemPackageManager::parse("APT-GET"), None);
+        assert_eq!(SystemPackageManager::parse(" apt-get"), None);
+        assert_eq!(SystemPackageManager::parse("apt-get "), None);
         assert_eq!(
             SystemPackageManager::parse("apt-get"),
             Some(SystemPackageManager::AptGet)

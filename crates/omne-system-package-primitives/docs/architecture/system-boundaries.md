@@ -6,7 +6,7 @@
 
 ## 负责什么
 
-- 识别 canonical manager 名，例如 `apt-get`、`dnf`、`yum`、`apk`、`pacman`、`zypper`、`brew`。
+- 只识别精确 canonical manager 名，例如 `apt-get`、`dnf`、`yum`、`apk`、`pacman`、`zypper`、`brew`；不隐式 `trim`、大小写归一化或接受别名。
 - 建模支持的包管理器集合。
 - 先把 package 解析成受约束的 `SystemPackageName`，拒绝空串、空白、控制字符、路径分隔符、`.`/`..` 和 option-looking token，再从 manager + package 构建安装 recipe。
 - 基于显式 OS 标识给出默认 manager 顺序和默认 recipe；不支持或空白 OS 输入必须显式报错，而不是退化成空集合。
