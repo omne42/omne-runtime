@@ -33,12 +33,13 @@ pub use command_path::{
     resolve_command_path_or_standard_location_os, resolve_command_path_os,
 };
 pub use host_command::{
-    HostCommandError, HostCommandExecution, HostCommandOutput, HostCommandRequest,
-    HostCommandRunOptions, HostCommandSudoMode, HostRecipeError, HostRecipeRequest,
-    command_available, command_available_for_request, command_available_os, command_exists,
-    command_exists_for_request, command_exists_os, command_path_exists,
-    default_recipe_sudo_mode_for_program, run_host_command, run_host_command_with_options,
-    run_host_recipe, run_host_recipe_with_options,
+    HostCommandCaptureOptions, HostCommandError, HostCommandExecution, HostCommandOutput,
+    HostCommandRequest, HostCommandRunOptions, HostCommandSudoMode, HostRecipeError,
+    HostRecipeRequest, command_available, command_available_for_request, command_available_os,
+    command_exists, command_exists_for_request, command_exists_os, command_path_exists,
+    default_recipe_sudo_mode_for_program, run_host_command, run_host_command_with_capture_options,
+    run_host_command_with_options, run_host_recipe, run_host_recipe_with_capture_options,
+    run_host_recipe_with_options,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
