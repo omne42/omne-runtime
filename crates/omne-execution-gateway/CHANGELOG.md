@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- add regression coverage pinning the explicit `env` contract across `ExecRequest`,
+  `RequestResolution`, `ExecEvent`, and the `omne-execution` CLI, so a future refactor cannot
+  silently drop audited environment fields while execution still inherits them
+- add regression coverage and README clarifications proving `resolve_request()` and the CLI keep
+  bare-command requests bound to the resolved canonical executable path, so preflight and audit
+  surfaces continue to describe the real executable identity
 - make `ExecRequest` keep `required_isolation`, `requested_isolation_source`, and
   `declared_mutation` behind constructors/accessors/setters, so callers can no longer mutate those
   fields into self-contradictory states that only fail later during gateway evaluation

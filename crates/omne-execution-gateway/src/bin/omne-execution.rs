@@ -436,6 +436,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn exec_output_keeps_explicit_env_in_request_resolution_and_event() {
+        let workspace = sample_workspace();
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            &workspace,
+            ExecutionIsolation::BestEffort,
+            &workspace,
+        )
+        .with_declared_mutation(false)
+        .with_env([(OsString::from("LANG"), OsString::from("C"))]);
+        let request_resolution =
+            ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort)
+                .resolve_request(&request);
+        let mut event = sample_event();
+        event.program = request_resolution.program.clone();
+        event.env = request_resolution.env.clone();
+
+        let output = exec_output_from_result(request_resolution, event, Ok(success_exit_status()));
+        let value = serde_json::to_value(&output).expect("serialize output");
+
+        assert_eq!(
+            value["request_resolution"]["env"],
+            serde_json::json!([{
+                "name": "LANG",
+                "value": "C"
+            }])
+        );
+        assert_eq!(
+            value["event"]["env"],
+            serde_json::json!([{
+                "name": "LANG",
+                "value": "C"
+            }])
+        );
+        assert_eq!(
+            value["request_resolution"]["env_exact"],
+            serde_json::json!([{
+                "name": {
+                    "encoding": "utf8",
+                    "value": "LANG"
+                },
+                "value": {
+                    "encoding": "utf8",
+                    "value": "C"
+                }
+            }])
+        );
+        assert_eq!(
+            value["event"]["env_exact"],
+            serde_json::json!([{
+                "name": {
+                    "encoding": "utf8",
+                    "value": "LANG"
+                },
+                "value": {
+                    "encoding": "utf8",
+                    "value": "C"
+                }
+            }])
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn exec_output_reports_signal_termination() {
@@ -758,6 +822,22 @@ mod tests {
             .args(["-c", "exit 1"])
             .status()
             .expect("run sh -c exit 1")
+    }
+
+    #[cfg(windows)]
+    fn success_exit_status() -> ExitStatus {
+        std::process::Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .status()
+            .expect("run cmd /C exit 0")
+    }
+
+    #[cfg(not(windows))]
+    fn success_exit_status() -> ExitStatus {
+        std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .status()
+            .expect("run sh -c exit 0")
     }
 
     #[cfg(unix)]

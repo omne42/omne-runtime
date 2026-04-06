@@ -44,6 +44,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - mutation authorization now requires explicit program paths in both the request and the relevant policy allowlist. Bare program names are denied fail-closed because they do not bind to a stable executable, and allowlist checks resolve by executable identity rather than basename text.
 - relative executable paths such as `./tool`, `bin/tool`, or Windows drive-relative forms such as `C:tool.exe` are denied fail-closed because their spawn semantics can drift with the gateway process context; callers must use a bare command name or absolute path.
 - bare command names remain allowed for `execute()`, but the gateway immediately resolves them to a concrete canonical executable path and audits that resolved path instead of the original bare token.
+- `resolve_request()` and the `omne-execution` CLI keep that same canonical bare-command binding in `RequestResolution`, so preflight and audit consumers see the exact executable identity the gateway will authorize.
 - explicit program paths are normalized to the canonical executable path that will actually be spawned, and that bound executable identity is revalidated before the spawn call; this closes caller-controlled symlink-alias drift but does not eliminate the final OS-level race between that last check and process creation.
 - `prepare_command()` now requires the caller-supplied `Command` to already point at the same resolved executable path that the gateway bound during preflight; handing it an unresolved bare command name is rejected fail-closed as a prepared-command mismatch.
 - `prepare_command()` also rejects caller-supplied explicit env or `current_dir` state when it does not match the audited request identity, so the validation input cannot silently describe a different execution context before the gateway rebuilds the final spawn command.
@@ -52,6 +53,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `GatewayPolicy::load_json()` only accepts no-follow regular files and fail-closed ancestor directory walks via `omne-fs-primitives`, so symlinks/reparse points cannot silently stand in for trusted policy input.
 - `cwd` and `workspace_root` fail closed when their input path traverses a symlink or reparse-point ancestor, except for macOS system root aliases such as `/var` and `/tmp`, so request path validation does not silently re-authorize caller-controlled aliased directories during canonicalization.
 - `ExecRequest` now carries explicit environment entries; `execute()` and `prepare_command()` clear inherited process state and apply only that audited environment before spawn.
+- that explicit `env` contract is preserved end-to-end across `ExecRequest`, `RequestResolution`, `ExecEvent`, and the CLI JSON adapter, so request/audit output cannot drift away from the real spawned environment.
 - `ExecRequest` keeps `required_isolation`, `requested_isolation_source`, and `declared_mutation`
   behind constructors plus accessor/setter methods, so request provenance and explicit-mutation
   state cannot drift out of sync after construction.
