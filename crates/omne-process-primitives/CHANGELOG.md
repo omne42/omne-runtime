@@ -36,6 +36,7 @@
 - reject explicit relative request program paths unless callers also provide `working_directory`, so request-scoped probes and execution no longer fall back to the host process cwd behind the API boundary
 - stop trusting request `PATH` overrides to locate `sudo` or the elevated bare command target; resolve both from the host environment and pass the elevated target as a concrete path
 - require explicit `sudo` system-package-manager paths to match the same canonical binary the host resolves for that manager name, so lexical aliases cannot smuggle a different executable across the privilege boundary
+- add regression coverage proving lexical prefix escapes such as `/usr/bin/../tmp/evil` do not regain `IfNonRootSystemCommand` treatment through explicit package-manager paths
 - drop request `PATH` overrides at the sudo boundary itself so auto-elevated system commands do not reintroduce caller-controlled search paths under root
 - restrict auto-sudo to canonical system package manager commands from `omne-system-package-primitives`, instead of treating arbitrary bare commands or user-local prefixes as implicit system commands
 - classify direct explicit-path `ENOENT` as `CommandNotFound` only when the resolved target path is actually missing; if the file still exists, preserve the spawn failure so missing interpreters/loaders are not mislabeled
