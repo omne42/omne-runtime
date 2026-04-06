@@ -1115,7 +1115,6 @@ mod tests {
         resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
         should_try_sudo_with_status,
     };
-    #[cfg(unix)]
     use super::{
         run_host_command_with_capture_options, run_host_command_with_options,
         run_host_recipe_with_options,
