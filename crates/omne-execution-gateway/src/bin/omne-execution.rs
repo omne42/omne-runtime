@@ -20,7 +20,6 @@ const MAX_REQUEST_JSON_BYTES: usize = 1024 * 1024;
 #[path = "../os_serialization.rs"]
 mod os_serialization;
 
-#[allow(dead_code)]
 #[path = "../path_guard.rs"]
 mod path_guard;
 
