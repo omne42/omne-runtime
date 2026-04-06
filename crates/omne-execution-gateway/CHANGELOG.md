@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- make `ExecRequest` keep `required_isolation`, `requested_isolation_source`, and
+  `declared_mutation` behind constructors/accessors/setters, so callers can no longer mutate those
+  fields into self-contradictory states that only fail later during gateway evaluation
 - add regression coverage proving `preflight()` itself rejects explicit non-executable program
   paths, so this fail-closed validation stays pinned before any execution attempt
 - add regression coverage proving `non_mutating_program_allowlist` requests also bind a preflight

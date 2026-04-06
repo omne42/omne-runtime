@@ -408,21 +408,21 @@ impl ExecGateway {
         let mut event = self.preflight_event(request);
 
         if matches!(
-            request.requested_isolation_source,
+            request.requested_isolation_source(),
             RequestedIsolationSource::PolicyDefault
-        ) && request.required_isolation != self.policy.default_isolation
+        ) && request.required_isolation() != self.policy.default_isolation
         {
             return Err(self.deny_preflight(
                 event,
                 "policy_default_isolation_mismatch",
                 ExecError::PolicyDefaultIsolationMismatch {
-                    requested: request.required_isolation,
+                    requested: request.required_isolation(),
                     policy_default: self.policy.default_isolation,
                 },
             ));
         }
 
-        if matches!(request.required_isolation, ExecutionIsolation::None)
+        if matches!(request.required_isolation(), ExecutionIsolation::None)
             && !self.policy.allow_isolation_none
         {
             return Err(self.deny_preflight(
@@ -482,7 +482,7 @@ impl ExecGateway {
                 .policy
                 .is_non_mutating_program_allowlisted_path(program_path);
 
-            if request.declared_mutation {
+            if request.declared_mutation() {
                 if !mutating_allowlisted {
                     return Err(self.deny_preflight(
                         event,
@@ -517,12 +517,12 @@ impl ExecGateway {
             }
         }
 
-        if request.required_isolation > self.supported_isolation {
+        if request.required_isolation() > self.supported_isolation {
             return Err(self.deny_preflight(
                 event,
                 "isolation_not_supported",
                 ExecError::IsolationNotSupported {
-                    requested: request.required_isolation,
+                    requested: request.required_isolation(),
                     supported: self.supported_isolation,
                 },
             ));
@@ -543,7 +543,7 @@ impl ExecGateway {
                         event.program = bound_program.path.clone().into();
                         Ok(PreparedExecRequest {
                             event,
-                            required_isolation: request.required_isolation,
+                            required_isolation: request.required_isolation(),
                             bound_program,
                             resolved_paths,
                         })
@@ -582,15 +582,15 @@ impl ExecGateway {
     fn preflight_event(&self, request: &ExecRequest) -> ExecEvent {
         ExecEvent {
             decision: ExecDecision::Run,
-            requested_isolation: request.required_isolation,
-            requested_policy_meta: requested_policy_meta(request.required_isolation),
+            requested_isolation: request.required_isolation(),
+            requested_policy_meta: requested_policy_meta(request.required_isolation()),
             supported_isolation: self.supported_isolation,
             program: request.program.clone(),
             args: request.args.clone(),
             env: request.env.clone(),
             cwd: request.cwd.clone(),
             workspace_root: request.workspace_root.clone(),
-            declared_mutation: request.declared_mutation,
+            declared_mutation: request.declared_mutation(),
             reason: None,
             sandbox_runtime: None,
         }

@@ -536,7 +536,7 @@ mod tests {
         )
         .expect("build request");
 
-        assert!(request.declared_mutation);
+        assert!(request.declared_mutation());
         assert_eq!(
             request.env,
             vec![(
@@ -545,7 +545,7 @@ mod tests {
             )]
         );
         assert_eq!(
-            request.requested_isolation_source,
+            request.requested_isolation_source(),
             RequestedIsolationSource::PolicyDefault
         );
     }

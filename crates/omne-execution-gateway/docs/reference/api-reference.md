@@ -29,22 +29,33 @@ ExecRequest::with_policy_default_isolation(program, args, cwd, policy_default_is
   .with_declared_mutation(bool)
 ```
 
-Fields:
+Public fields:
 
 - `program: OsString`
 - `args: Vec<OsString>`
 - `env: Vec<(OsString, OsString)>`
 - `cwd: PathBuf`
-- `required_isolation: policy_meta::ExecutionIsolation`
-- `requested_isolation_source: RequestedIsolationSource`
 - `workspace_root: PathBuf`
-- `declared_mutation: bool`
+
+Accessors / mutators:
+
+- `required_isolation() -> policy_meta::ExecutionIsolation`
+- `requested_isolation_source() -> RequestedIsolationSource`
+- `declared_mutation() -> bool`
+- `set_required_isolation(...)`
+- `with_required_isolation(...)`
+- `set_policy_default_isolation(...)`
+- `with_effective_policy_default_isolation(...)`
+- `set_declared_mutation(...)`
 
 `declared_mutation` is caller input. Use `with_policy_default_isolation(...)` when the caller is
 intentionally delegating isolation selection to `GatewayPolicy::default_isolation`.
 When `GatewayPolicy::enforce_allowlisted_program_for_mutation` remains enabled, callers must still
 finish request construction with `.with_declared_mutation(true/false)` before evaluation or
 execution; otherwise the gateway denies the request with `MutationDeclarationRequired`.
+The isolation and explicit-mutation fields are intentionally not directly writable anymore, so
+callers cannot desynchronize `requested_isolation_source` from the stored isolation or bypass the
+explicit-mutation marker by mutating raw struct fields after construction.
 
 ## RequestResolution
 
