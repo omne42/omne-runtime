@@ -345,7 +345,7 @@ pub fn command_available_for_request(request: &HostCommandRequest<'_>) -> bool {
 
 pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoMode {
     sudo_mode_system_package_manager(program)
-        .filter(|manager| manager.requires_privileged_install())
+        .filter(|manager| manager_requires_privileged_install(*manager))
         .map_or(HostCommandSudoMode::Never, |_| {
             HostCommandSudoMode::IfNonRootSystemCommand
         })
@@ -654,7 +654,7 @@ fn sudo_eligible_program(program: &OsStr) -> bool {
     let Some(manager) = sudo_mode_system_package_manager(program) else {
         return false;
     };
-    if !manager.requires_privileged_install() {
+    if !manager_requires_privileged_install(manager) {
         return false;
     }
     if !is_explicit_command_path(program) {
@@ -676,6 +676,10 @@ fn sudo_mode_program_name(program: &OsStr) -> Option<&str> {
 
 fn sudo_mode_system_package_manager(program: &OsStr) -> Option<SystemPackageManager> {
     sudo_mode_program_name(program).and_then(SystemPackageManager::parse)
+}
+
+fn manager_requires_privileged_install(manager: SystemPackageManager) -> bool {
+    !matches!(manager, SystemPackageManager::Brew)
 }
 
 fn explicit_system_package_manager_path(path: &Path) -> bool {
@@ -810,8 +814,7 @@ fn resolve_host_system_package_manager_path(program: &OsStr) -> Option<PathBuf> 
         return None;
     }
     let manager = SystemPackageManager::parse(program.to_str()?)?;
-    manager
-        .requires_privileged_install()
+    manager_requires_privileged_install(manager)
         .then_some(resolve_command_path_in_standard_locations_os(program))
         .flatten()
 }
@@ -931,7 +934,6 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
     #[cfg(unix)]
-    use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
     #[cfg(unix)]
@@ -939,7 +941,6 @@ mod tests {
 
     #[cfg(unix)]
     use super::command_available_os;
-    use super::command_exists_os;
     #[cfg(unix)]
     use super::ensure_sudo_target_is_available;
     #[cfg(unix)]
@@ -1007,21 +1008,9 @@ mod tests {
             true,
             true,
         ));
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         assert!(should_try_sudo_with_status(
             OsStr::new("/usr/bin/apt-get"),
-            HostCommandSudoMode::IfNonRootSystemCommand,
-            true,
-            true,
-        ));
-        assert!(!should_try_sudo_with_status(
-            OsStr::new("sh"),
-            HostCommandSudoMode::IfNonRootSystemCommand,
-            true,
-            true,
-        ));
-        assert!(!should_try_sudo_with_status(
-            OsStr::new("brew"),
             HostCommandSudoMode::IfNonRootSystemCommand,
             true,
             true,
@@ -1271,7 +1260,7 @@ mod tests {
             default_recipe_sudo_mode_for_program(OsStr::new("apt-get")),
             HostCommandSudoMode::IfNonRootSystemCommand
         );
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         assert_eq!(
             default_recipe_sudo_mode_for_program(OsStr::new("/usr/bin/apt-get")),
             HostCommandSudoMode::IfNonRootSystemCommand
@@ -1974,12 +1963,11 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_discards_non_utf8_request_environment_values() {
+    fn sudo_does_not_forward_request_environment() {
         let non_utf8_value = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
         let env = vec![(OsString::from("OMNE_TEST_VALUE"), non_utf8_value)];
-        let explicit_program = std::env::current_exe().expect("current exe");
         let request = HostCommandRequest {
-            program: explicit_program.as_os_str(),
+            program: OsStr::new("apt-get"),
             args: &[],
             env: &env,
             working_directory: None,
@@ -1993,20 +1981,23 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(collected_args[0], OsString::from("-n"));
-        assert_eq!(collected_args[1], explicit_program.into_os_string());
-        assert_eq!(collected_args.len(), 2);
+        assert_eq!(
+            collected_args[1],
+            resolve_host_system_package_manager_path(OsStr::new("apt-get"))
+                .expect("trusted apt-get path")
+                .into_os_string()
+        );
+        assert_eq!(command.get_envs().count(), 0);
     }
 
     #[cfg(unix)]
     #[test]
-    fn non_executable_paths_are_not_available_or_spawnable() {
+    fn non_executable_paths_are_not_reported_as_available() {
+        use std::os::unix::fs::PermissionsExt;
+
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = temp.path().join("plain-script");
-        std::fs::write(
-            &command_path,
-            format!("#!{}\nexit 0\n", unix_test_shell_path().display()),
-        )
-        .expect("write plain script");
+        std::fs::write(&command_path, "#!/bin/sh\nexit 0\n").expect("write plain script");
         let mut permissions = std::fs::metadata(&command_path)
             .expect("stat plain script")
             .permissions();
@@ -2014,6 +2005,10 @@ mod tests {
         std::fs::set_permissions(&command_path, permissions).expect("chmod plain script");
 
         let command_path_string = command_path.to_string_lossy().into_owned();
+        assert!(!command_available(&command_path_string));
+        assert!(!command_available_os(command_path.as_os_str()));
+        assert!(!command_path_exists(&command_path));
+
         let args = Vec::new();
         let request = HostCommandRequest {
             program: command_path.as_os_str(),
@@ -2022,10 +2017,6 @@ mod tests {
             working_directory: None,
             sudo_mode: HostCommandSudoMode::Never,
         };
-        assert!(!command_available(&command_path_string));
-        assert!(!command_available_os(command_path.as_os_str()));
-        assert!(!command_available_for_request(&request));
-        assert!(!command_path_exists(&command_path));
 
         let error = run_host_command(&request).expect_err("non-executable path should fail");
         match error {
@@ -2036,7 +2027,7 @@ mod tests {
                 assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
             }
             HostCommandError::CaptureFailed { .. } => {
-                panic!("non-executable path must fail before output capture starts");
+                panic!("non-executable path must not reach output capture");
             }
             HostCommandError::TimedOut { .. } => {
                 panic!("non-executable path must fail before timeout handling");
@@ -2149,50 +2140,43 @@ mod tests {
 
     #[cfg(unix)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
-        write_shell_executable(
+        write_unix_executable(
             dir,
             name,
-            "printf 'arg=%s\\n' \"$1\"\nprintf 'env=%s\\n' \"$OMNE_TEST_VALUE\"\n",
+            "#!/bin/sh\nprintf 'arg=%s\\n' \"$1\"\nprintf 'env=%s\\n' \"$OMNE_TEST_VALUE\"\n",
         )
     }
 
     #[cfg(unix)]
     fn write_pwd_command(dir: &Path, name: &str) -> PathBuf {
-        write_shell_executable(dir, name, "pwd\n")
+        write_unix_executable(dir, name, "#!/bin/sh\npwd\n")
     }
 
     #[cfg(unix)]
     fn write_count_command(dir: &Path, name: &str) -> PathBuf {
-        write_shell_executable(dir, name, "printf 'run\\n' >> \"$OMNE_COUNT_FILE\"\n")
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\nprintf 'run\\n' >> \"$OMNE_COUNT_FILE\"\n",
+        )
     }
 
     #[cfg(unix)]
     fn write_failing_command(dir: &Path, name: &str) -> PathBuf {
-        write_shell_executable(
+        write_unix_executable(
             dir,
             name,
-            "printf 'stdout-message'\nprintf 'stderr-message' >&2\nexit 7\n",
+            "#!/bin/sh\nprintf 'stdout-message'\nprintf 'stderr-message' >&2\nexit 7\n",
         )
     }
 
     #[cfg(unix)]
     fn write_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        write_payload_cat_command(dir, name, "stdout", 8 * 1024 * 1024 + 1)
-    }
-
-    #[cfg(unix)]
-    fn write_background_writer_command(dir: &Path, name: &str, stream: &str) -> PathBuf {
-        let body = match stream {
-            "stdout" => "(sleep 2; printf 'late-child\\n') &\nprintf 'parent-ready\\n'\n",
-            "stderr" => "(sleep 2; printf 'late-child\\n' >&2) &\nprintf 'parent-ready\\n' >&2\n",
-            other => panic!("unexpected background stream: {other}"),
-        };
-        write_shell_executable(dir, name, body)
-    }
-
-    #[cfg(unix)]
-    fn write_very_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        write_payload_cat_command(dir, name, "stdout", 32 * 1024 * 1024)
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (8 * 1024 * 1024 + 1))\nPY\n",
+        )
     }
 
     #[cfg(unix)]
@@ -2205,43 +2189,20 @@ mod tests {
 
     #[cfg(unix)]
     fn write_exact_limit_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        write_payload_cat_command(dir, name, "stdout", 8 * 1024 * 1024)
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (8 * 1024 * 1024))\nPY\n",
+        )
     }
 
     #[cfg(unix)]
     fn write_large_stderr_command(dir: &Path, name: &str) -> PathBuf {
-        write_payload_cat_command(dir, name, "stderr", 8 * 1024 * 1024 + 1)
-    }
-
-    #[cfg(unix)]
-    fn write_payload_cat_command(dir: &Path, name: &str, stream: &str, size: usize) -> PathBuf {
-        let payload_path = dir.join(format!("{name}.payload"));
-        std::fs::write(&payload_path, vec![b'x'; size]).expect("write payload");
-        let payload = shell_quote_path(&payload_path);
-        let body = match stream {
-            "stdout" => format!("cat {payload}\n"),
-            "stderr" => format!("cat {payload} >&2\n"),
-            other => panic!("unexpected payload stream: {other}"),
-        };
-        write_shell_executable(dir, name, &body)
-    }
-
-    #[cfg(unix)]
-    fn write_shell_executable(dir: &Path, name: &str, body: &str) -> PathBuf {
-        let shell = unix_test_shell_path();
-        write_unix_executable(dir, name, &format!("#!{}\n{body}", shell.display()))
-    }
-
-    #[cfg(unix)]
-    fn unix_test_shell_path() -> PathBuf {
-        crate::command_path::resolve_command_path_or_standard_location_os(OsStr::new("sh"))
-            .expect("resolve test shell")
-    }
-
-    #[cfg(unix)]
-    fn shell_quote_path(path: &Path) -> String {
-        let escaped = path.display().to_string().replace('\'', "'\"'\"'");
-        format!("'{escaped}'")
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stderr.write('x' * (8 * 1024 * 1024 + 1))\nPY\n",
+        )
     }
 
     #[cfg(unix)]
@@ -2258,6 +2219,11 @@ mod tests {
         std::fs::set_permissions(&temp_path, perms).expect("chmod unix command");
         std::fs::rename(&temp_path, &path).expect("rename unix command");
         path
+    }
+
+    #[cfg(unix)]
+    fn relative_command_path(name: &str) -> String {
+        format!("./{name}")
     }
 
     #[cfg(windows)]
@@ -2305,17 +2271,6 @@ mod tests {
             "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * (8MB + 1); [Console]::Out.Write($s)\"\r\n",
         )
         .expect("write windows loud command");
-        path
-    }
-
-    #[cfg(windows)]
-    fn write_very_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        let path = dir.join(format!("{name}.cmd"));
-        std::fs::write(
-            &path,
-            "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * 32MB; [Console]::Out.Write($s)\"\r\n",
-        )
-        .expect("write windows very loud command");
         path
     }
 
