@@ -43,6 +43,9 @@
 - 配置了 `audit_log_path` 时，`evaluate()` / `resolve_request()` / `preflight()` 保持纯评估，不提前创建日志目录或文件；真正的 audit sink 准备只在 `execute()` / `prepare_command()` 前发生，并继续逐层检查 audit 路径上每一个已存在祖先，只要发现 symlink/reparse point 或非目录组件就 fail-closed，避免“最近已存在祖先看起来安全，但更高层已有不安全别名/阻塞物”被绕过。最终 JSONL 记录会继续写入这次准备阶段已打开的 appendable file handle，而不是在命令执行后重新按路径 reopen，减少 post-preflight path swap 的竞态窗口。
 - mutating allowlist 对显式程序路径除了 file identity 绑定外，还会在 preflight 记录内容指纹，并在真正 spawn 前再次校验，防止同 inode 的原地改写绕过 allowlist。
 - 如果 preflight 之后的最终审计写入失败，gateway 会把结果显式返回给调用方，而不是只在 stderr 打印失败后继续返回成功。
+- 如果 preflight 已通过，但真正 spawn 前的最终路径/identity 重校验失败，authoritative
+  `ExecEvent` 会在写 audit 和返回结果前改写成 `decision=Deny` 并附带对应 reason，避免
+ 留下“event 说 Run、result 却是 `RequestPathChanged`”这类自相矛盾的 fail-closed 记录。
 
 ## 不负责什么
 
