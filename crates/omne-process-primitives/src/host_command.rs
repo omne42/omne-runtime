@@ -1567,7 +1567,7 @@ mod tests {
             let working_directory = PathBuf::from("cwd");
             let relative_bin = temp.path().join("cwd").join("bin");
             std::fs::create_dir_all(&relative_bin).expect("create relative PATH dir");
-            write_pwd_command(&relative_bin, "pwd");
+            let expected_program = write_pwd_command(&relative_bin, "pwd");
             let env = vec![(OsString::from("PATH"), OsString::from("bin"))];
             let request = HostCommandRequest {
                 program: OsStr::new("pwd"),
@@ -1583,10 +1583,7 @@ mod tests {
                 resolve_program_for_direct_spawn(&request)
                     .canonicalize()
                     .expect("canonicalize resolved program"),
-                temp.path()
-                    .join("cwd")
-                    .join("bin")
-                    .join("pwd")
+                expected_program
                     .canonicalize()
                     .expect("canonicalize expected program")
             );
