@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- treat Windows drive-relative program paths such as `C:tool.exe` as explicit relative paths
+  instead of bare commands, so request-scoped probes and execution stop falling back to `PATH`
 - fail closed on Linux once process-tree cleanup can no longer revalidate the original leader
   after exit, instead of trusting surviving same-session group members behind a reused historical
   process-group id

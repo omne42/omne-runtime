@@ -814,7 +814,9 @@ fn ensure_sudo_target_is_available(
 }
 
 fn is_explicit_command_path(command: &OsStr) -> bool {
-    has_path_separator(command) || Path::new(command).is_absolute()
+    has_path_separator(command)
+        || Path::new(command).is_absolute()
+        || has_windows_drive_prefix(command)
 }
 
 fn is_explicit_relative_program_without_working_directory(
@@ -823,6 +825,22 @@ fn is_explicit_relative_program_without_working_directory(
     is_explicit_command_path(request.program)
         && !Path::new(request.program).is_absolute()
         && request.working_directory.is_none()
+}
+
+#[cfg(windows)]
+fn has_windows_drive_prefix(command: &OsStr) -> bool {
+    use std::path::{Component, Prefix};
+
+    matches!(
+        Path::new(command).components().next(),
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+    )
+}
+
+#[cfg(not(windows))]
+fn has_windows_drive_prefix(_command: &OsStr) -> bool {
+    false
 }
 
 #[derive(Debug)]
@@ -1595,6 +1613,42 @@ mod tests {
         };
 
         let err = run_host_command(&request).expect_err("relative program should fail closed");
+        match err {
+            HostCommandError::SpawnFailed {
+                execution, source, ..
+            } => {
+                assert_eq!(execution, HostCommandExecution::Direct);
+                assert_eq!(source.kind(), io::ErrorKind::InvalidInput);
+                assert!(
+                    source
+                        .to_string()
+                        .contains("explicit relative program paths require working_directory")
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_relative_programs_are_not_treated_as_bare_commands() {
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: OsStr::new("C:tool.cmd"),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        assert!(!command_exists_for_request(&request));
+        assert!(!command_available_for_request(&request));
+        assert!(is_explicit_command_path(request.program));
+        assert!(is_explicit_relative_program_without_working_directory(
+            &request
+        ));
+
+        let err = run_host_command(&request).expect_err("drive-relative path should fail closed");
         match err {
             HostCommandError::SpawnFailed {
                 execution, source, ..
