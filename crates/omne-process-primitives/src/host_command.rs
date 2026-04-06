@@ -1104,6 +1104,7 @@ mod tests {
     use super::resolve_host_system_package_manager_path;
     #[cfg(unix)]
     use super::resolve_sudo_path;
+    use super::run_host_command_with_capture_options;
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
     use super::{
@@ -1115,7 +1116,6 @@ mod tests {
         resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
         should_try_sudo_with_status,
     };
-    use super::run_host_command_with_capture_options;
     #[cfg(unix)]
     use super::{run_host_command_with_options, run_host_recipe_with_options};
 
