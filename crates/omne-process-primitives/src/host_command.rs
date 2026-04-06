@@ -503,9 +503,9 @@ fn spawn_and_capture_output(
     let mut command = build_command_with_options(request, execution, options);
     command.stdout(Stdio::from(stdout_writer));
     command.stderr(Stdio::from(stderr_writer));
-    let mut child = command.spawn().map_err(CommandOutputError::Spawn)?;
+    let child = command.spawn().map_err(CommandOutputError::Spawn)?;
     let status = match wait_for_child(
-        &mut child,
+        child,
         options.timeout,
         capture_options.max_captured_output_bytes_per_stream,
         &stdout_capture,
@@ -563,7 +563,7 @@ fn create_output_capture_file() -> io::Result<(File, File)> {
 }
 
 fn wait_for_child(
-    child: &mut std::process::Child,
+    mut child: std::process::Child,
     timeout: Option<Duration>,
     capture_limit_bytes_per_stream: Option<usize>,
     stdout_capture: &File,
@@ -641,18 +641,36 @@ fn capture_file_exceeded_limit(capture: &File, max_bytes: Option<usize>) -> io::
 }
 
 fn terminate_child_after_capture_limit(
-    child: &mut std::process::Child,
+    mut child: std::process::Child,
     stream_name: &'static str,
     capture_limit_bytes_per_stream: Option<usize>,
 ) -> Result<(), CommandOutputError> {
     let _ = child.kill();
-    child.wait().map_err(|source| {
-        CommandOutputError::Spawn(io::Error::other(format!(
-            "{} and wait failed: {source}",
-            capture_limit_message(stream_name, capture_limit_bytes_per_stream),
-        )))
-    })?;
+    match child.try_wait() {
+        Ok(Some(_)) => {}
+        Ok(None) => spawn_background_child_reaper(child).map_err(|source| {
+            CommandOutputError::Spawn(io::Error::other(format!(
+                "{} and background reap setup failed: {source}",
+                capture_limit_message(stream_name, capture_limit_bytes_per_stream),
+            )))
+        })?,
+        Err(source) => {
+            return Err(CommandOutputError::Spawn(io::Error::other(format!(
+                "{} and try_wait failed: {source}",
+                capture_limit_message(stream_name, capture_limit_bytes_per_stream),
+            ))));
+        }
+    }
     Ok(())
+}
+
+fn spawn_background_child_reaper(mut child: std::process::Child) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("omne-process-child-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })
+        .map(|_| ())
 }
 
 fn capture_limit_error(
@@ -1584,6 +1602,43 @@ mod tests {
             HostCommandError::CaptureFailed { source, .. } => {
                 assert!(
                     source.to_string().contains("stdout exceeded capture limit"),
+                    "unexpected error: {source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_host_command_rejects_continuous_stdout_with_capture_error_instead_of_hanging() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_continuous_stdout_command(temp.path(), "stdout-forever");
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let started = Instant::now();
+        let err = run_host_command_with_capture_options(
+            &request,
+            HostCommandRunOptions::new(),
+            HostCommandCaptureOptions::new().with_capture_limit_bytes_per_stream(1024),
+        )
+        .expect_err("continuous stdout should hit the capture limit");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "continuous stdout must return a capture error instead of hanging"
+        );
+        match err {
+            HostCommandError::CaptureFailed { source, .. } => {
+                assert!(
+                    source
+                        .to_string()
+                        .contains("stdout exceeded capture limit of 1024 bytes"),
                     "unexpected error: {source}"
                 );
             }
@@ -2551,6 +2606,15 @@ mod tests {
         std::fs::write(&payload_path, vec![b'x'; 8 * 1024 * 1024 + 1]).expect("write payload");
         let payload = shell_quote_path(&payload_path);
         write_shell_executable(dir, name, &format!("cat {payload}\nsleep 5\n"))
+    }
+
+    #[cfg(unix)]
+    fn write_continuous_stdout_command(dir: &Path, name: &str) -> PathBuf {
+        write_shell_executable(
+            dir,
+            name,
+            "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done\n",
+        )
     }
 
     #[cfg(unix)]
