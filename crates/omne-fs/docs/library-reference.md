@@ -95,7 +95,8 @@ err.code()
 - `patch` (default)
 - `policy-io` (optional)
 
-When `glob`/`grep`/`patch` are disabled, the API remains callable and returns `Error::NotPermitted`.
+When `glob`/`grep`/`patch` are disabled, the request/response types, free functions, and
+`Context` methods remain callable; disabled operations return `Error::NotPermitted`.
 
 ## Integration Tips
 

@@ -182,4 +182,5 @@ Notes:
 
 ## Feature-Gated Behavior
 
-When `glob`, `grep`, or `patch` cargo features are disabled, corresponding APIs return `Error::NotPermitted` with a deterministic message.
+When `glob`, `grep`, or `patch` cargo features are disabled, corresponding free functions and
+`Context` methods stay callable and return `Error::NotPermitted` with a deterministic message.

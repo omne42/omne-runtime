@@ -1,9 +1,9 @@
 //! Internal operation modules and request/response API surface.
 //!
-//! `glob` / `grep` request and response types, plus their entrypoints, are always
-//! available from this module and re-exported at crate root.
-//! When a corresponding crate feature is disabled, the function returns a
-//! deterministic `Error::NotPermitted` from its fallback implementation.
+//! `glob` / `grep` request and response types, plus their entrypoints and `Context`
+//! methods, are always available from this module and re-exported at crate root.
+//! When a corresponding crate feature is disabled, calls return a deterministic
+//! `Error::NotPermitted` from the fallback implementation.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

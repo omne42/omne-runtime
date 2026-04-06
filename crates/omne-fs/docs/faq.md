@@ -43,7 +43,8 @@ Either:
 
 ## Can I disable `glob`, `grep`, or `patch` features?
 
-Yes. API remains stable, and disabled operations return deterministic `Error::NotPermitted`.
+Yes. API remains stable, including `Context::glob_paths()` / `Context::grep()`, and disabled
+operations return deterministic `Error::NotPermitted`.
 
 ## How should I classify errors in integrations?
 

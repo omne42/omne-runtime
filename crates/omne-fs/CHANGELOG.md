@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `Context::glob_paths` and `Context::grep` now stay compiled when the `glob` or `grep`
+  cargo feature is disabled, so the public API once again matches the documented contract:
+  callers get deterministic `Error::NotPermitted` instead of an external compile failure.
 - `git-permissions` now reports the correct fail-closed requirement when trusted `git`
   resolution fails: the fallback depends on standard host locations, not ambient `PATH`.
 - `git-permissions` now clears inherited `GIT_*` state and disables external diff helpers before
