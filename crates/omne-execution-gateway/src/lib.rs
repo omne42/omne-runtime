@@ -5,7 +5,7 @@ mod audit_log;
 mod error;
 mod gateway;
 mod os_serialization;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod path_guard;
 mod policy;
 mod sandbox;
