@@ -1214,7 +1214,7 @@ dependencies = [
 name = "omne-artifact-install-primitives"
 version = "0.1.0"
 dependencies = [
- "cap-std",
+ "flate2",
  "http-kit",
  "omne-archive-primitives",
  "omne-fs-primitives",
@@ -1223,6 +1223,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "xz2",
  "zip",
 ]
 
@@ -1253,7 +1254,6 @@ dependencies = [
  "libc",
  "memchr",
  "omne-fs-primitives",
- "omne-process-primitives",
  "policy-meta",
  "regex",
  "same-file",

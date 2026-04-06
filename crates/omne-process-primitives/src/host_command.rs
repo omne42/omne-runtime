@@ -932,6 +932,8 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::io;
     #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
@@ -941,6 +943,7 @@ mod tests {
 
     #[cfg(unix)]
     use super::command_available_os;
+    use super::command_exists_os;
     #[cfg(unix)]
     use super::ensure_sudo_target_is_available;
     #[cfg(unix)]
@@ -2140,43 +2143,50 @@ mod tests {
 
     #[cfg(unix)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
+        write_shell_executable(
             dir,
             name,
-            "#!/bin/sh\nprintf 'arg=%s\\n' \"$1\"\nprintf 'env=%s\\n' \"$OMNE_TEST_VALUE\"\n",
+            "printf 'arg=%s\\n' \"$1\"\nprintf 'env=%s\\n' \"$OMNE_TEST_VALUE\"\n",
         )
     }
 
     #[cfg(unix)]
     fn write_pwd_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(dir, name, "#!/bin/sh\npwd\n")
+        write_shell_executable(dir, name, "pwd\n")
     }
 
     #[cfg(unix)]
     fn write_count_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
-            dir,
-            name,
-            "#!/bin/sh\nprintf 'run\\n' >> \"$OMNE_COUNT_FILE\"\n",
-        )
+        write_shell_executable(dir, name, "printf 'run\\n' >> \"$OMNE_COUNT_FILE\"\n")
     }
 
     #[cfg(unix)]
     fn write_failing_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
+        write_shell_executable(
             dir,
             name,
-            "#!/bin/sh\nprintf 'stdout-message'\nprintf 'stderr-message' >&2\nexit 7\n",
+            "printf 'stdout-message'\nprintf 'stderr-message' >&2\nexit 7\n",
         )
     }
 
     #[cfg(unix)]
     fn write_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
-            dir,
-            name,
-            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (8 * 1024 * 1024 + 1))\nPY\n",
-        )
+        write_payload_cat_command(dir, name, "stdout", 8 * 1024 * 1024 + 1)
+    }
+
+    #[cfg(unix)]
+    fn write_background_writer_command(dir: &Path, name: &str, stream: &str) -> PathBuf {
+        let body = match stream {
+            "stdout" => "(sleep 2; printf 'late-child\\n') &\nprintf 'parent-ready\\n'\n",
+            "stderr" => "(sleep 2; printf 'late-child\\n' >&2) &\nprintf 'parent-ready\\n' >&2\n",
+            other => panic!("unexpected background stream: {other}"),
+        };
+        write_shell_executable(dir, name, body)
+    }
+
+    #[cfg(unix)]
+    fn write_very_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
+        write_payload_cat_command(dir, name, "stdout", 32 * 1024 * 1024)
     }
 
     #[cfg(unix)]
@@ -2189,20 +2199,43 @@ mod tests {
 
     #[cfg(unix)]
     fn write_exact_limit_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
-            dir,
-            name,
-            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (8 * 1024 * 1024))\nPY\n",
-        )
+        write_payload_cat_command(dir, name, "stdout", 8 * 1024 * 1024)
     }
 
     #[cfg(unix)]
     fn write_large_stderr_command(dir: &Path, name: &str) -> PathBuf {
-        write_unix_executable(
-            dir,
-            name,
-            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stderr.write('x' * (8 * 1024 * 1024 + 1))\nPY\n",
-        )
+        write_payload_cat_command(dir, name, "stderr", 8 * 1024 * 1024 + 1)
+    }
+
+    #[cfg(unix)]
+    fn write_payload_cat_command(dir: &Path, name: &str, stream: &str, size: usize) -> PathBuf {
+        let payload_path = dir.join(format!("{name}.payload"));
+        std::fs::write(&payload_path, vec![b'x'; size]).expect("write payload");
+        let payload = shell_quote_path(&payload_path);
+        let body = match stream {
+            "stdout" => format!("cat {payload}\n"),
+            "stderr" => format!("cat {payload} >&2\n"),
+            other => panic!("unexpected payload stream: {other}"),
+        };
+        write_shell_executable(dir, name, &body)
+    }
+
+    #[cfg(unix)]
+    fn write_shell_executable(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let shell = unix_test_shell_path();
+        write_unix_executable(dir, name, &format!("#!{}\n{body}", shell.display()))
+    }
+
+    #[cfg(unix)]
+    fn unix_test_shell_path() -> PathBuf {
+        crate::command_path::resolve_command_path_or_standard_location_os(OsStr::new("sh"))
+            .expect("resolve test shell")
+    }
+
+    #[cfg(unix)]
+    fn shell_quote_path(path: &Path) -> String {
+        let escaped = path.display().to_string().replace('\'', "'\"'\"'");
+        format!("'{escaped}'")
     }
 
     #[cfg(unix)]
@@ -2266,6 +2299,17 @@ mod tests {
             "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * (8MB + 1); [Console]::Out.Write($s)\"\r\n",
         )
         .expect("write windows loud command");
+        path
+    }
+
+    #[cfg(windows)]
+    fn write_very_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.cmd"));
+        std::fs::write(
+            &path,
+            "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * 32MB; [Console]::Out.Write($s)\"\r\n",
+        )
+        .expect("write windows very loud command");
         path
     }
 
