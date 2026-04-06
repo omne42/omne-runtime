@@ -1,7 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::policy::SandboxPolicy;
 use crate::{Error, Result};
+use omne_fs_primitives::ReadUtf8Error;
 
 const DEFAULT_MAX_POLICY_BYTES: u64 = 4 * 1024 * 1024;
 const HARD_MAX_POLICY_BYTES: u64 = 64 * 1024 * 1024;
@@ -14,35 +15,30 @@ pub enum PolicyFormat {
     Json,
 }
 
-fn open_policy_file(path: &Path) -> Result<std::fs::File> {
-    let file = omne_fs_primitives::open_readonly_nofollow(path).map_err(|err| {
-        if omne_fs_primitives::is_symlink_or_reparse_open_error(&err) {
-            return Error::InvalidPath(format!(
-                "path {} encountered a symlink or symlink resolution loop while opening policy path",
-                path.display()
-            ));
-        }
-        if err.kind() == std::io::ErrorKind::Unsupported {
-            return Error::NotPermitted(
+fn read_policy_utf8(path: &Path, max_bytes: u64) -> Result<String> {
+    let max_bytes_usize = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+    omne_fs_primitives::read_utf8_regular_file_in_ambient_root(path, "policy file", max_bytes_usize)
+        .map_err(|err| map_read_utf8_error(path, err))
+}
+
+fn map_read_utf8_error(path: &Path, err: ReadUtf8Error) -> Error {
+    match err {
+        ReadUtf8Error::Io(err) if err.kind() == std::io::ErrorKind::Unsupported => {
+            Error::NotPermitted(
                 "loading policy files on this platform requires an atomic no-follow open primitive"
                     .to_string(),
-            );
+            )
         }
-        Error::io_path("open", path, err)
-    })?;
-    #[cfg(windows)]
-    {
-        let meta = file
-            .metadata()
-            .map_err(|err| Error::io_path("metadata", path, err))?;
-        if meta.file_type().is_symlink() {
-            return Err(Error::InvalidPath(format!(
-                "path {} final component is a symlink; refusing to load policy via symlink final component",
-                path.display()
-            )));
+        ReadUtf8Error::Io(err) => Error::io_path("open", path, err),
+        ReadUtf8Error::TooLarge { bytes, max_bytes } => Error::FileTooLarge {
+            path: path.to_path_buf(),
+            size_bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
+            max_bytes: u64::try_from(max_bytes).unwrap_or(u64::MAX),
+        },
+        ReadUtf8Error::InvalidUtf8(err) => {
+            Error::invalid_utf8(path.to_path_buf(), err.utf8_error())
         }
     }
-    Ok(file)
 }
 
 pub fn parse_policy(raw: &str, format: PolicyFormat) -> Result<SandboxPolicy> {
@@ -123,43 +119,8 @@ fn load_policy_limited_inner(
         )));
     }
 
-    let mut file = open_policy_file(path)?;
-    let meta = file
-        .metadata()
-        .map_err(|err| Error::io_path("metadata", path, err))?;
-    if !meta.is_file() {
-        return Err(Error::InvalidPath(format!(
-            "path {} is not a regular file",
-            path.display()
-        )));
-    }
-    let meta_len = meta.len();
-    if meta_len > max_bytes {
-        return Err(Error::FileTooLarge {
-            path: path.to_path_buf(),
-            size_bytes: meta_len,
-            max_bytes,
-        });
-    }
-
-    let (bytes, truncated) = omne_fs_primitives::read_to_end_limited_with_capacity(
-        &mut file,
-        usize::try_from(max_bytes).unwrap_or(usize::MAX),
-        initial_policy_capacity(meta_len, max_bytes),
-    )
-    .map_err(|err| Error::io_path("read", path, err))?;
-    if truncated {
-        let read_size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        return Err(Error::FileTooLarge {
-            path: path.to_path_buf(),
-            size_bytes: read_size,
-            max_bytes,
-        });
-    }
-
-    let raw =
-        std::str::from_utf8(&bytes).map_err(|err| Error::invalid_utf8(path.to_path_buf(), err))?;
-    let parsed = parse_policy(raw, format);
+    let raw = read_policy_utf8(path, max_bytes)?;
+    let parsed = parse_policy(&raw, format);
     if inferred_default_toml {
         return parsed.map_err(|err| match err {
             Error::InvalidPolicy(msg) => Error::InvalidPolicy(format!(
@@ -181,9 +142,13 @@ fn initial_policy_capacity(meta_len: u64, max_bytes: u64) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{PolicyFormat, initial_policy_capacity, parse_policy, parse_policy_unvalidated};
+    use super::{
+        PolicyFormat, initial_policy_capacity, load_policy_limited, parse_policy,
+        parse_policy_unvalidated,
+    };
 
     use policy_meta::{Decision, ExecutionIsolation, RiskProfile};
+    use tempfile::tempdir;
 
     #[test]
     fn initial_policy_capacity_keeps_small_values() {
@@ -302,6 +267,43 @@ decision = "prompt"
         assert_eq!(
             parsed.roots[1].write_scope,
             policy_meta::WriteScope::ReadOnly
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_policy_limited_rejects_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).expect("mkdir real");
+        std::fs::write(real.join("policy.toml"), "[permissions]\nread = true\n")
+            .expect("write policy");
+        symlink(&real, dir.path().join("linked")).expect("create symlink");
+
+        let err = load_policy_limited(dir.path().join("linked").join("policy.toml"), 1024)
+            .expect_err("symlinked ancestor must fail");
+
+        match err {
+            Error::IoPath { .. } | Error::InvalidPath(_) => {}
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn load_policy_limited_keeps_missing_parent_side_effect_free() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("policy.toml");
+
+        let err = load_policy_limited(&path, 1024).expect_err("missing policy should fail");
+        match err {
+            Error::IoPath { path: err_path, .. } => assert_eq!(err_path, PathBuf::from(&path)),
+            other => panic!("unexpected error: {other}"),
+        }
+        assert!(
+            !path.parent().expect("policy parent").exists(),
+            "load_policy_limited must not create parent directories"
         );
     }
 }

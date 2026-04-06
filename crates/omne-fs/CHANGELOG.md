@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `policy_io` now routes policy-file reads through `omne-fs-primitives`
+  ancestor-safe ambient-root helpers, so symlinked parent directories fail closed and missing
+  parent chains stay side-effect free instead of relying on a leaf-only no-follow open.
 - `Context::glob_paths` and `Context::grep` now stay compiled when the `glob` or `grep`
   cargo feature is disabled, so the public API once again matches the documented contract:
   callers get deterministic `Error::NotPermitted` instead of an external compile failure.
