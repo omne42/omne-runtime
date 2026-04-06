@@ -1549,9 +1549,18 @@ mod tests {
 
     #[test]
     fn request_scoped_relative_path_entries_follow_relative_working_directory() {
+        struct CurrentDirGuard(PathBuf);
+
+        impl Drop for CurrentDirGuard {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+
         let _lock = current_dir_lock().lock().expect("lock current_dir");
         let temp = tempfile::tempdir().expect("tempdir");
         let original_cwd = std::env::current_dir().expect("current_dir");
+        let _restore_current_dir = CurrentDirGuard(original_cwd);
         std::env::set_current_dir(temp.path()).expect("set current_dir");
 
         {
@@ -1571,8 +1580,15 @@ mod tests {
             assert!(command_exists_for_request(&request));
             assert!(command_available_for_request(&request));
             assert_eq!(
-                resolve_program_for_direct_spawn(&request),
-                temp.path().join("cwd").join("bin").join("pwd")
+                resolve_program_for_direct_spawn(&request)
+                    .canonicalize()
+                    .expect("canonicalize resolved program"),
+                temp.path()
+                    .join("cwd")
+                    .join("bin")
+                    .join("pwd")
+                    .canonicalize()
+                    .expect("canonicalize expected program")
             );
 
             let output = run_host_command(&request).expect("run request-scoped PATH command");
@@ -1580,8 +1596,6 @@ mod tests {
             let stdout = String::from_utf8_lossy(&output.output.stdout);
             assert!(stdout.contains(&temp.path().join("cwd").display().to_string()));
         }
-
-        std::env::set_current_dir(original_cwd).expect("restore current_dir");
     }
 
     #[cfg(unix)]
