@@ -241,7 +241,7 @@ where
         .seek(SeekFrom::Start(0))
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     verify_sha256_reader(reader, expected_sha256)
-        .map_err(|err| ArtifactInstallError::download(err.to_string()))
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))
 }
 
 fn archive_download_stage_options() -> AtomicWriteOptions {
@@ -460,6 +460,52 @@ mod tests {
         assert_eq!(std::fs::read(&destination)?, good_binary);
 
         handle.join().expect("mock server thread join");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_binary_checksum_failure_is_reported_as_install_error()
+    -> Result<(), Box<dyn Error>> {
+        let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let expected_sha256 = hash_sha256(b"good-binary");
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join(&asset_name);
+        let canonical_url = format!("https://example.invalid/{asset_name}");
+        let downloader = StubDownloader {
+            routes: HashMap::from([(canonical_url.clone(), b"bad-binary".to_vec())]),
+        };
+
+        let err = download_binary_to_destination(
+            &downloader,
+            &[ArtifactDownloadCandidate {
+                url: canonical_url.clone(),
+                kind: ArtifactDownloadCandidateKind::Canonical,
+            }],
+            &DownloadBinaryRequest {
+                canonical_url: &canonical_url,
+                destination: &destination,
+                asset_name: &asset_name,
+                expected_sha256: Some(&expected_sha256),
+                max_download_bytes: None,
+            },
+        )
+        .await
+        .expect_err("checksum mismatch must fail");
+
+        assert_eq!(
+            err.kind(),
+            crate::artifact_download::ArtifactInstallErrorKind::Install
+        );
+        assert_eq!(err.candidate_failures().len(), 1);
+        assert_eq!(
+            err.candidate_failures()[0].kind(),
+            crate::artifact_download::ArtifactInstallErrorKind::Install
+        );
+        assert!(
+            err.to_string()
+                .contains("at least one candidate reached install phase"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 
