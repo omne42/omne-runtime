@@ -21,6 +21,7 @@ Reusable artifact download and install primitives shared by higher-level callers
 - archive-tree installation via `omne-fs-primitives` staged directory replacement plus exported extracted-byte and entry-count budgets
 - archive-tree link extraction that fails closed if the staged destination root or any staged parent directory chain component is a symlink ancestor
 - archive-tree regular-file, symlink, and hard-link materialization through `omne-fs-primitives` capability directories so staged extraction never trusts ambient leaf paths
+- archive-tree staging now clones the bound staged directory handle directly into extraction, so parent-path swaps after staging cannot retarget unzip/untar writes or the final replace step
 - Unix zip symlink materialization and tar forward hard-link resolution inside the staged tree
 
 ## Non-Goals

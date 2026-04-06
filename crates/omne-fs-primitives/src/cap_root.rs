@@ -16,15 +16,25 @@ pub enum MissingRootPolicy {
     Create,
 }
 
+#[derive(Debug)]
 pub struct RootDir {
     path: PathBuf,
     dir: Dir,
 }
 
 impl RootDir {
+    pub(crate) fn from_parts(path: PathBuf, dir: Dir) -> Self {
+        Self { path, dir }
+    }
+
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    #[must_use]
+    pub fn dir(&self) -> &Dir {
+        &self.dir
     }
 
     pub fn into_dir(self) -> Dir {
