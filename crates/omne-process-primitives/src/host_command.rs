@@ -28,19 +28,10 @@ pub enum HostCommandExecution {
     Sudo,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct HostCommandRunOptions<'a> {
     pub env_remove: &'a [OsString],
     pub timeout: Option<Duration>,
-}
-
-impl Default for HostCommandRunOptions<'_> {
-    fn default() -> Self {
-        Self {
-            env_remove: &[],
-            timeout: None,
-        }
-    }
 }
 
 impl<'a> HostCommandRunOptions<'a> {
