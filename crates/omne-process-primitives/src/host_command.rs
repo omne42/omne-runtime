@@ -2221,11 +2221,6 @@ mod tests {
         path
     }
 
-    #[cfg(unix)]
-    fn relative_command_path(name: &str) -> String {
-        format!("./{name}")
-    }
-
     #[cfg(windows)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(format!("{name}.cmd"));
