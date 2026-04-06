@@ -693,7 +693,8 @@ mod tests {
         let err = load_request(&link).expect_err("symlink request should fail closed");
         assert!(
             err.contains("Too many levels of symbolic links")
-                || err.contains("target file must be a regular file"),
+                || err.contains("target file must be a regular file")
+                || err.contains("path is not a regular file"),
             "unexpected error: {err}"
         );
     }
@@ -720,7 +721,8 @@ mod tests {
                 || err.contains("failed to open file")
                 || err.contains("No such file")
                 || err.contains("target file must be a regular file")
-                || err.contains("must not traverse symlinks"),
+                || err.contains("must not traverse symlinks")
+                || err.contains("path must not traverse symlink or reparse-point ancestors"),
             "unexpected error: {err}"
         );
     }
@@ -736,7 +738,8 @@ mod tests {
         assert!(
             err.contains("No such device or address")
                 || err.contains("Operation not supported on socket")
-                || err.contains("target file must be a regular file"),
+                || err.contains("target file must be a regular file")
+                || err.contains("path is not a regular file"),
             "unexpected error: {err}"
         );
     }
