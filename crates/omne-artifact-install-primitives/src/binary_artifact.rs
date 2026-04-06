@@ -547,7 +547,9 @@ mod tests {
     fn archive_binary_missing_target_surfaces_structured_detail() -> Result<(), Box<dyn Error>> {
         let archive = make_zip_archive(&[("demo/bin/other", b"good-binary", 0o755)])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp.path().join(format!("demo{}", std::env::consts::EXE_SUFFIX));
+        let destination = temp
+            .path()
+            .join(format!("demo{}", std::env::consts::EXE_SUFFIX));
 
         let err = install_binary_from_archive(
             "demo.zip",
