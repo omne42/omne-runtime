@@ -89,12 +89,12 @@ fn is_permitted_platform_root_alias(_: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::reject_forbidden_path_ancestors;
-
     #[cfg(unix)]
     #[test]
     fn rejects_symlink_parent_directory() {
         use std::os::unix::fs::symlink;
+
+        use super::reject_forbidden_path_ancestors;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let real_parent = dir.path().join("real");

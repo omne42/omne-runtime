@@ -135,14 +135,14 @@ fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, std::io::E
     reject_forbidden_path_ancestors(path)
         .map_err(|detail| std::io::Error::new(std::io::ErrorKind::InvalidInput, detail))?;
 
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Some(existing_parent) = existing_ancestor(parent) {
-                ensure_existing_directory(existing_parent).map_err(io_error_from_box)?;
-            }
-            fs::create_dir_all(parent)?;
-            ensure_existing_directory(parent).map_err(io_error_from_box)?;
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        if let Some(existing_parent) = existing_ancestor(parent) {
+            ensure_existing_directory(existing_parent).map_err(io_error_from_box)?;
         }
+        fs::create_dir_all(parent)?;
+        ensure_existing_directory(parent).map_err(io_error_from_box)?;
     }
     if path.exists() {
         ensure_existing_regular_file_path(path).map_err(io_error_from_box)?;
@@ -160,7 +160,7 @@ fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, std::io::E
             .truncate(false)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         let file = options.open(path)?;
-        return ensure_regular_file(path, file).map_err(io_error_from_box);
+        ensure_regular_file(path, file).map_err(io_error_from_box)
     }
 
     #[cfg(windows)]
@@ -176,7 +176,7 @@ fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, std::io::E
             .truncate(false)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
         let file = options.open(path)?;
-        return ensure_regular_file(path, file).map_err(io_error_from_box);
+        ensure_regular_file(path, file).map_err(io_error_from_box)
     }
 
     #[cfg(all(not(unix), not(windows)))]
