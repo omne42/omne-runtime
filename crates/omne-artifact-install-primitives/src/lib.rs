@@ -21,8 +21,7 @@ pub use archive_tree::{
 };
 pub use artifact_download::{
     ArtifactCandidateFailure, ArtifactDownloadCandidate, ArtifactDownloadCandidateKind,
-    ArtifactDownloader, ArtifactInstallError, ArtifactInstallErrorDetail,
-    ArtifactInstallErrorKind,
+    ArtifactDownloader, ArtifactInstallError, ArtifactInstallErrorDetail, ArtifactInstallErrorKind,
 };
 pub use binary_artifact::{
     BinaryArchiveInstallRequest, DownloadBinaryRequest, InstalledArchiveBinary,

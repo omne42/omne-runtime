@@ -313,9 +313,9 @@ pub(crate) fn failed_candidates_error(
         .flatten();
     let canonical_url = redact_url_for_error(canonical_url);
     let message = match kind {
-        ArtifactInstallErrorKind::Download => format!(
-            "all artifact download candidates failed for {canonical_url}: {details}"
-        ),
+        ArtifactInstallErrorKind::Download => {
+            format!("all artifact download candidates failed for {canonical_url}: {details}")
+        }
         ArtifactInstallErrorKind::Install => format!(
             "all artifact candidates failed for {canonical_url}; at least one candidate reached install phase: {details}"
         ),
@@ -501,7 +501,8 @@ mod tests {
                 kind: ArtifactInstallErrorKind::Install,
                 candidate_kind: ArtifactDownloadCandidateKind::Canonical,
                 redacted_url: "https://example.invalid/demo.zip".to_string(),
-                message: "canonical:https://example.invalid/demo.zip -> archive missing".to_string(),
+                message: "canonical:https://example.invalid/demo.zip -> archive missing"
+                    .to_string(),
                 detail: Some(ArtifactInstallErrorDetail::ArchiveBinaryNotFound {
                     archive_format: omne_archive_primitives::BinaryArchiveFormat::Zip,
                     binary_name: "demo".to_string(),
