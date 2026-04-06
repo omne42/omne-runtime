@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- rewrite authoritative audit events to `Deny` when final pre-spawn path/identity revalidation
+  fails, so `RequestPathChanged` and related fail-closed errors no longer emit contradictory
+  `decision=Run` records
 - make audit-log sink validation/opening fail closed when any existing ancestor in the target path
   is a symlink/reparse point or a non-directory, so nested existing descendants cannot hide an
   unsafe earlier path component behind a "nearest existing ancestor" check

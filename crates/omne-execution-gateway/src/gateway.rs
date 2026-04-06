@@ -190,8 +190,14 @@ impl PreparedCommand {
                 event: event.clone(),
                 audit_sink: self.audit_sink.take(),
             });
+        let audit_event = match &result {
+            Ok(_) => event.clone(),
+            Err(err) => event_for_post_preflight_error(event.clone(), err),
+        };
         let audit_result = match (&result, self.audit_sink.as_mut()) {
-            (Err(err), Some(audit_sink)) => audit_sink.write_execution_error_record(&event, err),
+            (Err(err), Some(audit_sink)) => {
+                audit_sink.write_execution_error_record(&audit_event, err)
+            }
             _ => Ok(()),
         };
         combine_result_with_audit_write(result, audit_result)
@@ -295,7 +301,11 @@ impl ExecGateway {
                             event.sandbox_runtime = sandbox_runtime;
                             (event, Ok(status), audit_sink.take())
                         }
-                        Err(err) => (prepared.event, Err(err), audit_sink.take()),
+                        Err(err) => (
+                            event_for_post_preflight_error(prepared.event, &err),
+                            Err(err),
+                            audit_sink.take(),
+                        ),
                     }
                 }
                 Err(err) => {
@@ -1498,6 +1508,36 @@ fn audit_error_already_reported<T>(result: &ExecResult<T>) -> bool {
             | ExecError::AuditLogWriteFailed { .. }
             | ExecError::AuditLogWriteFailedAfterExecutionError { .. })
     )
+}
+
+fn event_for_post_preflight_error(mut event: ExecEvent, err: &ExecError) -> ExecEvent {
+    let Some(reason) = post_preflight_denial_reason(err) else {
+        return event;
+    };
+    event.decision = ExecDecision::Deny;
+    event.reason = Some(reason.to_string());
+    event
+}
+
+fn post_preflight_denial_reason(err: &ExecError) -> Option<&'static str> {
+    match err {
+        ExecError::PathIdentityUnavailable {
+            kind: "program", ..
+        }
+        | ExecError::RequestPathChanged {
+            kind: "program", ..
+        } => Some("program_path_invalid"),
+        ExecError::CwdOutsideWorkspace { .. }
+        | ExecError::PathIdentityUnavailable {
+            kind: "cwd" | "workspace_root",
+            ..
+        }
+        | ExecError::RequestPathChanged {
+            kind: "cwd" | "workspace_root",
+            ..
+        } => Some("cwd_outside_workspace"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -3277,6 +3317,49 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn post_preflight_request_path_errors_flip_event_to_deny() {
+        let event = ExecEvent {
+            decision: ExecDecision::Run,
+            requested_isolation: host_supported_test_isolation(),
+            requested_policy_meta: requested_policy_meta(host_supported_test_isolation()),
+            supported_isolation: host_supported_test_isolation(),
+            program: OsString::from("echo"),
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: PathBuf::from("."),
+            workspace_root: PathBuf::from("."),
+            declared_mutation: false,
+            reason: None,
+            sandbox_runtime: None,
+        };
+
+        let program_event = event_for_post_preflight_error(
+            event.clone(),
+            &ExecError::RequestPathChanged {
+                kind: "program",
+                path: PathBuf::from("/tmp/tool"),
+                detail: "file identity changed".to_string(),
+            },
+        );
+        assert_eq!(program_event.decision, ExecDecision::Deny);
+        assert_eq!(
+            program_event.reason.as_deref(),
+            Some("program_path_invalid")
+        );
+
+        let cwd_event = event_for_post_preflight_error(
+            event,
+            &ExecError::RequestPathChanged {
+                kind: "cwd",
+                path: PathBuf::from("/tmp/cwd"),
+                detail: "directory identity changed".to_string(),
+            },
+        );
+        assert_eq!(cwd_event.decision, ExecDecision::Deny);
+        assert_eq!(cwd_event.reason.as_deref(), Some("cwd_outside_workspace"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn prepared_command_fails_closed_when_program_identity_changes_before_spawn() {
@@ -3285,11 +3368,15 @@ mod tests {
             enforce_allowlisted_program_for_mutation: false,
             ..GatewayPolicy::default()
         };
+        let workspace = tempdir().expect("create temp workspace");
+        let audit_path = workspace.path().join("audit.jsonl");
         let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
+            GatewayPolicy {
+                audit_log_path: Some(audit_path.clone()),
+                ..policy
+            },
             host_supported_test_isolation(),
         );
-        let workspace = tempdir().expect("create temp workspace");
         let program = workspace.path().join("tool.sh");
         let replacement = workspace.path().join("tool-replacement.sh");
         write_unix_shell_executable(&program, "exit 0\n");
@@ -3318,6 +3405,14 @@ mod tests {
             ExecError::RequestPathChanged { kind, .. } => assert_eq!(kind, "program"),
             other => panic!("unexpected error: {other}"),
         }
+
+        let audit = fs::read_to_string(audit_path).expect("read audit log");
+        let record: serde_json::Value =
+            serde_json::from_str(audit.lines().last().expect("execution error record"))
+                .expect("parse audit record");
+        assert_eq!(record["event"]["decision"], "deny");
+        assert_eq!(record["event"]["reason"], "program_path_invalid");
+        assert_eq!(record["result"]["status"], "execution_error");
     }
 
     #[test]
@@ -3624,11 +3719,15 @@ mod tests {
             enforce_allowlisted_program_for_mutation: false,
             ..GatewayPolicy::default()
         };
+        let workspace = tempdir().expect("create temp workspace");
+        let audit_path = workspace.path().join("audit.jsonl");
         let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
+            GatewayPolicy {
+                audit_log_path: Some(audit_path.clone()),
+                ..policy
+            },
             host_supported_test_isolation(),
         );
-        let workspace = tempdir().expect("create temp workspace");
         let cwd = workspace.path().join("cwd");
         let moved = workspace.path().join("cwd-moved");
         fs::create_dir_all(&cwd).expect("create cwd");
@@ -3656,6 +3755,14 @@ mod tests {
             ExecError::RequestPathChanged { kind, .. } => assert_eq!(kind, "cwd"),
             other => panic!("unexpected error: {other}"),
         }
+
+        let audit = fs::read_to_string(audit_path).expect("read audit log");
+        let record: serde_json::Value =
+            serde_json::from_str(audit.lines().last().expect("execution error record"))
+                .expect("parse audit record");
+        assert_eq!(record["event"]["decision"], "deny");
+        assert_eq!(record["event"]["reason"], "cwd_outside_workspace");
+        assert_eq!(record["result"]["status"], "execution_error");
     }
 
     #[cfg(windows)]
