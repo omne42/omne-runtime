@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_std::ambient_authority;
 use cap_std::fs::OpenOptions;
 pub use cap_std::fs::{Dir, File};
@@ -203,6 +203,7 @@ pub fn open_regular_file_at(directory: &Dir, component: &Path) -> io::Result<Fil
     let mut options = OpenOptions::new();
     options.read(true);
     options.follow(FollowSymlinks::No);
+    options.nonblock(true);
     let file = match directory.open_with(component, &options) {
         Ok(file) => file,
         Err(error) => {
@@ -651,6 +652,24 @@ mod tests {
 
         let error =
             open_regular_file_at(&root, Path::new("nested")).expect_err("directory is not a file");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_file_at_rejects_fifos_without_blocking() {
+        let temp = TempDir::new().expect("temp dir");
+        let root = Dir::open_ambient_dir(temp.path(), ambient_authority()).expect("open temp dir");
+        let fifo_path = temp.path().join("policy.toml");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("spawn mkfifo");
+        assert!(status.success(), "mkfifo failed: {status}");
+
+        let error =
+            open_regular_file_at(&root, Path::new("policy.toml")).expect_err("fifo is not a file");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }

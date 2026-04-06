@@ -41,6 +41,15 @@ fn open_policy_file(path: &Path) -> Result<omne_fs_primitives::File> {
         )
     })?;
 
+    if let Ok(metadata) = root.dir().symlink_metadata(Path::new(leaf))
+        && metadata.file_type().is_symlink()
+    {
+        return Err(Error::InvalidPath(format!(
+            "path {} is not a safe regular policy file: target file must not be a symlink or reparse point",
+            path.display()
+        )));
+    }
+
     open_regular_file_at(root.dir(), Path::new(leaf))
         .map_err(|err| map_policy_path_error(path, "open", err))
 }

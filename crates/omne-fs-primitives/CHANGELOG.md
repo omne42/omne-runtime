@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- make `open_regular_file_at` use non-blocking no-follow opens so FIFOs and other special files fail closed instead of hanging callers before regular-file validation
 - report staged directory replace backup cleanup failures as post-commit errors so callers can tell the destination already switched
 - call `fs2::FileExt::unlock` with fully qualified syntax so future stdlib name-collision lints do not break `-D warnings` builds
 - narrow macOS root-alias normalization to the known `/var` and `/tmp` aliases instead of trusting any first-component symlink under `/`
