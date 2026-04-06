@@ -381,12 +381,17 @@ mod tests {
     fn request_resolution_tracks_effective_isolation_and_provenance() {
         let request =
             ExecRequest::new("echo", vec!["hi"], ".", ExecutionIsolation::BestEffort, ".")
-                .with_declared_mutation(true);
+                .with_declared_mutation(true)
+                .with_env([(OsString::from("LANG"), OsString::from("C"))]);
 
         let resolution = RequestResolution::from_request(&request, ExecutionIsolation::BestEffort);
 
         assert_eq!(resolution.program, OsString::from("echo"));
         assert_eq!(resolution.args, vec![OsString::from("hi")]);
+        assert_eq!(
+            resolution.env,
+            vec![(OsString::from("LANG"), OsString::from("C"))]
+        );
         assert_eq!(
             resolution.input_required_isolation,
             Some(ExecutionIsolation::BestEffort)
@@ -437,6 +442,41 @@ mod tests {
             }])
         );
         assert_eq!(value["input_required_isolation"], "best_effort");
+    }
+
+    #[test]
+    fn request_resolution_serializes_environment_fields() {
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            ".",
+            ExecutionIsolation::BestEffort,
+            ".",
+        )
+        .with_env([(OsString::from("LANG"), OsString::from("C"))]);
+        let resolution = RequestResolution::from_request(&request, ExecutionIsolation::BestEffort);
+
+        let value = serde_json::to_value(&resolution).expect("serialize resolution");
+        assert_eq!(
+            value["env"],
+            serde_json::json!([{
+                "name": "LANG",
+                "value": "C"
+            }])
+        );
+        assert_eq!(
+            value["env_exact"],
+            serde_json::json!([{
+                "name": {
+                    "encoding": "utf8",
+                    "value": "LANG"
+                },
+                "value": {
+                    "encoding": "utf8",
+                    "value": "C"
+                }
+            }])
+        );
     }
 
     #[cfg(unix)]
