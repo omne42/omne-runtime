@@ -1115,10 +1115,9 @@ mod tests {
         resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
         should_try_sudo_with_status,
     };
-    use super::{
-        run_host_command_with_capture_options, run_host_command_with_options,
-        run_host_recipe_with_options,
-    };
+    use super::run_host_command_with_capture_options;
+    #[cfg(unix)]
+    use super::{run_host_command_with_options, run_host_recipe_with_options};
 
     #[test]
     fn command_probe_reports_missing_command_as_absent() {
