@@ -904,10 +904,15 @@ mod tests {
         std::fs::create_dir_all(&destination).expect("mkdir destination");
         std::fs::write(destination.join("old.txt"), b"old").expect("seed file");
 
-        let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+        let mut staged =
+            stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
             .expect("stage directory");
         std::fs::create_dir_all(staged.path().join("bin")).expect("mkdir staged");
         std::fs::write(staged.path().join("bin/tool"), b"new").expect("write staged file");
+        let staged_root = staged.staged_root.as_ref().expect("staged directory missing");
+        super::validate_staged_directory(staged_root.dir(), &staged.staged_path)
+            .expect("validate staged directory");
+        let _ = staged.staged_root.take();
 
         let err = super::commit_replace_directory_with_backup_root_cleanup(
             &staged.parent_root,
