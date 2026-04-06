@@ -10,6 +10,8 @@
 - 高层文件系统 request/response 模型。
 - `read`、`write`、`edit`、`patch`、`delete`、`list_dir`、`glob`、`grep`、`stat`、`mkdir`、`copy`、`move`。
 - policy I/O、CLI 和相关集成测试。
+- policy I/O 继续通过 `omne-fs-primitives` 的 ambient-root regular-file helper 打开策略文件；
+  祖先 symlink/reparse-point 和非 regular file 都会 fail-closed 拒绝，而不是只保护最终叶子。
 - 输出 redaction 与 secret deny 逻辑。
 - 对会创建或替换路径的写操作，重校验父目录/源对象身份；无法可靠验证时 fail-closed，而不是降级成 best-effort 成功。
 

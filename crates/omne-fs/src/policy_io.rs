@@ -2,47 +2,19 @@ use std::path::Path;
 
 use crate::policy::SandboxPolicy;
 use crate::{Error, Result};
+use omne_fs_primitives::ReadUtf8Error;
 
 const DEFAULT_MAX_POLICY_BYTES: u64 = 4 * 1024 * 1024;
 const HARD_MAX_POLICY_BYTES: u64 = 64 * 1024 * 1024;
+#[cfg(test)]
 const DEFAULT_INITIAL_POLICY_CAPACITY: usize = 8 * 1024;
+#[cfg(test)]
 const MAX_INITIAL_POLICY_CAPACITY: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyFormat {
     Toml,
     Json,
-}
-
-fn open_policy_file(path: &Path) -> Result<std::fs::File> {
-    let file = omne_fs_primitives::open_readonly_nofollow(path).map_err(|err| {
-        if omne_fs_primitives::is_symlink_or_reparse_open_error(&err) {
-            return Error::InvalidPath(format!(
-                "path {} encountered a symlink or symlink resolution loop while opening policy path",
-                path.display()
-            ));
-        }
-        if err.kind() == std::io::ErrorKind::Unsupported {
-            return Error::NotPermitted(
-                "loading policy files on this platform requires an atomic no-follow open primitive"
-                    .to_string(),
-            );
-        }
-        Error::io_path("open", path, err)
-    })?;
-    #[cfg(windows)]
-    {
-        let meta = file
-            .metadata()
-            .map_err(|err| Error::io_path("metadata", path, err))?;
-        if meta.file_type().is_symlink() {
-            return Err(Error::InvalidPath(format!(
-                "path {} final component is a symlink; refusing to load policy via symlink final component",
-                path.display()
-            )));
-        }
-    }
-    Ok(file)
 }
 
 pub fn parse_policy(raw: &str, format: PolicyFormat) -> Result<SandboxPolicy> {
@@ -98,7 +70,7 @@ fn detect_policy_format(path: &Path) -> Result<(PolicyFormat, bool)> {
 ///
 /// For no-extension paths, TOML is inferred by default.
 ///
-/// This rejects symlink targets for the final path component and non-regular files
+/// This rejects symlink/reparse-point ancestor traversal and non-regular files
 /// (FIFOs, sockets, device nodes) to avoid blocking behavior and related DoS risks.
 pub fn load_policy_limited(path: impl AsRef<Path>, max_bytes: u64) -> Result<SandboxPolicy> {
     let path = path.as_ref();
@@ -123,43 +95,8 @@ fn load_policy_limited_inner(
         )));
     }
 
-    let mut file = open_policy_file(path)?;
-    let meta = file
-        .metadata()
-        .map_err(|err| Error::io_path("metadata", path, err))?;
-    if !meta.is_file() {
-        return Err(Error::InvalidPath(format!(
-            "path {} is not a regular file",
-            path.display()
-        )));
-    }
-    let meta_len = meta.len();
-    if meta_len > max_bytes {
-        return Err(Error::FileTooLarge {
-            path: path.to_path_buf(),
-            size_bytes: meta_len,
-            max_bytes,
-        });
-    }
-
-    let (bytes, truncated) = omne_fs_primitives::read_to_end_limited_with_capacity(
-        &mut file,
-        usize::try_from(max_bytes).unwrap_or(usize::MAX),
-        initial_policy_capacity(meta_len, max_bytes),
-    )
-    .map_err(|err| Error::io_path("read", path, err))?;
-    if truncated {
-        let read_size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        return Err(Error::FileTooLarge {
-            path: path.to_path_buf(),
-            size_bytes: read_size,
-            max_bytes,
-        });
-    }
-
-    let raw =
-        std::str::from_utf8(&bytes).map_err(|err| Error::invalid_utf8(path.to_path_buf(), err))?;
-    let parsed = parse_policy(raw, format);
+    let raw = read_policy_text(path, max_bytes)?;
+    let parsed = parse_policy(&raw, format);
     if inferred_default_toml {
         return parsed.map_err(|err| match err {
             Error::InvalidPolicy(msg) => Error::InvalidPolicy(format!(
@@ -171,6 +108,31 @@ fn load_policy_limited_inner(
     parsed
 }
 
+fn read_policy_text(path: &Path, max_bytes: u64) -> Result<String> {
+    let max_bytes = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+    omne_fs_primitives::read_utf8_regular_file_in_ambient_root(path, "policy file", max_bytes)
+        .map_err(|err| map_policy_read_error(path, err, max_bytes))
+}
+
+fn map_policy_read_error(path: &Path, err: ReadUtf8Error, max_bytes: usize) -> Error {
+    match err {
+        ReadUtf8Error::Io(source) if source.kind() == std::io::ErrorKind::InvalidInput => {
+            Error::InvalidPath(format!(
+                "path {} is not a regular file or traverses a symlink/reparse-point ancestor: {source}",
+                path.display()
+            ))
+        }
+        ReadUtf8Error::Io(source) => Error::io_path("read", path, source),
+        ReadUtf8Error::TooLarge { bytes, .. } => Error::FileTooLarge {
+            path: path.to_path_buf(),
+            size_bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
+            max_bytes: u64::try_from(max_bytes).unwrap_or(u64::MAX),
+        },
+        ReadUtf8Error::InvalidUtf8(source) => Error::invalid_utf8(path.to_path_buf(), source),
+    }
+}
+
+#[cfg(test)]
 fn initial_policy_capacity(meta_len: u64, max_bytes: u64) -> usize {
     usize::try_from(meta_len.min(max_bytes))
         .ok()
@@ -182,8 +144,10 @@ fn initial_policy_capacity(meta_len: u64, max_bytes: u64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{PolicyFormat, initial_policy_capacity, parse_policy, parse_policy_unvalidated};
+    use crate::Error;
 
     use policy_meta::{Decision, ExecutionIsolation, RiskProfile};
+    use tempfile::tempdir;
 
     #[test]
     fn initial_policy_capacity_keeps_small_values() {
@@ -303,5 +267,28 @@ decision = "prompt"
             parsed.roots[1].write_scope,
             policy_meta::WriteScope::ReadOnly
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_policy_rejects_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).expect("mkdir real");
+        let policy_path = real.join("policy.toml");
+        std::fs::write(
+            &policy_path,
+            "[[roots]]\nid = \"workspace\"\npath = \"/tmp\"\nwrite_scope = \"read_only\"\n",
+        )
+        .expect("write policy");
+        let alias = dir.path().join("alias");
+        symlink(&real, &alias).expect("create symlink");
+
+        let err =
+            super::load_policy(alias.join("policy.toml")).expect_err("symlink ancestor must fail");
+
+        assert!(matches!(err, Error::InvalidPath(_)));
     }
 }
