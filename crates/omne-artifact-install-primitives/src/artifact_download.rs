@@ -3,6 +3,7 @@ use std::future::Future;
 use std::io::Write;
 
 use http_kit::write_response_body_limited;
+use omne_archive_primitives::{BinaryArchiveFormat, ExtractBinaryFromArchiveError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactDownloadCandidateKind {
@@ -34,15 +35,125 @@ pub enum ArtifactInstallErrorKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CandidateFailure {
-    pub(crate) kind: ArtifactInstallErrorKind,
-    pub(crate) message: String,
+pub enum ArtifactInstallErrorDetail {
+    UnsupportedArchiveType {
+        asset_name: String,
+    },
+    ArchiveRead {
+        archive_format: BinaryArchiveFormat,
+        stage: &'static str,
+        detail: String,
+    },
+    ArchiveBinaryNotFound {
+        archive_format: BinaryArchiveFormat,
+        binary_name: String,
+    },
+    ArchiveMatchedEntryNotRegularFile {
+        archive_format: BinaryArchiveFormat,
+        archive_path: String,
+    },
+    ArchiveExtractionBudgetExceeded {
+        archive_format: BinaryArchiveFormat,
+        archive_path: String,
+        limit_bytes: u64,
+    },
+    ArchiveScanBudgetExceeded {
+        archive_format: BinaryArchiveFormat,
+        limit_entries: u64,
+    },
+}
+
+impl ArtifactInstallErrorDetail {
+    pub(crate) fn from_extract_binary_error(error: ExtractBinaryFromArchiveError) -> Self {
+        match error {
+            ExtractBinaryFromArchiveError::UnsupportedArchiveType { asset_name } => {
+                Self::UnsupportedArchiveType { asset_name }
+            }
+            ExtractBinaryFromArchiveError::ArchiveRead {
+                archive_format,
+                stage,
+                detail,
+            } => Self::ArchiveRead {
+                archive_format,
+                stage,
+                detail,
+            },
+            ExtractBinaryFromArchiveError::BinaryNotFound {
+                archive_format,
+                binary_name,
+            } => Self::ArchiveBinaryNotFound {
+                archive_format,
+                binary_name,
+            },
+            ExtractBinaryFromArchiveError::MatchedEntryNotRegularFile {
+                archive_format,
+                archive_path,
+            } => Self::ArchiveMatchedEntryNotRegularFile {
+                archive_format,
+                archive_path,
+            },
+            ExtractBinaryFromArchiveError::ExtractionBudgetExceeded {
+                archive_format,
+                archive_path,
+                limit_bytes,
+            } => Self::ArchiveExtractionBudgetExceeded {
+                archive_format,
+                archive_path,
+                limit_bytes,
+            },
+            ExtractBinaryFromArchiveError::ArchiveScanBudgetExceeded {
+                archive_format,
+                limit_entries,
+            } => Self::ArchiveScanBudgetExceeded {
+                archive_format,
+                limit_entries,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactCandidateFailure {
+    kind: ArtifactInstallErrorKind,
+    candidate_kind: ArtifactDownloadCandidateKind,
+    redacted_url: String,
+    message: String,
+    detail: Option<ArtifactInstallErrorDetail>,
+}
+
+impl ArtifactCandidateFailure {
+    #[must_use]
+    pub const fn kind(&self) -> ArtifactInstallErrorKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn candidate_kind(&self) -> ArtifactDownloadCandidateKind {
+        self.candidate_kind
+    }
+
+    #[must_use]
+    pub fn redacted_url(&self) -> &str {
+        &self.redacted_url
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    #[must_use]
+    pub const fn detail(&self) -> Option<&ArtifactInstallErrorDetail> {
+        self.detail.as_ref()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct ArtifactInstallError {
     kind: ArtifactInstallErrorKind,
     message: String,
+    detail: Option<ArtifactInstallErrorDetail>,
+    candidate_failures: Vec<ArtifactCandidateFailure>,
 }
 
 /// Narrow async download adapter for artifact-install entrypoints.
@@ -66,6 +177,8 @@ impl ArtifactInstallError {
         Self {
             kind: ArtifactInstallErrorKind::Download,
             message: message.into(),
+            detail: None,
+            candidate_failures: Vec::new(),
         }
     }
 
@@ -73,12 +186,36 @@ impl ArtifactInstallError {
         Self {
             kind: ArtifactInstallErrorKind::Install,
             message: message.into(),
+            detail: None,
+            candidate_failures: Vec::new(),
         }
     }
 
     #[must_use]
     pub const fn kind(&self) -> ArtifactInstallErrorKind {
         self.kind
+    }
+
+    #[must_use]
+    pub const fn detail(&self) -> Option<&ArtifactInstallErrorDetail> {
+        self.detail.as_ref()
+    }
+
+    #[must_use]
+    pub fn candidate_failures(&self) -> &[ArtifactCandidateFailure] {
+        &self.candidate_failures
+    }
+
+    pub(crate) fn install_with_detail(
+        message: impl Into<String>,
+        detail: ArtifactInstallErrorDetail,
+    ) -> Self {
+        Self {
+            kind: ArtifactInstallErrorKind::Install,
+            message: message.into(),
+            detail: Some(detail),
+            candidate_failures: Vec::new(),
+        }
     }
 }
 
@@ -147,35 +284,47 @@ where
 pub(crate) fn candidate_failure_message(
     candidate: &ArtifactDownloadCandidate,
     err: &ArtifactInstallError,
-) -> CandidateFailure {
-    CandidateFailure {
+) -> ArtifactCandidateFailure {
+    ArtifactCandidateFailure {
         kind: err.kind(),
+        candidate_kind: candidate.kind,
+        redacted_url: redact_url_for_error(&candidate.url),
         message: format!(
             "{}:{} -> {err}",
             candidate.kind.label(),
             redact_url_for_error(&candidate.url)
         ),
+        detail: err.detail().cloned(),
     }
 }
 
 pub(crate) fn failed_candidates_error(
     canonical_url: &str,
-    errors: Vec<CandidateFailure>,
+    errors: Vec<ArtifactCandidateFailure>,
 ) -> ArtifactInstallError {
     let kind = aggregate_failure_kind(&errors);
     let details = errors
-        .into_iter()
-        .map(|error| error.message)
+        .iter()
+        .map(|error| error.message.clone())
         .collect::<Vec<_>>()
         .join(" | ");
+    let detail = (errors.len() == 1)
+        .then(|| errors[0].detail.clone())
+        .flatten();
     let canonical_url = redact_url_for_error(canonical_url);
-    match kind {
-        ArtifactInstallErrorKind::Download => ArtifactInstallError::download(format!(
+    let message = match kind {
+        ArtifactInstallErrorKind::Download => format!(
             "all artifact download candidates failed for {canonical_url}: {details}"
-        )),
-        ArtifactInstallErrorKind::Install => ArtifactInstallError::install(format!(
+        ),
+        ArtifactInstallErrorKind::Install => format!(
             "all artifact candidates failed for {canonical_url}; at least one candidate reached install phase: {details}"
-        )),
+        ),
+    };
+    ArtifactInstallError {
+        kind,
+        message,
+        detail,
+        candidate_failures: errors,
     }
 }
 
@@ -190,7 +339,7 @@ fn redact_url_for_error(raw: &str) -> String {
     url.to_string()
 }
 
-fn aggregate_failure_kind(errors: &[CandidateFailure]) -> ArtifactInstallErrorKind {
+fn aggregate_failure_kind(errors: &[ArtifactCandidateFailure]) -> ArtifactInstallErrorKind {
     if errors
         .iter()
         .any(|error| error.kind == ArtifactInstallErrorKind::Install)
@@ -208,8 +357,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactDownloader,
-        ArtifactInstallError, ArtifactInstallErrorKind, candidate_failure_message,
+        ArtifactCandidateFailure, ArtifactDownloadCandidate, ArtifactDownloadCandidateKind,
+        ArtifactDownloader, ArtifactInstallError, ArtifactInstallErrorDetail,
+        ArtifactInstallErrorKind, candidate_failure_message,
         download_candidate_to_writer_with_options, failed_candidates_error, run_blocking_install,
     };
 
@@ -341,6 +491,32 @@ mod tests {
         assert!(!failure.message.contains("token@"));
         assert!(!failure.message.contains("sig=secret"));
         assert!(!failure.message.contains("#frag"));
+    }
+
+    #[test]
+    fn failed_candidates_error_preserves_single_structured_detail() {
+        let error = failed_candidates_error(
+            "https://example.invalid/demo.zip",
+            vec![ArtifactCandidateFailure {
+                kind: ArtifactInstallErrorKind::Install,
+                candidate_kind: ArtifactDownloadCandidateKind::Canonical,
+                redacted_url: "https://example.invalid/demo.zip".to_string(),
+                message: "canonical:https://example.invalid/demo.zip -> archive missing".to_string(),
+                detail: Some(ArtifactInstallErrorDetail::ArchiveBinaryNotFound {
+                    archive_format: omne_archive_primitives::BinaryArchiveFormat::Zip,
+                    binary_name: "demo".to_string(),
+                }),
+            }],
+        );
+
+        assert_eq!(
+            error.detail(),
+            Some(&ArtifactInstallErrorDetail::ArchiveBinaryNotFound {
+                archive_format: omne_archive_primitives::BinaryArchiveFormat::Zip,
+                binary_name: "demo".to_string(),
+            })
+        );
+        assert_eq!(error.candidate_failures().len(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

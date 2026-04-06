@@ -16,6 +16,8 @@ Reusable artifact download and install primitives shared by higher-level callers
   instead of hard-coding a concrete HTTP client type; `reqwest::Client` remains supported via the
   built-in adapter impl
 - optional SHA-256 verification for downloaded artifacts
+- structured install errors that preserve candidate-level failures and key archive extraction
+  details such as `ArchiveBinaryNotFound`, so callers do not have to branch on display strings
 - direct binary artifact atomic installation, serialized per destination during the install phase
 - binary-from-archive installation with the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget and the same per-destination install lock
 - archive-tree installation via `omne-fs-primitives` staged directory replacement plus exported extracted-byte and entry-count budgets
