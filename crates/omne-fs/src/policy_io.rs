@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::policy::SandboxPolicy;
 use crate::{Error, Result};
+use omne_fs_primitives::{MissingRootPolicy, open_regular_file_at, open_root};
 
 const DEFAULT_MAX_POLICY_BYTES: u64 = 4 * 1024 * 1024;
 const HARD_MAX_POLICY_BYTES: u64 = 64 * 1024 * 1024;
@@ -14,35 +15,44 @@ pub enum PolicyFormat {
     Json,
 }
 
-fn open_policy_file(path: &Path) -> Result<std::fs::File> {
-    let file = omne_fs_primitives::open_readonly_nofollow(path).map_err(|err| {
-        if omne_fs_primitives::is_symlink_or_reparse_open_error(&err) {
-            return Error::InvalidPath(format!(
-                "path {} encountered a symlink or symlink resolution loop while opening policy path",
-                path.display()
-            ));
-        }
-        if err.kind() == std::io::ErrorKind::Unsupported {
-            return Error::NotPermitted(
-                "loading policy files on this platform requires an atomic no-follow open primitive"
-                    .to_string(),
-            );
-        }
-        Error::io_path("open", path, err)
+fn open_policy_file(path: &Path) -> Result<omne_fs_primitives::File> {
+    let leaf = path.file_name().ok_or_else(|| {
+        Error::InvalidPath(format!(
+            "path {} must include a policy file name",
+            path.display()
+        ))
     })?;
-    #[cfg(windows)]
-    {
-        let meta = file
-            .metadata()
-            .map_err(|err| Error::io_path("metadata", path, err))?;
-        if meta.file_type().is_symlink() {
-            return Err(Error::InvalidPath(format!(
-                "path {} final component is a symlink; refusing to load policy via symlink final component",
-                path.display()
-            )));
-        }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let root = open_root(
+        parent,
+        "policy file parent",
+        MissingRootPolicy::Error,
+        |_, _, _, error| error,
+    )
+    .map_err(|err| map_policy_path_error(path, "open", err))?
+    .ok_or_else(|| {
+        Error::io_path(
+            "open",
+            path,
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("policy file parent not found: {}", parent.display()),
+            ),
+        )
+    })?;
+
+    open_regular_file_at(root.dir(), Path::new(leaf))
+        .map_err(|err| map_policy_path_error(path, "open", err))
+}
+
+fn map_policy_path_error(path: &Path, op: &'static str, err: std::io::Error) -> Error {
+    match err.kind() {
+        std::io::ErrorKind::InvalidInput => Error::InvalidPath(format!(
+            "path {} is not a safe regular policy file: {err}",
+            path.display()
+        )),
+        _ => Error::io_path(op, path, err),
     }
-    Ok(file)
 }
 
 pub fn parse_policy(raw: &str, format: PolicyFormat) -> Result<SandboxPolicy> {
@@ -98,8 +108,9 @@ fn detect_policy_format(path: &Path) -> Result<(PolicyFormat, bool)> {
 ///
 /// For no-extension paths, TOML is inferred by default.
 ///
-/// This rejects symlink targets for the final path component and non-regular files
-/// (FIFOs, sockets, device nodes) to avoid blocking behavior and related DoS risks.
+/// This rejects symlink/reparse ancestors across the parent chain, the final path component, and
+/// non-regular files (FIFOs, sockets, device nodes) to avoid boundary bypasses and blocking DoS
+/// risks.
 pub fn load_policy_limited(path: impl AsRef<Path>, max_bytes: u64) -> Result<SandboxPolicy> {
     let path = path.as_ref();
     let (format, inferred_default_toml) = detect_policy_format(path)?;
@@ -181,9 +192,30 @@ fn initial_policy_capacity(meta_len: u64, max_bytes: u64) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{PolicyFormat, initial_policy_capacity, parse_policy, parse_policy_unvalidated};
+    use super::{
+        PolicyFormat, initial_policy_capacity, load_policy_limited, parse_policy,
+        parse_policy_unvalidated,
+    };
+    use crate::Error;
 
     use policy_meta::{Decision, ExecutionIsolation, RiskProfile};
+    use std::fs;
+    use std::path::Path;
+
+    fn valid_toml_policy(root_path: &Path) -> String {
+        let root_path = root_path.display().to_string().replace('\\', "\\\\");
+        format!(
+            r#"
+[[roots]]
+id = "workspace"
+path = "{root_path}"
+write_scope = "read_only"
+
+[permissions]
+read = true
+"#
+        )
+    }
 
     #[test]
     fn initial_policy_capacity_keeps_small_values() {
@@ -303,5 +335,36 @@ decision = "prompt"
             parsed.roots[1].write_scope,
             policy_meta::WriteScope::ReadOnly
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_policy_limited_rejects_symlinked_parent_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real_parent = dir.path().join("real");
+        let root_path = dir.path().join("workspace-root");
+        fs::create_dir_all(&real_parent).expect("mkdir real parent");
+        fs::create_dir_all(&root_path).expect("mkdir workspace root");
+        fs::write(
+            real_parent.join("policy.toml"),
+            valid_toml_policy(&root_path),
+        )
+        .expect("write policy");
+        let linked_parent = dir.path().join("linked");
+        symlink(&real_parent, &linked_parent).expect("create linked parent");
+
+        let err = load_policy_limited(linked_parent.join("policy.toml"), 1024)
+            .expect_err("symlinked parent ancestor must fail");
+
+        match err {
+            Error::InvalidPath(detail) => assert!(
+                detail.contains("safe regular policy file")
+                    && detail.contains("must not traverse symlinks"),
+                "unexpected detail: {detail}"
+            ),
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }
