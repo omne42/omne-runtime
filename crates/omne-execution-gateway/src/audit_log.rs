@@ -244,6 +244,22 @@ impl PreparedAuditSink {
         self.write_record(AuditRecord::from_execution(event, result))
     }
 
+    pub(crate) fn write_execution_error_record(
+        &mut self,
+        event: &ExecEvent,
+        error: &ExecError,
+    ) -> ExecResult<()> {
+        self.write_record(AuditRecord::from_execution_error(event, error))
+    }
+
+    pub(crate) fn write_detached_record(
+        &mut self,
+        event: &ExecEvent,
+        detail: &str,
+    ) -> ExecResult<()> {
+        self.write_record(AuditRecord::from_detached(event, detail))
+    }
+
     fn write_record(&mut self, record: AuditRecord) -> ExecResult<()> {
         self.try_write_record(record)
             .map_err(|err| ExecError::AuditLogWriteFailed {
@@ -291,6 +307,22 @@ impl AuditRecord {
             ts_unix_ms: now_unix_ms(),
             event: event.clone(),
             result: AuditResult::from_execution(result),
+        }
+    }
+
+    fn from_execution_error(event: &ExecEvent, error: &ExecError) -> Self {
+        Self {
+            ts_unix_ms: now_unix_ms(),
+            event: event.clone(),
+            result: AuditResult::from_execution_error(error),
+        }
+    }
+
+    fn from_detached(event: &ExecEvent, detail: &str) -> Self {
+        Self {
+            ts_unix_ms: now_unix_ms(),
+            event: event.clone(),
+            result: AuditResult::detached(detail),
         }
     }
 }
@@ -358,6 +390,35 @@ impl AuditResult {
                 success: None,
                 signal: None,
             },
+        }
+    }
+
+    fn from_execution_error(error: &ExecError) -> Self {
+        match error {
+            ExecError::Spawn(err) => Self {
+                status: "spawn_error",
+                error: Some(err.to_string()),
+                exit_code: None,
+                success: None,
+                signal: None,
+            },
+            other => Self {
+                status: "execution_error",
+                error: Some(other.to_string()),
+                exit_code: None,
+                success: None,
+                signal: None,
+            },
+        }
+    }
+
+    fn detached(detail: &str) -> Self {
+        Self {
+            status: "detached",
+            error: Some(detail.to_string()),
+            exit_code: None,
+            success: None,
+            signal: None,
         }
     }
 }
