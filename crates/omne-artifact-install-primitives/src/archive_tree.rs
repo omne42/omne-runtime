@@ -15,7 +15,7 @@ use omne_fs_primitives::{
     create_regular_file_at, lock_advisory_file_in_ambient_root, open_directory_component,
     stage_directory_atomically, stage_file_atomically_with_name,
 };
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use omne_fs_primitives::{MissingRootPolicy, open_ambient_root};
 use omne_integrity_primitives::{Sha256Digest, hash_sha256, verify_sha256_reader};
 use tar::Archive as TarArchive;
@@ -316,7 +316,7 @@ fn archive_tree_lock_identity_bytes(path: &Path) -> Vec<u8> {
     path.to_string_lossy().into_owned().into_bytes()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn extract_zip_tree<R>(
     reader: R,
     destination: &Path,
@@ -375,7 +375,7 @@ where
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn extract_tar_tree<R>(
     reader: R,
     destination: &Path,
@@ -828,7 +828,7 @@ fn validate_archive_hard_link_target(
     Ok(sanitized)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn open_archive_destination_root(destination: &Path) -> Result<Dir, ArtifactInstallError> {
     open_ambient_root(
         destination,
@@ -1033,9 +1033,9 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use omne_fs_primitives::{
-        AtomicDirectoryOptions, lock_advisory_file_in_ambient_root, stage_directory_atomically,
-    };
+    use omne_fs_primitives::lock_advisory_file_in_ambient_root;
+    #[cfg(unix)]
+    use omne_fs_primitives::{AtomicDirectoryOptions, stage_directory_atomically};
 
     use crate::artifact_download::{
         ArtifactDownloadCandidate, ArtifactDownloadCandidateKind, ArtifactDownloader,
@@ -1044,11 +1044,13 @@ mod tests {
 
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
-        download_and_install_archive_tree, extract_zip_tree_into_root,
-        install_archive_tree_from_reader_with_limits,
+        download_and_install_archive_tree, install_archive_tree_from_reader_with_limits,
     };
     #[cfg(unix)]
-    use super::{MAX_ZIP_SYMLINK_TARGET_BYTES, extract_tar_tree, extract_zip_tree};
+    use super::{
+        MAX_ZIP_SYMLINK_TARGET_BYTES, extract_tar_tree, extract_zip_tree,
+        extract_zip_tree_into_root,
+    };
 
     fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut writer = Cursor::new(Vec::new());

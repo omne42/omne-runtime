@@ -619,7 +619,7 @@ fn commit_replace(
             .rename(staged_leaf, parent_root.dir(), destination_leaf)
             .map_err(|err| AtomicWriteError::io_path("rename", destination, err))?;
     } else {
-        if let Ok(_) = parent_root.dir().symlink_metadata(destination_leaf) {
+        if parent_root.dir().symlink_metadata(destination_leaf).is_ok() {
             return Err(AtomicWriteError::io_path(
                 "rename_noclobber",
                 destination,
