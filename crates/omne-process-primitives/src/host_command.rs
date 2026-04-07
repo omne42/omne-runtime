@@ -1123,6 +1123,7 @@ fn resolve_host_system_package_manager_path(program: &OsStr) -> Option<PathBuf> 
 }
 
 #[cfg(test)]
+#[cfg(test)]
 fn ensure_sudo_target_is_available(
     request: &HostCommandRequest<'_>,
 ) -> Result<(), HostCommandError> {
@@ -1167,6 +1168,7 @@ fn ensure_resolved_sudo_target_is_available(
     Ok(())
 }
 
+#[cfg(test)]
 #[cfg(test)]
 fn ensure_sudo_environment_cleaner_is_available_with_resolved(
     program: &OsStr,
