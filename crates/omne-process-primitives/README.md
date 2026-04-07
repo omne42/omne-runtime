@@ -16,6 +16,9 @@ Low-level host-command and process-tree primitives shared across callers.
   of continuing to search `PATH`, matching shell/`exec` semantics for probe helpers; Windows
   drive-relative paths such as `C:tool.exe` are treated as explicit relative paths too
 - request-scoped command probes that honor request `PATH` overrides for bare direct commands while failing closed on explicit relative program paths that omit `working_directory`
+- bare direct commands that resolve `PATH` exactly once before spawn and fail closed with
+  `CommandNotFound` when that resolution does not yield a concrete executable, instead of
+  falling back to the child-process loader's implicit `PATH` search
 - `command_available*` probes that keep the same spawnable contract as execution and do not report non-executable files as available
 - host command execution with captured output that returns after the direct child exits even if daemonized descendants keep inherited stdout/stderr open
 - host command capture-limit enforcement that best-effort terminates an overproducing direct child
@@ -28,7 +31,7 @@ Low-level host-command and process-tree primitives shared across callers.
 - host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
 - non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
 - explicit relative program paths that resolve only against an explicit `working_directory`, instead of silently inheriting the caller process cwd
-- sudo-style escalation that resolves the privileged target from trusted host locations and drops all request env at the sudo boundary, so elevated commands never reintroduce caller-controlled `PATH` or other request-scoped environment into the root-side target process
+- sudo-style escalation that resolves the `sudo` wrapper, privileged `env -i` scrubber, and target command from trusted host locations and executes those exact absolute paths, so elevated commands never reintroduce caller-controlled `PATH`, `secure_path` surprises, or other request-scoped environment into the root-side target process
 - `IfNonRootSystemCommand` requests fail closed when `sudo` itself is unavailable in trusted standard locations, instead of silently downgrading to direct execution and masking a missing privilege boundary as a target-command failure
 - fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved from trusted standard install locations as a canonical system package manager command
 - fail-closed local validation for explicit `IfNonRootSystemCommand` paths before invoking
@@ -40,6 +43,7 @@ Low-level host-command and process-tree primitives shared across callers.
 - optional `sudo -n` probing on Unix
 - process-tree cleanup setup and best-effort termination
 - fail-closed process-tree capture on Unix unless the child was spawned into its own dedicated process group via `configure_command_for_process_tree`
+- Linux process-tree cleanup capture that now fails closed if the leader identity is already gone before capture completes, instead of arming a later `killpg` from a bare historical PGID
 - Windows `taskkill` cleanup that waits for command success before skipping descendant fallback
 - Unix process-group cleanup that fails closed once the captured leader PID has been reused by a
   different live process, and on Linux also fails closed when the leader exits before cleanup can

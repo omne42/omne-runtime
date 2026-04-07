@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- execute the full sudo wrapper chain via trusted absolute `sudo`, `env -i`, and target-command
+  paths, so sudo `secure_path` or `PATH` shadowing cannot turn a validated command into a
+  different elevated executable at runtime
+- fail Linux process-tree cleanup capture closed when the leader identity is already gone before
+  `/proc` revalidation can complete, instead of silently arming a cleanup handle with no safe
+  leader snapshot
 - add regression coverage proving explicit lexical escapes such as `/usr/bin/../tmp/apt-get`
   still do not trigger `IfNonRootSystemCommand`, so high-level auto-sudo behavior stays aligned
   with the canonical-path trust check
@@ -53,5 +59,8 @@
 - add regression coverage that locks sudo bare-command resolution to trusted host paths and proves daemonized descendants holding `stderr` cannot keep `run_host_command` blocked
 - capture the Linux process-group id and leader identity from a single `/proc/<pid>/stat` snapshot so cleanup never combines `pgid`, `start_ticks`, or `session_id` from different process lifetimes
 - stop trusting ambient `PATH` for `sudo`, `env`, and auto-sudo package-manager target resolution; control-plane binaries now bind only to trusted standard install locations while direct bare commands still honor request-scoped `PATH`
+- make direct bare-command execution fail closed when request/ambient `PATH` resolution does not
+  produce the same concrete executable path used for spawn, so unresolved requests cannot fall
+  back to loader-controlled implicit `PATH` search and accidentally run a different binary
 - make non-Linux Unix process-group cleanup fail closed by skipping `killpg` when the crate
   cannot revalidate the original leader lifetime with Linux-style evidence

@@ -153,7 +153,12 @@ fn capture_linux_process_group_identity(
 ) -> io::Result<Option<UnixProcessGroupIdentity>> {
     let leader_identity = match read_linux_process_identity(leader_pid) {
         Ok(identity) => identity,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "process-tree cleanup requires a live Linux process-group leader identity during capture",
+            ));
+        }
         Err(error) => return Err(error),
     };
     build_linux_process_group_identity(leader_pid, leader_identity).map(Some)
@@ -551,8 +556,9 @@ const WINDOWS_ERROR_NOT_SUPPORTED: i32 = 50;
 mod tests {
     use super::{
         CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
-        build_linux_process_group_identity, configure_command_for_process_tree,
-        ensure_unix_process_group_is_dedicated, should_kill_linux_process_group,
+        build_linux_process_group_identity, capture_linux_process_group_identity,
+        configure_command_for_process_tree, ensure_unix_process_group_is_dedicated,
+        should_kill_linux_process_group,
     };
     use rustix::process::{Pid, Signal, kill_process};
     use std::io;
@@ -717,6 +723,18 @@ mod tests {
                 session_id: 7,
                 start_ticks: 11,
             }
+        );
+    }
+
+    #[test]
+    fn linux_capture_fails_closed_when_leader_identity_is_already_gone() {
+        let impossible_pid = Pid::from_raw(999_999).expect("pid must be non-zero");
+        let err = capture_linux_process_group_identity(impossible_pid)
+            .expect_err("missing leader identity must fail closed");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(
+            err.to_string()
+                .contains("live Linux process-group leader identity")
         );
     }
 

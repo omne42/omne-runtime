@@ -328,7 +328,6 @@ where
     let musl_marker_present = musl_loader_paths
         .iter()
         .any(|path| path_exists(std::path::Path::new(path)));
-    let alpine_marker_present = path_exists(std::path::Path::new("/etc/alpine-release"));
 
     let gnu_loader_paths = [
         "/lib64/ld-linux-x86-64.so.2",
@@ -340,10 +339,7 @@ where
         .iter()
         .any(|path| path_exists(std::path::Path::new(path)));
 
-    classify_linux_libc_markers(
-        musl_marker_present || alpine_marker_present,
-        gnu_marker_present,
-    )
+    classify_linux_libc_markers(musl_marker_present, gnu_marker_present)
 }
 
 #[cfg(target_os = "linux")]
@@ -561,9 +557,9 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_prefers_musl_filesystem_markers() {
+    fn detect_host_linux_libc_uses_musl_loader_markers() {
         let libc = super::detect_host_linux_libc_with_probes(&|| None, &|path| {
-            path == std::path::Path::new("/etc/alpine-release")
+            path == std::path::Path::new("/lib64/ld-musl-x86_64.so.1")
         });
         assert_eq!(libc, Some(HostLinuxLibc::Musl));
     }
@@ -599,15 +595,20 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_fails_closed_when_alpine_marker_and_glibc_loader_conflict() {
+    fn detect_host_linux_libc_does_not_treat_alpine_release_as_loader_evidence() {
         let libc = super::detect_host_linux_libc_with_probes(&|| None, &|path| {
-            matches!(
-                path,
-                path if path == std::path::Path::new("/etc/alpine-release")
-                    || path == std::path::Path::new("/lib64/ld-linux-x86-64.so.2")
-            )
+            path == std::path::Path::new("/etc/alpine-release")
         });
         assert_eq!(libc, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_host_platform_fails_closed_when_only_distro_marker_is_available() {
+        let linux_libc = super::detect_host_linux_libc_with_probes(&|| None, &|path| {
+            path == std::path::Path::new("/etc/alpine-release")
+        });
+        assert!(host_platform_from_parts("linux", "x86_64", linux_libc).is_none());
     }
 
     #[cfg(target_os = "linux")]
@@ -645,9 +646,19 @@ mod tests {
     fn detect_host_linux_libc_does_not_fallback_after_ambiguous_process_maps() {
         let libc = super::detect_host_linux_libc_with_probes(
             &|| Some("/lib64/ld-linux-x86-64.so.2\n/lib/ld-musl-x86_64.so.1\n".to_string()),
-            &|path| path == std::path::Path::new("/etc/alpine-release"),
+            &|path| path == std::path::Path::new("/lib64/ld-musl-x86_64.so.1"),
         );
         assert_eq!(libc, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_host_platform_fails_closed_after_ambiguous_process_maps() {
+        let linux_libc = super::detect_host_linux_libc_with_probes(
+            &|| Some("/lib64/ld-linux-x86-64.so.2\n/lib/ld-musl-x86_64.so.1\n".to_string()),
+            &|_| false,
+        );
+        assert!(host_platform_from_parts("linux", "x86_64", linux_libc).is_none());
     }
 
     #[cfg(target_os = "linux")]
@@ -685,7 +696,6 @@ mod tests {
                 std::path::PathBuf::from("/lib/ld-musl-aarch64.so.1"),
                 std::path::PathBuf::from("/lib64/ld-musl-x86_64.so.1"),
                 std::path::PathBuf::from("/lib64/ld-musl-aarch64.so.1"),
-                std::path::PathBuf::from("/etc/alpine-release"),
                 std::path::PathBuf::from("/lib64/ld-linux-x86-64.so.2"),
                 std::path::PathBuf::from("/lib/ld-linux-aarch64.so.1"),
                 std::path::PathBuf::from("/lib/ld-linux-x86-64.so.2"),

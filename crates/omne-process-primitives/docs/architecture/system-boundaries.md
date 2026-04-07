@@ -17,10 +17,14 @@
 - 把“命令超时被终止”与“命令启动失败/输出采集失败”继续分开建模，避免调用方只能从字符串猜测 timeout。
 - 对显式相对程序路径要求调用方显式提供 `working_directory` 作为解析基准；如果 request 没给这个基准，本 crate 会 fail closed，而不是偷偷退回调用方进程的 ambient cwd。
 - `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，而 direct bare command 的真正 spawn 也会先绑定到同一条解析出的可执行路径；如果 request 的 `PATH` 里包含相对目录，这些目录会继续按 request 的 `working_directory` 解释，而不是退回宿主进程的 ambient cwd。对显式相对程序路径也与执行共享同一个 `working_directory` 解析语义，并在缺少它时返回 false。
+- direct bare command 一旦无法按上述规则解析到 concrete executable path，就会在 spawn 前
+  fail closed 返回 `CommandNotFound`；本 crate 不会在最后一步退回给子进程 loader /
+  `execvp` / `CreateProcess` 自己做隐式 `PATH` 搜索，避免出现“probe/检查的是 A，实际执行的是
+  B”的路径漂移。
 - `command_available` / `command_available_os` / `command_available_for_request` 只会把真正可执行的命令视为 available，不会把普通文件或缺少执行位的路径伪装成“已可运行”。
 - direct 显式路径 spawn 如果返回 `ENOENT`，只有在解析后的目标路径确实不存在时才会折叠成 `CommandNotFound`；如果目标文件仍在，本 crate 会保留原始 spawn 失败，让缺失 shebang 解释器或动态 loader 这类问题不会被误报成“命令不存在”。
-- 当命中 `sudo` 路径时，在提权边界内完全丢弃 request env；提权后的目标命令只接收受信任解析出的目标路径和 argv，避免把 request `PATH` 或其他调用方环境变量重新带进 root 侧进程语义。
-- `sudo` 可用性判定、`sudo` 可执行路径选择以及提权后的 bare target 解析都不使用 request 里显式覆盖的 `PATH`，也不信任 ambient `PATH` 里的 shadow binary；这些 control-plane 程序只会从受信任的标准安装目录解析。
+- 当命中 `sudo` 路径时，在提权边界内完全丢弃 request env；提权链路会固定执行受信任标准目录里的 `sudo`、`env -i` 和目标命令绝对路径，提权后的目标只接收这条显式 argv 链，避免把 request `PATH`、sudo `secure_path` 差异或其他调用方环境变量重新带进 root 侧进程语义。
+- `sudo` 可用性判定、`sudo` 可执行路径选择、提权边界里的 `env` scrubber 选择以及提权后的 bare target 解析都不使用 request 里显式覆盖的 `PATH`，也不信任 ambient `PATH` 里的 shadow binary；这些 control-plane 程序只会从受信任的标准安装目录解析。
 - 对需要走 `IfNonRootSystemCommand` 的请求，如果当前进程是 non-root 但受信任标准目录里根本解析不到 `sudo`，本 crate 会在本地直接 fail closed，而不是静默退回 direct execution 把“缺少提权能力”伪装成目标命令自己的失败。
 - 对需要走 `sudo` 的 bare command，如果受信任标准目录里解析不到对应的 canonical manager 二进制，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
 - 对显式 `IfNonRootSystemCommand` 路径，也会在真正调用 `sudo` 之前做本地 fail-closed 校验：缺失目标、不可执行 regular file，或与受信标准目录解析到的 canonical manager 二进制不一致的路径，都会在本地直接拒绝，而不是把错误推迟成提权后子进程的运行期失败。
@@ -32,7 +36,7 @@
 - 配置子进程以支持进程树清理；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
 - 捕获进程树清理标识并执行 best-effort 终止。
 - Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 descendant sweep。
-- Unix 上一旦无法重新验证原始 leader 身份，默认停止继续对该 process-group 做 `killpg`；Linux 不再在 leader 退出后仅凭 surviving group members 做 orphan cleanup，而是要求 cleanup 时仍能把当前 leader `/proc` 身份与 capture 时那次完整 `/proc/<pid>/stat` 快照逐字段对齐。非 Linux Unix 因为当前没有同等级的 leader lifetime 重验能力，所以直接跳过 process-group `killpg`，只保留 direct child kill-on-drop / direct child kill 这层 fail-closed 行为。对“cleanup 时 leader PID 已被复用成另一个活进程”“leader 在 cleanup capture 前就已退出，导致无法再绑定 `/proc` 身份”以及“cleanup 时原 leader 已退出、无法继续重验原身份”这几类情况，本 crate 都会继续 fail closed。leader 的 process-group id、`start_ticks` 和 `session_id` 也必须来自同一次 `/proc/<pid>/stat` 读取并在 cleanup 时继续整体匹配，避免把不同进程生命周期的字段拼成伪身份，或把“同 session 才能 kill”放宽成仅凭 PGID 还存在就 kill。
+- Unix 上一旦无法重新验证原始 leader 身份，默认停止继续对该 process-group 做 `killpg`；Linux 现在连 cleanup capture 阶段也要求 leader `/proc` 身份仍然存在，leader 若已在 capture 完成前消失会直接 fail closed 返回错误，不再留下只记住历史 PGID 的 cleanup 句柄。cleanup 阶段则继续要求当前 leader `/proc` 身份与 capture 时那次完整 `/proc/<pid>/stat` 快照逐字段对齐。非 Linux Unix 因为当前没有同等级的 leader lifetime 重验能力，所以直接跳过 process-group `killpg`，只保留 direct child kill-on-drop / direct child kill 这层 fail-closed 行为。对“cleanup 时 leader PID 已被复用成另一个活进程”“leader 在 cleanup capture 前就已退出，导致无法再绑定 `/proc` 身份”以及“cleanup 时原 leader 已退出、无法继续重验原身份”这几类情况，本 crate 都会继续 fail closed。leader 的 process-group id、`start_ticks` 和 `session_id` 也必须来自同一次 `/proc/<pid>/stat` 读取并在 cleanup 时继续整体匹配，避免把不同进程生命周期的字段拼成伪身份，或把“同 session 才能 kill”放宽成仅凭 PGID 还存在就 kill。
 
 ## 不负责什么
 
