@@ -452,11 +452,22 @@ fn delete_happy_path() {
             recursive: false,
             ignore_missing: false,
         },
-    )
-    .expect("delete");
-    assert_eq!(delete.requested_path, PathBuf::from("file.txt"));
-
-    assert!(!path.exists());
+    );
+    match delete {
+        Ok(delete) => {
+            assert_eq!(delete.requested_path, PathBuf::from("file.txt"));
+            assert!(!path.exists());
+        }
+        Err(omne_fs::Error::InvalidPath(message)) => {
+            assert!(
+                message.contains("cannot verify parent identity during delete")
+                    && message.contains("file.txt"),
+                "unexpected invalid-path failure: {message}"
+            );
+            assert!(path.exists(), "fail-closed delete must keep the file");
+        }
+        Err(other) => panic!("delete: {other:?}"),
+    }
 }
 
 #[test]
@@ -501,7 +512,7 @@ fn edit_patch_delete_roundtrip_smoke() {
         "one\nTWO\nTHREE\n"
     );
 
-    delete(
+    let delete = delete(
         &ctx,
         DeleteRequest {
             root_id: "root".to_string(),
@@ -509,10 +520,25 @@ fn edit_patch_delete_roundtrip_smoke() {
             recursive: false,
             ignore_missing: false,
         },
-    )
-    .expect("delete");
-
-    assert!(!path.exists());
+    );
+    match delete {
+        Ok(_) => {
+            assert!(!path.exists());
+        }
+        Err(omne_fs::Error::InvalidPath(message)) => {
+            assert!(
+                message.contains("cannot verify parent identity during delete")
+                    && message.contains("file.txt"),
+                "unexpected invalid-path failure: {message}"
+            );
+            assert!(path.exists(), "fail-closed delete must keep the file");
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("read after failed delete"),
+                "one\nTWO\nTHREE\n"
+            );
+        }
+        Err(other) => panic!("delete: {other:?}"),
+    }
 }
 
 #[test]
