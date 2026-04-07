@@ -502,42 +502,13 @@ fn run_command_output(
     options: HostCommandRunOptions<'_>,
     capture_options: HostCommandCaptureOptions,
 ) -> Result<Output, CommandOutputError> {
-    #[cfg(unix)]
-    {
-        const EXECUTABLE_BUSY_RETRIES: usize = 3;
-        const EXECUTABLE_BUSY_BACKOFF_MS: u64 = 10;
-
-        for attempt in 0..=EXECUTABLE_BUSY_RETRIES {
-            match spawn_and_capture_output(
-                request,
-                execution,
-                resolved_programs,
-                options,
-                capture_options,
-            ) {
-                Ok(output) => return Ok(output),
-                Err(err) if err.is_executable_file_busy() && attempt < EXECUTABLE_BUSY_RETRIES => {
-                    std::thread::sleep(std::time::Duration::from_millis(
-                        EXECUTABLE_BUSY_BACKOFF_MS,
-                    ));
-                }
-                Err(err) => return Err(err),
-            }
-        }
-
-        unreachable!("retry loop must return on success or final error");
-    }
-
-    #[cfg(not(unix))]
-    {
-        spawn_and_capture_output(
-            request,
-            execution,
-            resolved_programs,
-            options,
-            capture_options,
-        )
-    }
+    spawn_and_capture_output(
+        request,
+        execution,
+        resolved_programs,
+        options,
+        capture_options,
+    )
 }
 
 fn spawn_and_capture_output(
@@ -1223,16 +1194,6 @@ enum CommandOutputError {
     Spawn(io::Error),
     Capture(io::Error),
     TimedOut { timeout: Duration, output: Output },
-}
-
-impl CommandOutputError {
-    #[cfg(unix)]
-    fn is_executable_file_busy(&self) -> bool {
-        match self {
-            Self::Spawn(source) => source.kind() == io::ErrorKind::ExecutableFileBusy,
-            Self::Capture(_) | Self::TimedOut { .. } => false,
-        }
-    }
 }
 
 fn map_command_output_error(
@@ -3176,6 +3137,7 @@ mod tests {
     #[cfg(unix)]
     fn write_unix_executable(dir: &Path, name: &str, content: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
 
         let path = dir.join(name);
         let temp_path = dir.join(format!("{name}.tmp"));
@@ -3186,6 +3148,8 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(&temp_path, perms).expect("chmod unix command");
         std::fs::rename(&temp_path, &path).expect("rename unix command");
+        // Keep ETXTBSY avoidance in test fixture setup rather than the primitive itself.
+        std::thread::sleep(Duration::from_millis(20));
         path
     }
 

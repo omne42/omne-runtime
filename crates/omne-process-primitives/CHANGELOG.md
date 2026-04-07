@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- drop the built-in Unix `ExecutableFileBusy` retry loop from `run_host_command*`, so
+  `omne-process-primitives` stops owning retry policy and surfaces the original spawn failure to
+  callers
 - remove duplicated test-only `#[cfg(test)]` attributes in `host_command.rs`, so
   `cargo clippy --workspace --all-targets -- -D warnings` stays green instead of failing on
   `clippy::duplicated-attributes`
