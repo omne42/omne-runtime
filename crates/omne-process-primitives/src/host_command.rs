@@ -1300,8 +1300,6 @@ mod tests {
     use super::ensure_sudo_target_is_available;
     #[cfg(unix)]
     use super::explicit_system_package_manager_path_with_resolved;
-    #[cfg(unix)]
-    use super::{ResolvedExecutionPrograms, build_command_with_resolved_programs};
     use super::is_explicit_relative_program_without_working_directory;
     #[cfg(unix)]
     use super::resolve_command_path_in_standard_locations_os;
@@ -1323,6 +1321,8 @@ mod tests {
         resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
         select_execution_for_request_with_status, should_try_sudo_with_status,
     };
+    #[cfg(unix)]
+    use super::{ResolvedExecutionPrograms, build_command_with_resolved_programs};
     #[cfg(unix)]
     use super::{run_host_command_with_options, run_host_recipe_with_options};
 
