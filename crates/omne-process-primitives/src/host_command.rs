@@ -754,7 +754,7 @@ fn select_execution_for_request_with_status(
 }
 
 #[cfg(test)]
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn should_try_sudo_for_request_with_status(
     request: &HostCommandRequest<'_>,
     process_is_non_root: bool,
