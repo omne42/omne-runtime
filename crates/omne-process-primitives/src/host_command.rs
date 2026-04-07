@@ -3154,7 +3154,7 @@ mod tests {
         let path = dir.join(format!("{name}.cmd"));
         std::fs::write(
             &path,
-            "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * (8MB + 1); [Console]::Out.Write($s)\"\r\n",
+            "@echo off\r\ncd /d \"%~dp0\"\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * (8MB + 1); [Console]::Out.Write($s)\"\r\n",
         )
         .expect("write windows loud command");
         path
@@ -3165,7 +3165,7 @@ mod tests {
         let path = dir.join(format!("{name}.cmd"));
         std::fs::write(
             &path,
-            "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * 32MB; [Console]::Out.Write($s)\"\r\n",
+            "@echo off\r\ncd /d \"%~dp0\"\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * 32MB; [Console]::Out.Write($s)\"\r\n",
         )
         .expect("write windows very loud command");
         path
@@ -3176,7 +3176,7 @@ mod tests {
         let path = dir.join(format!("{name}.cmd"));
         std::fs::write(
             &path,
-            "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * 8MB; [Console]::Out.Write($s)\"\r\n",
+            "@echo off\r\ncd /d \"%~dp0\"\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * 8MB; [Console]::Out.Write($s)\"\r\n",
         )
         .expect("write windows exact-limit stdout command");
         path
@@ -3187,7 +3187,7 @@ mod tests {
         let path = dir.join(format!("{name}.cmd"));
         std::fs::write(
             &path,
-            "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * (8MB + 1); [Console]::Error.Write($s)\"\r\n",
+            "@echo off\r\ncd /d \"%~dp0\"\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * (8MB + 1); [Console]::Error.Write($s)\"\r\n",
         )
         .expect("write windows loud stderr command");
         path
