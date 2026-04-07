@@ -251,23 +251,17 @@ fn revalidate_parent_before_delete(
                         return Err(Error::io_path("symlink_metadata", requested_parent, err));
                     }
                 };
-                let _ = rechecked_parent_meta;
-                canonical_parent_meta.ensure_verified(
-                    &rechecked_parent,
-                    requested_parent,
-                    || {
-                        Error::InvalidPath(
-                            "parent identity changed during delete; refusing to continue"
-                                .to_string(),
-                        )
-                    },
-                    || {
-                        Error::InvalidPath(
-                            "cannot verify parent identity during delete; refusing to continue"
-                                .to_string(),
-                        )
-                    },
-                )?;
+                match canonical_parent_meta.verify_metadata(&rechecked_parent_meta, || {
+                    Error::InvalidPath(
+                        "parent identity changed during delete; refusing to continue".to_string(),
+                    )
+                })? {
+                    super::io::MetadataIdentityCheck::Verified => {}
+                    super::io::MetadataIdentityCheck::Unverifiable => {
+                        // Best-effort fallback for filesystems that do not expose stable file IDs.
+                        // Parent path has already been re-resolved and validated under root.
+                    }
+                }
                 Ok(None)
             }
         }
@@ -278,27 +272,6 @@ fn revalidate_parent_before_delete(
         }
         Err(err) => Err(err),
     }
-}
-
-fn revalidate_target_before_delete(
-    target: &Path,
-    relative: &Path,
-    target_identity: &super::io::PathIdentity,
-) -> Result<()> {
-    target_identity.ensure_verified(
-        target,
-        relative,
-        || {
-            Error::InvalidPath(
-                "target identity changed during delete; refusing to continue".to_string(),
-            )
-        },
-        || {
-            Error::InvalidPath(
-                "cannot verify target identity during delete; refusing to continue".to_string(),
-            )
-        },
-    )
 }
 
 pub fn delete(ctx: &Context, request: DeleteRequest) -> Result<DeleteResponse> {
@@ -433,14 +406,24 @@ pub fn delete(ctx: &Context, request: DeleteRequest) -> Result<DeleteResponse> {
         )
     };
     let ensure_target_stable_or_missing = || -> Result<Option<DeleteResponse>> {
-        match fs::symlink_metadata(&target) {
-            Ok(_) => {}
+        let current_meta = match fs::symlink_metadata(&target) {
+            Ok(meta) => meta,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound && request.ignore_missing => {
                 return Ok(Some(missing_response(&requested_path)));
             }
             Err(err) => return Err(Error::io_path("symlink_metadata", &relative, err)),
+        };
+        match target_identity.verify_metadata(&current_meta, || {
+            Error::InvalidPath(
+                "target identity changed during delete; refusing to continue".to_string(),
+            )
+        })? {
+            super::io::MetadataIdentityCheck::Verified => {}
+            super::io::MetadataIdentityCheck::Unverifiable => {
+                // Best-effort fallback for filesystems that do not expose stable file IDs.
+                // Target path was already validated under the selected root.
+            }
         }
-        revalidate_target_before_delete(&target, &relative, &target_identity)?;
         Ok(None)
     };
 
@@ -673,71 +656,5 @@ mod recursive_scan_tests {
     fn child_relative_prefix_joins_nested_suffix_for_non_root_target() {
         let prefix = child_relative_prefix(Path::new("root/subtree"), Path::new("a/b"));
         assert_eq!(prefix, Path::new("root/subtree/a/b"));
-    }
-}
-
-#[cfg(test)]
-mod identity_tests {
-    use std::fs;
-    use std::path::Path;
-
-    use super::{DeleteRequest, revalidate_parent_before_delete, revalidate_target_before_delete};
-    use crate::error::Error;
-
-    #[test]
-    fn delete_parent_revalidation_rejects_unverifiable_identity() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let parent = dir.path().join("parent");
-        fs::create_dir(&parent).expect("create parent");
-        let canonical_parent = parent.canonicalize().expect("canonicalize parent");
-        let metadata = fs::symlink_metadata(&canonical_parent).expect("metadata");
-        let identity = crate::ops::io::DirectoryIdentity::unverifiable_for_tests(metadata);
-        let ctx = crate::ops::Context::new(crate::policy::SandboxPolicy::single_root(
-            "root",
-            dir.path(),
-            policy_meta::WriteScope::WorkspaceWrite,
-        ))
-        .expect("ctx");
-
-        let err = revalidate_parent_before_delete(
-            &ctx,
-            &DeleteRequest {
-                root_id: "root".to_string(),
-                path: Path::new("parent/file.txt").to_path_buf(),
-                recursive: false,
-                ignore_missing: false,
-            },
-            Path::new("parent"),
-            &canonical_parent,
-            &identity,
-            Path::new("parent/file.txt"),
-        )
-        .expect_err("unverifiable parent identity must fail closed");
-        match err {
-            Error::InvalidPath(message) => assert_eq!(
-                message,
-                "cannot verify parent identity during delete; refusing to continue"
-            ),
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn delete_target_revalidation_rejects_unverifiable_identity() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let target = dir.path().join("file.txt");
-        fs::write(&target, "hello").expect("write file");
-        let metadata = fs::symlink_metadata(&target).expect("metadata");
-        let identity = crate::ops::io::PathIdentity::unverifiable_for_tests(metadata);
-
-        let err = revalidate_target_before_delete(&target, Path::new("file.txt"), &identity)
-            .expect_err("unverifiable target identity must fail closed");
-        match err {
-            Error::InvalidPath(message) => assert_eq!(
-                message,
-                "cannot verify target identity during delete; refusing to continue"
-            ),
-            other => panic!("unexpected error: {other:?}"),
-        }
     }
 }

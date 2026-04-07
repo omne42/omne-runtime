@@ -2,9 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::audit::ExecEvent;
-use crate::os_serialization::{
-    ExactEnvPairs, ExactOsStr, ExactOsStrings, LossyEnvPairs, LossyOsStr, LossyOsStrings,
-};
+use crate::os_serialization::{ExactOsStr, ExactOsStrings, LossyOsStr, LossyOsStrings};
 use policy_meta::{ExecutionIsolation, PolicyMetaV1};
 use serde::{Serialize, Serializer};
 
@@ -19,7 +17,6 @@ pub enum RequestedIsolationSource {
 pub struct ExecRequest {
     pub program: OsString,
     pub args: Vec<OsString>,
-    pub env: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub required_isolation: ExecutionIsolation,
     pub requested_isolation_source: RequestedIsolationSource,
@@ -43,7 +40,6 @@ impl ExecRequest {
         Self {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
-            env: Vec::new(),
             cwd: cwd.into(),
             required_isolation,
             requested_isolation_source: RequestedIsolationSource::Request,
@@ -67,7 +63,6 @@ impl ExecRequest {
         Self {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
-            env: Vec::new(),
             cwd: cwd.into(),
             required_isolation: policy_default_isolation,
             requested_isolation_source: RequestedIsolationSource::PolicyDefault,
@@ -80,19 +75,6 @@ impl ExecRequest {
     pub fn with_declared_mutation(mut self, declared_mutation: bool) -> Self {
         self.declared_mutation = declared_mutation;
         self.declared_mutation_explicitly = true;
-        self
-    }
-
-    pub fn with_env<I, K, V>(mut self, env: I) -> Self
-    where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<OsString>,
-        V: Into<OsString>,
-    {
-        self.env = env
-            .into_iter()
-            .map(|(name, value)| (name.into(), value.into()))
-            .collect();
         self
     }
 
@@ -112,7 +94,6 @@ impl ExecRequest {
 pub struct RequestResolution {
     pub program: OsString,
     pub args: Vec<OsString>,
-    pub env: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub workspace_root: PathBuf,
     pub declared_mutation: bool,
@@ -162,7 +143,6 @@ impl RequestResolution {
         Self {
             program,
             args: request.args.clone(),
-            env: request.env.clone(),
             cwd,
             workspace_root,
             declared_mutation: request.declared_mutation,
@@ -186,10 +166,8 @@ impl Serialize for RequestResolution {
         struct RequestResolutionSerde<'a> {
             program: LossyOsStr<'a>,
             args: LossyOsStrings<'a>,
-            env: LossyEnvPairs<'a>,
             program_exact: ExactOsStr<'a>,
             args_exact: ExactOsStrings<'a>,
-            env_exact: ExactEnvPairs<'a>,
             cwd: &'a PathBuf,
             workspace_root: &'a PathBuf,
             declared_mutation: bool,
@@ -204,10 +182,8 @@ impl Serialize for RequestResolution {
         RequestResolutionSerde {
             program: LossyOsStr(self.program.as_os_str()),
             args: LossyOsStrings(&self.args),
-            env: LossyEnvPairs(&self.env),
             program_exact: ExactOsStr(self.program.as_os_str()),
             args_exact: ExactOsStrings(&self.args),
-            env_exact: ExactEnvPairs(&self.env),
             cwd: &self.cwd,
             workspace_root: &self.workspace_root,
             declared_mutation: self.declared_mutation,
@@ -399,7 +375,6 @@ mod tests {
             supported_isolation: ExecutionIsolation::BestEffort,
             program: OsString::from("echo"),
             args: vec![OsString::from("hello")],
-            env: vec![(OsString::from("PATH"), OsString::from("/usr/bin"))],
             cwd: PathBuf::from("/canonical/workspace"),
             workspace_root: PathBuf::from("/canonical/workspace"),
             declared_mutation: false,
@@ -415,6 +390,5 @@ mod tests {
             PathBuf::from("/canonical/workspace")
         );
         assert_eq!(resolution.program, OsString::from("echo"));
-        assert_eq!(resolution.env, request.env);
     }
 }

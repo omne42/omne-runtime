@@ -1,15 +1,13 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-
-use omne_system_package_primitives::SystemPackageManager;
-use tempfile::tempfile;
+use std::thread;
 
 use crate::command_path::{
-    is_spawnable_command_path, resolve_command_path_in_standard_locations_os,
+    is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
+    resolve_available_command_path_os, resolve_command_path_or_standard_location_os,
     resolve_command_path_os, resolve_command_path_os_with_path_var,
 };
 
@@ -88,11 +86,6 @@ pub enum HostCommandError {
         execution: HostCommandExecution,
         source: io::Error,
     },
-    CaptureFailed {
-        program: OsString,
-        execution: HostCommandExecution,
-        source: io::Error,
-    },
 }
 
 #[derive(Debug)]
@@ -127,22 +120,6 @@ impl fmt::Display for HostCommandError {
                     )
                 }
             },
-            Self::CaptureFailed {
-                program,
-                execution,
-                source,
-            } => match execution {
-                HostCommandExecution::Direct => write!(
-                    f,
-                    "capture output from {} failed: {source}",
-                    program.to_string_lossy()
-                ),
-                HostCommandExecution::Sudo => write!(
-                    f,
-                    "capture output from sudo -n {} failed: {source}",
-                    program.to_string_lossy()
-                ),
-            },
         }
     }
 }
@@ -151,7 +128,7 @@ impl std::error::Error for HostCommandError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::CommandNotFound { .. } => None,
-            Self::SpawnFailed { source, .. } | Self::CaptureFailed { source, .. } => Some(source),
+            Self::SpawnFailed { source, .. } => Some(source),
         }
     }
 }
@@ -207,7 +184,7 @@ pub fn run_host_command(
         ensure_sudo_target_is_available(request)?;
     }
     let output = run_command_output(request, execution)
-        .map_err(|source| map_command_output_error(request, execution, source))?;
+        .map_err(|source| map_spawn_error(request.program, execution, source))?;
     Ok(HostCommandOutput { execution, output })
 }
 
@@ -252,45 +229,39 @@ pub fn command_path_exists(command: &Path) -> bool {
 pub fn command_available(command: &str) -> bool {
     let command_os = OsStr::new(command);
     if is_explicit_command_path(command_os) {
-        return is_spawnable_command_path(Path::new(command_os));
+        return is_regular_command_path(Path::new(command_os));
     }
-    resolve_command_path_os(command_os).is_some()
+    resolve_available_command_path(command).is_some()
 }
 
 pub fn command_available_os(command: &OsStr) -> bool {
     if is_explicit_command_path(command) {
-        return is_spawnable_command_path(Path::new(command));
+        return is_regular_command_path(Path::new(command));
     }
-    resolve_command_path_os(command).is_some()
-}
-
-pub fn command_exists_for_request(request: &HostCommandRequest<'_>) -> bool {
-    resolve_program_for_direct_command(request).is_some_and(|path| is_spawnable_command_path(&path))
-}
-
-pub fn command_available_for_request(request: &HostCommandRequest<'_>) -> bool {
-    resolve_program_for_direct_command(request).is_some_and(|path| is_spawnable_command_path(&path))
+    resolve_available_command_path_os(command).is_some()
 }
 
 pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoMode {
-    sudo_mode_system_package_manager(program)
-        .filter(|manager| manager.requires_privileged_install())
-        .map_or(HostCommandSudoMode::Never, |_| {
+    let Some(program) = sudo_mode_program_name(program) else {
+        return HostCommandSudoMode::Never;
+    };
+    match program {
+        "brew" => HostCommandSudoMode::Never,
+        "apt-get" | "dnf" | "yum" | "apk" | "pacman" | "zypper" => {
             HostCommandSudoMode::IfNonRootSystemCommand
-        })
+        }
+        _ => HostCommandSudoMode::Never,
+    }
 }
 
 fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecution) -> Command {
+    let program = resolve_program_for_spawn(request);
     let mut cmd = match execution {
-        HostCommandExecution::Direct => Command::new(resolve_program_for_direct_spawn(request)),
+        HostCommandExecution::Direct => Command::new(&program),
         HostCommandExecution::Sudo => {
-            let mut cmd = Command::new(resolve_sudo_program());
+            let mut cmd = Command::new(resolve_sudo_program(request.env));
             cmd.arg("-n");
-            append_sudo_target_command(
-                &mut cmd,
-                &resolve_program_for_sudo_target(request),
-                request,
-            );
+            append_sudo_target_command(&mut cmd, &program, request);
             cmd
         }
     };
@@ -305,7 +276,9 @@ fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecuti
     if let Some(working_directory) = request.working_directory {
         cmd.current_dir(working_directory);
     }
-    cmd.stdin(Stdio::null());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     cmd
 }
 
@@ -314,8 +287,16 @@ fn append_sudo_target_command(
     program: &Path,
     request: &HostCommandRequest<'_>,
 ) {
-    let _ = request;
-    command.arg(program);
+    if request.env.is_empty() {
+        command.arg(program);
+    } else {
+        command.arg(resolve_env_program());
+        command.arg("--");
+        for (name, value) in request.env {
+            command.arg(env_assignment(name, value));
+        }
+        command.arg(program);
+    }
     for arg in request.args {
         command.arg(arg);
     }
@@ -324,7 +305,7 @@ fn append_sudo_target_command(
 fn run_command_output(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
-) -> Result<Output, CommandOutputError> {
+) -> io::Result<Output> {
     #[cfg(unix)]
     {
         const EXECUTABLE_BUSY_RETRIES: usize = 3;
@@ -333,7 +314,10 @@ fn run_command_output(
         for attempt in 0..=EXECUTABLE_BUSY_RETRIES {
             match spawn_and_capture_output(request, execution) {
                 Ok(output) => return Ok(output),
-                Err(err) if err.is_executable_file_busy() && attempt < EXECUTABLE_BUSY_RETRIES => {
+                Err(err)
+                    if err.kind() == io::ErrorKind::ExecutableFileBusy
+                        && attempt < EXECUTABLE_BUSY_RETRIES =>
+                {
                     std::thread::sleep(std::time::Duration::from_millis(
                         EXECUTABLE_BUSY_BACKOFF_MS,
                     ));
@@ -354,34 +338,30 @@ fn run_command_output(
 fn spawn_and_capture_output(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
-) -> Result<Output, CommandOutputError> {
-    let (stdout_capture, stdout_writer) =
-        create_output_capture_file().map_err(CommandOutputError::Spawn)?;
-    let (stderr_capture, stderr_writer) =
-        create_output_capture_file().map_err(CommandOutputError::Spawn)?;
-    let mut command = build_command(request, execution);
-    command.stdout(Stdio::from(stdout_writer));
-    command.stderr(Stdio::from(stderr_writer));
-    let mut child = command.spawn().map_err(CommandOutputError::Spawn)?;
-    let status = child.wait().map_err(CommandOutputError::Spawn)?;
+) -> io::Result<Output> {
+    let mut child = build_command(request, execution).spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("stdout pipe missing"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("stderr pipe missing"))?;
+    let stdout_handle = thread::spawn(move || read_stream_limited(stdout, "stdout"));
+    let stderr_handle = thread::spawn(move || read_stream_limited(stderr, "stderr"));
+    let status = child.wait()?;
     Ok(Output {
         status,
-        stdout: read_captured_output(stdout_capture, "stdout")
-            .map_err(CommandOutputError::Capture)?,
-        stderr: read_captured_output(stderr_capture, "stderr")
-            .map_err(CommandOutputError::Capture)?,
+        stdout: join_capture_thread(stdout_handle)?,
+        stderr: join_capture_thread(stderr_handle)?,
     })
 }
 
-fn create_output_capture_file() -> io::Result<(File, File)> {
-    let capture = tempfile()?;
-    let writer = capture.try_clone()?;
-    Ok((capture, writer))
-}
-
-fn read_captured_output(mut capture: File, stream_name: &'static str) -> io::Result<Vec<u8>> {
-    capture.seek(SeekFrom::Start(0))?;
-    read_stream_limited(&mut capture, stream_name)
+fn join_capture_thread(handle: thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
+    handle
+        .join()
+        .map_err(|_| io::Error::other("output capture thread panicked"))?
 }
 
 fn read_stream_limited<R>(mut reader: R, stream_name: &'static str) -> io::Result<Vec<u8>>
@@ -390,8 +370,17 @@ where
 {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 8192];
-    let mut exceeded_capture_limit = false;
+    let mut reached_capture_limit = false;
     loop {
+        if reached_capture_limit {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            return Err(io::Error::other(format!(
+                "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
+            )));
+        }
         let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -400,13 +389,13 @@ where
         let to_copy = remaining.min(read);
         bytes.extend_from_slice(&buffer[..to_copy]);
         if to_copy < read {
-            exceeded_capture_limit = true;
+            return Err(io::Error::other(format!(
+                "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
+            )));
         }
-    }
-    if exceeded_capture_limit {
-        return Err(io::Error::other(format!(
-            "{stream_name} exceeded capture limit of {MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM} bytes"
-        )));
+        if bytes.len() == MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM {
+            reached_capture_limit = true;
+        }
     }
     Ok(bytes)
 }
@@ -423,7 +412,7 @@ fn should_try_sudo_for_request_with_status(
         request.program,
         request.sudo_mode,
         process_is_non_root,
-        sudo_available(),
+        sudo_available(request.env),
     )
 }
 
@@ -460,16 +449,11 @@ fn has_path_separator(command: &OsStr) -> bool {
 }
 
 fn sudo_eligible_program(program: &OsStr) -> bool {
-    let Some(manager) = sudo_mode_system_package_manager(program) else {
-        return false;
-    };
-    if !manager.requires_privileged_install() {
-        return false;
-    }
     if !is_explicit_command_path(program) {
         return true;
     }
-    explicit_system_package_manager_path(Path::new(program))
+
+    explicit_system_command_path(Path::new(program))
 }
 
 fn sudo_mode_program_name(program: &OsStr) -> Option<&str> {
@@ -478,49 +462,35 @@ fn sudo_mode_program_name(program: &OsStr) -> Option<&str> {
     }
 
     let path = Path::new(program);
-    explicit_system_package_manager_path(path)
+    explicit_system_command_path(path)
         .then_some(path.file_name()?.to_str())
         .flatten()
 }
 
-fn sudo_mode_system_package_manager(program: &OsStr) -> Option<SystemPackageManager> {
-    sudo_mode_program_name(program).and_then(SystemPackageManager::parse)
-}
-
-fn explicit_system_package_manager_path(path: &Path) -> bool {
+fn explicit_system_command_path(path: &Path) -> bool {
     if !path.is_absolute() {
         return false;
     }
 
-    if !is_spawnable_command_path(path) {
-        return false;
+    #[cfg(unix)]
+    {
+        [
+            "/usr/bin",
+            "/usr/sbin",
+            "/bin",
+            "/sbin",
+            "/usr/local/bin",
+            "/opt/homebrew/bin",
+            "/opt/local/bin",
+        ]
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
     }
 
-    let Some(file_name) = path.file_name() else {
-        return false;
-    };
-    explicit_system_package_manager_path_with_resolved(
-        path,
-        resolve_host_system_package_manager_path(file_name),
-    )
-}
-
-fn explicit_system_package_manager_path_with_resolved(
-    path: &Path,
-    resolved_path: Option<PathBuf>,
-) -> bool {
-    let Some(host_path) = resolved_path else {
-        return false;
-    };
-
-    let Ok(path) = std::fs::canonicalize(path) else {
-        return false;
-    };
-    let Ok(host_path) = std::fs::canonicalize(host_path) else {
-        return false;
-    };
-
-    path == host_path
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 #[cfg(windows)]
@@ -533,16 +503,21 @@ fn is_path_env_name(name: &OsStr) -> bool {
     name == OsStr::new("PATH")
 }
 
-fn resolve_sudo_program() -> PathBuf {
-    resolve_sudo_path().unwrap_or_else(|| PathBuf::from("sudo"))
+fn resolve_sudo_program(env: &[(OsString, OsString)]) -> PathBuf {
+    resolve_sudo_path(env).unwrap_or_else(|| PathBuf::from("sudo"))
 }
 
-fn sudo_available() -> bool {
-    resolve_sudo_path().is_some()
+fn resolve_env_program() -> PathBuf {
+    resolve_command_path_or_standard_location_os(OsStr::new("env"))
+        .unwrap_or_else(|| PathBuf::from("env"))
 }
 
-fn resolve_sudo_path() -> Option<PathBuf> {
-    resolve_command_path_in_standard_locations_os(OsStr::new("sudo"))
+fn sudo_available(env: &[(OsString, OsString)]) -> bool {
+    resolve_sudo_path(env).is_some()
+}
+
+fn resolve_sudo_path(env: &[(OsString, OsString)]) -> Option<PathBuf> {
+    resolve_command_path_os_with_path_var(OsStr::new("sudo"), effective_path_var(env))
 }
 
 fn effective_path_var(env: &[(OsString, OsString)]) -> Option<OsString> {
@@ -552,46 +527,18 @@ fn effective_path_var(env: &[(OsString, OsString)]) -> Option<OsString> {
         .or_else(|| std::env::var_os("PATH"))
 }
 
-fn resolve_program_for_direct_command(request: &HostCommandRequest<'_>) -> Option<PathBuf> {
+fn resolve_program_for_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
     let program = Path::new(request.program);
     if program.is_absolute() {
-        return Some(program.to_path_buf());
+        return program.to_path_buf();
     }
-    if is_explicit_command_path(request.program) {
-        return Some(resolve_relative_program_against_caller_cwd(program));
+    if !is_explicit_command_path(request.program) {
+        return program.to_path_buf();
     }
-    resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
-}
-
-fn resolve_program_for_direct_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
-    resolve_program_for_direct_command(request).unwrap_or_else(|| PathBuf::from(request.program))
-}
-
-fn resolve_relative_program_against_caller_cwd(program: &Path) -> PathBuf {
-    if let Ok(current_directory) = std::env::current_dir() {
-        return current_directory.join(program);
+    if let Some(working_directory) = request.working_directory {
+        return working_directory.join(program);
     }
     program.to_path_buf()
-}
-
-fn resolve_program_for_sudo_target(request: &HostCommandRequest<'_>) -> PathBuf {
-    if is_explicit_command_path(request.program) {
-        return resolve_program_for_direct_spawn(request);
-    }
-
-    resolve_host_system_package_manager_path(request.program)
-        .unwrap_or_else(|| PathBuf::from(request.program))
-}
-
-fn resolve_host_system_package_manager_path(program: &OsStr) -> Option<PathBuf> {
-    if is_explicit_command_path(program) {
-        return None;
-    }
-    let manager = SystemPackageManager::parse(program.to_str()?)?;
-    manager
-        .requires_privileged_install()
-        .then_some(resolve_command_path_in_standard_locations_os(program))
-        .flatten()
 }
 
 fn ensure_sudo_target_is_available(
@@ -601,7 +548,9 @@ fn ensure_sudo_target_is_available(
         return Ok(());
     }
 
-    if resolve_host_system_package_manager_path(request.program).is_some() {
+    if resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
+        .is_some()
+    {
         return Ok(());
     }
 
@@ -614,57 +563,28 @@ fn is_explicit_command_path(command: &OsStr) -> bool {
     has_path_separator(command) || Path::new(command).is_absolute()
 }
 
-#[derive(Debug)]
-enum CommandOutputError {
-    Spawn(io::Error),
-    Capture(io::Error),
+fn env_assignment(name: &OsStr, value: &OsStr) -> OsString {
+    let mut assignment = OsString::new();
+    assignment.push(name);
+    assignment.push(OsStr::new("="));
+    assignment.push(value);
+    assignment
 }
 
-impl CommandOutputError {
-    #[cfg(unix)]
-    fn is_executable_file_busy(&self) -> bool {
-        match self {
-            Self::Spawn(source) => source.kind() == io::ErrorKind::ExecutableFileBusy,
-            Self::Capture(_) => false,
-        }
-    }
-}
-
-fn map_command_output_error(
-    request: &HostCommandRequest<'_>,
+fn map_spawn_error(
+    program: &OsStr,
     execution: HostCommandExecution,
-    source: CommandOutputError,
+    source: io::Error,
 ) -> HostCommandError {
-    match source {
-        CommandOutputError::Spawn(source)
-            if source.kind() == io::ErrorKind::NotFound
-                && spawn_error_is_missing_program(request, execution) =>
-        {
-            HostCommandError::CommandNotFound {
-                program: request.program.to_os_string(),
-            }
+    if source.kind() == io::ErrorKind::NotFound {
+        HostCommandError::CommandNotFound {
+            program: program.to_os_string(),
         }
-        CommandOutputError::Spawn(source) => HostCommandError::SpawnFailed {
-            program: request.program.to_os_string(),
+    } else {
+        HostCommandError::SpawnFailed {
+            program: program.to_os_string(),
             execution,
             source,
-        },
-        CommandOutputError::Capture(source) => HostCommandError::CaptureFailed {
-            program: request.program.to_os_string(),
-            execution,
-            source,
-        },
-    }
-}
-
-fn spawn_error_is_missing_program(
-    request: &HostCommandRequest<'_>,
-    execution: HostCommandExecution,
-) -> bool {
-    match execution {
-        HostCommandExecution::Sudo => !is_explicit_command_path(request.program),
-        HostCommandExecution::Direct => {
-            resolve_program_for_direct_command(request).is_none_or(|path| !path.exists())
         }
     }
 }
@@ -676,32 +596,20 @@ mod tests {
     use std::io;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
-    #[cfg(unix)]
-    use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
 
     #[cfg(unix)]
     use super::command_available_os;
-    use super::command_exists_os;
     #[cfg(unix)]
     use super::ensure_sudo_target_is_available;
-    #[cfg(unix)]
-    use super::explicit_system_package_manager_path_with_resolved;
-    #[cfg(unix)]
-    use super::resolve_command_path_in_standard_locations_os;
-    #[cfg(unix)]
-    use super::resolve_host_system_package_manager_path;
-    #[cfg(unix)]
-    use super::resolve_sudo_path;
+    use super::resolve_env_program;
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
     use super::{
         HostCommandError, HostCommandExecution, HostCommandRequest, HostCommandSudoMode,
-        HostRecipeError, HostRecipeRequest, build_command, command_available,
-        command_available_for_request, command_exists, command_exists_for_request,
-        command_path_exists, default_recipe_sudo_mode_for_program,
-        resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
-        should_try_sudo_with_status,
+        HostRecipeError, HostRecipeRequest, build_command, command_available, command_exists,
+        command_path_exists, default_recipe_sudo_mode_for_program, run_host_command,
+        run_host_recipe, should_try_sudo_with_status,
     };
 
     #[test]
@@ -747,21 +655,9 @@ mod tests {
             true,
             true,
         ));
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         assert!(should_try_sudo_with_status(
             OsStr::new("/usr/bin/apt-get"),
-            HostCommandSudoMode::IfNonRootSystemCommand,
-            true,
-            true,
-        ));
-        assert!(!should_try_sudo_with_status(
-            OsStr::new("sh"),
-            HostCommandSudoMode::IfNonRootSystemCommand,
-            true,
-            true,
-        ));
-        assert!(!should_try_sudo_with_status(
-            OsStr::new("brew"),
             HostCommandSudoMode::IfNonRootSystemCommand,
             true,
             true,
@@ -788,7 +684,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_detection_ignores_request_path_override() {
+    fn sudo_detection_uses_request_path_override() {
         let temp = tempfile::tempdir().expect("tempdir");
         let sudo_path = write_test_command(temp.path(), "sudo");
         let env = vec![(
@@ -803,35 +699,21 @@ mod tests {
             sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
         };
 
+        assert!(should_try_sudo_for_request_with_status(&request, true));
+
         let command = build_command(&request, HostCommandExecution::Sudo);
-        assert_ne!(Path::new(command.get_program()), sudo_path.as_path());
-        assert!(should_try_sudo_for_request_with_status(&request, true) == super::sudo_available());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn resolve_sudo_path_uses_trusted_standard_location() {
-        let resolved = resolve_sudo_path();
-        assert_eq!(
-            resolved,
-            resolve_command_path_in_standard_locations_os(OsStr::new("sudo"))
-        );
+        assert_eq!(Path::new(command.get_program()), sudo_path.as_path());
     }
 
     #[test]
-    fn sudo_command_drops_request_environment_at_privilege_boundary() {
-        let explicit_program = std::env::current_exe().expect("current exe");
-        let args = vec![OsString::from("-c"), OsString::from("exit 0")];
+    fn sudo_command_wraps_target_with_env_assignments() {
+        let args = vec![OsString::from("install"), OsString::from("curl")];
         let env = vec![
-            (
-                OsString::from("PATH"),
-                OsString::from("/tmp/not-trusted:/usr/bin"),
-            ),
             (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
             (OsString::from("OMNE_SECOND"), OsString::from("value")),
         ];
         let request = HostCommandRequest {
-            program: explicit_program.as_os_str(),
+            program: OsStr::new("apt-get"),
             args: &args,
             env: &env,
             working_directory: None,
@@ -843,13 +725,18 @@ mod tests {
             .get_args()
             .map(|arg: &OsStr| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert_eq!(collected_args[0], "-n");
-        assert_eq!(Path::new(&collected_args[1]), explicit_program.as_path());
-        assert_eq!(collected_args[2], "-c");
-        assert_eq!(collected_args[3], "exit 0");
-        assert!(
-            collected_args.iter().all(|arg| !arg.contains('=')),
-            "sudo target must not receive request env assignments: {collected_args:?}"
+        assert_eq!(
+            collected_args,
+            vec![
+                "-n".to_string(),
+                resolve_env_program().to_string_lossy().into_owned(),
+                "--".to_string(),
+                "OMNE_TEST_VALUE=world".to_string(),
+                "OMNE_SECOND=value".to_string(),
+                "apt-get".to_string(),
+                "install".to_string(),
+                "curl".to_string(),
+            ]
         );
 
         let collected_env = command
@@ -864,61 +751,6 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(collected_env.is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn sudo_command_uses_trusted_target_path_instead_of_request_path_shadow() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let package_manager = ["apt-get", "dnf", "yum", "apk", "pacman", "zypper"]
-            .into_iter()
-            .find_map(|name| {
-                resolve_host_system_package_manager_path(OsStr::new(name))
-                    .map(|resolved| (name, resolved))
-            });
-        let Some((package_manager, resolved_path)) = package_manager else {
-            return;
-        };
-
-        let shadowed_program = write_test_command(temp.path(), package_manager);
-        let env = vec![(
-            OsString::from("PATH"),
-            temp.path().as_os_str().to_os_string(),
-        )];
-        let request = HostCommandRequest {
-            program: OsStr::new(package_manager),
-            args: &[],
-            env: &env,
-            working_directory: None,
-            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
-        };
-
-        let command = build_command(&request, HostCommandExecution::Sudo);
-        let target = command
-            .get_args()
-            .last()
-            .expect("sudo target should be present");
-
-        assert_ne!(Path::new(target), shadowed_program.as_path());
-        assert_eq!(Path::new(target), resolved_path.as_path());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn sudo_target_resolution_uses_trusted_standard_location() {
-        let package_manager = ["apt-get", "dnf", "yum", "apk", "pacman", "zypper"]
-            .into_iter()
-            .find_map(|name| {
-                resolve_command_path_in_standard_locations_os(OsStr::new(name))
-                    .map(|resolved| (name, resolved))
-            });
-        let Some((package_manager, resolved_path)) = package_manager else {
-            return;
-        };
-
-        let resolved = resolve_host_system_package_manager_path(OsStr::new(package_manager));
-
-        assert_eq!(resolved, Some(resolved_path));
     }
 
     #[test]
@@ -960,7 +792,7 @@ mod tests {
             temp.path().as_os_str().to_os_string(),
         )];
         let request = HostCommandRequest {
-            program: OsStr::new("omne-process-primitives-missing-command"),
+            program: OsStr::new("apt-get"),
             args: &[],
             env: &env,
             working_directory: None,
@@ -978,7 +810,7 @@ mod tests {
             default_recipe_sudo_mode_for_program(OsStr::new("apt-get")),
             HostCommandSudoMode::IfNonRootSystemCommand
         );
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         assert_eq!(
             default_recipe_sudo_mode_for_program(OsStr::new("/usr/bin/apt-get")),
             HostCommandSudoMode::IfNonRootSystemCommand
@@ -1077,32 +909,7 @@ mod tests {
 
         let err = run_host_command(&request).expect_err("oversized stdout should fail");
         match err {
-            HostCommandError::CaptureFailed { source, .. } => {
-                assert!(
-                    source.to_string().contains("stdout exceeded capture limit"),
-                    "unexpected error: {source}"
-                );
-            }
-            other => panic!("unexpected error: {other}"),
-        }
-    }
-
-    #[test]
-    fn run_host_command_rejects_large_oversized_stdout_without_hanging() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let command_path = write_very_large_stdout_command(temp.path(), "very-loud");
-        let args = Vec::new();
-        let request = HostCommandRequest {
-            program: command_path.as_os_str(),
-            args: &args,
-            env: &[],
-            working_directory: None,
-            sudo_mode: HostCommandSudoMode::Never,
-        };
-
-        let err = run_host_command(&request).expect_err("oversized stdout should fail");
-        match err {
-            HostCommandError::CaptureFailed { source, .. } => {
+            HostCommandError::SpawnFailed { source, .. } => {
                 assert!(
                     source.to_string().contains("stdout exceeded capture limit"),
                     "unexpected error: {source}"
@@ -1148,7 +955,7 @@ mod tests {
 
         let err = run_host_command(&request).expect_err("oversized stderr should fail");
         match err {
-            HostCommandError::CaptureFailed { source, .. } => {
+            HostCommandError::SpawnFailed { source, .. } => {
                 assert!(
                     source.to_string().contains("stderr exceeded capture limit"),
                     "unexpected error: {source}"
@@ -1159,115 +966,25 @@ mod tests {
     }
 
     #[test]
-    fn run_host_command_resolves_relative_program_against_caller_cwd() {
-        let current_directory = std::env::current_dir().expect("current dir");
-        let temp = tempfile::Builder::new()
-            .prefix("omne-process-primitives-relative-program-")
-            .tempdir_in(&current_directory)
-            .expect("tempdir in current dir");
-        let working_directory = tempfile::tempdir().expect("working directory tempdir");
-        let command_path = write_pwd_command(temp.path(), "pwd");
-        let relative_program = command_path
-            .strip_prefix(&current_directory)
-            .expect("relative command path")
-            .to_path_buf();
+    fn run_host_command_resolves_relative_program_against_working_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let working_directory = temp.path().join("cwd");
+        std::fs::create_dir_all(&working_directory).expect("create working directory");
+        write_pwd_command(&working_directory, "pwd");
+        let relative_program = relative_command_path("pwd");
         let args = Vec::new();
         let request = HostCommandRequest {
-            program: relative_program.as_os_str(),
+            program: OsStr::new(relative_program.as_str()),
             args: &args,
             env: &[],
-            working_directory: Some(working_directory.path()),
+            working_directory: Some(&working_directory),
             sudo_mode: HostCommandSudoMode::Never,
         };
-
-        assert!(command_exists_os(relative_program.as_os_str()));
-        assert_eq!(
-            resolve_program_for_direct_spawn(&request),
-            current_directory.join(&relative_program)
-        );
 
         let output = run_host_command(&request).expect("run host command");
         assert!(output.output.status.success());
         let stdout = String::from_utf8_lossy(&output.output.stdout);
-        assert!(stdout.contains(&working_directory.path().display().to_string()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn direct_command_resolves_bare_request_path_before_spawn() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let command_path = write_test_command(temp.path(), "echoenv");
-        let env = vec![
-            (
-                OsString::from("PATH"),
-                temp.path().as_os_str().to_os_string(),
-            ),
-            (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
-        ];
-        let request = HostCommandRequest {
-            program: OsStr::new("echoenv"),
-            args: &[],
-            env: &env,
-            working_directory: None,
-            sudo_mode: HostCommandSudoMode::Never,
-        };
-
-        let command = build_command(&request, HostCommandExecution::Direct);
-        assert_eq!(Path::new(command.get_program()), command_path.as_path());
-        assert_eq!(
-            command.get_envs().find_map(|(name, value)| {
-                (name == OsStr::new("PATH"))
-                    .then(|| value.expect("PATH value should exist").to_os_string())
-            }),
-            Some(temp.path().as_os_str().to_os_string())
-        );
-    }
-
-    #[test]
-    fn request_scoped_probe_keeps_relative_program_on_caller_cwd() {
-        let current_directory = std::env::current_dir().expect("current dir");
-        let temp = tempfile::Builder::new()
-            .prefix("omne-process-primitives-request-probe-")
-            .tempdir_in(&current_directory)
-            .expect("tempdir in current dir");
-        let working_directory = tempfile::tempdir().expect("working directory tempdir");
-        let command_path = write_pwd_command(temp.path(), "pwd");
-        let relative_program = command_path
-            .strip_prefix(&current_directory)
-            .expect("relative command path")
-            .to_path_buf();
-        let request = HostCommandRequest {
-            program: relative_program.as_os_str(),
-            args: &[],
-            env: &[],
-            working_directory: Some(working_directory.path()),
-            sudo_mode: HostCommandSudoMode::Never,
-        };
-
-        assert!(command_exists_for_request(&request));
-        assert!(command_available_for_request(&request));
-        assert_eq!(
-            resolve_program_for_direct_spawn(&request),
-            current_directory.join(&relative_program)
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn explicit_system_package_manager_path_requires_same_binary_as_host_resolution() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let host_program = write_test_command(temp.path(), "apt-get");
-        let alias = temp.path().join("apt-get-alias");
-        symlink(&host_program, &alias).expect("symlink alias");
-
-        assert!(explicit_system_package_manager_path_with_resolved(
-            &host_program,
-            Some(host_program.clone()),
-        ));
-        assert!(explicit_system_package_manager_path_with_resolved(
-            &alias,
-            Some(host_program),
-        ));
+        assert!(stdout.contains(&working_directory.display().to_string()));
     }
 
     #[test]
@@ -1312,57 +1029,6 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn run_host_command_returns_after_direct_child_exit_even_when_background_keeps_stdout_open() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let command_path = write_background_writer_command(temp.path(), "daemonize", "stdout");
-        let request = HostCommandRequest {
-            program: command_path.as_os_str(),
-            args: &[],
-            env: &[],
-            working_directory: None,
-            sudo_mode: HostCommandSudoMode::Never,
-        };
-
-        let started = std::time::Instant::now();
-        let output = run_host_command(&request).expect("run host command");
-
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "background descendants must not keep run_host_command blocked"
-        );
-        assert!(output.output.status.success());
-        let stdout = String::from_utf8_lossy(&output.output.stdout);
-        assert!(stdout.contains("parent-ready"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn run_host_command_returns_after_direct_child_exit_even_when_background_keeps_stderr_open() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let command_path =
-            write_background_writer_command(temp.path(), "daemonize-stderr", "stderr");
-        let request = HostCommandRequest {
-            program: command_path.as_os_str(),
-            args: &[],
-            env: &[],
-            working_directory: None,
-            sudo_mode: HostCommandSudoMode::Never,
-        };
-
-        let started = std::time::Instant::now();
-        let output = run_host_command(&request).expect("run host command");
-
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "background descendants must not keep run_host_command blocked"
-        );
-        assert!(output.output.status.success());
-        let stderr = String::from_utf8_lossy(&output.output.stderr);
-        assert!(stderr.contains("parent-ready"));
     }
 
     #[cfg(unix)]
@@ -1420,12 +1086,11 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_discards_non_utf8_request_environment_values() {
+    fn sudo_keeps_non_utf8_environment_values_in_target_assignments() {
         let non_utf8_value = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
         let env = vec![(OsString::from("OMNE_TEST_VALUE"), non_utf8_value)];
-        let explicit_program = std::env::current_exe().expect("current exe");
         let request = HostCommandRequest {
-            program: explicit_program.as_os_str(),
+            program: OsStr::new("apt-get"),
             args: &[],
             env: &env,
             working_directory: None,
@@ -1439,20 +1104,26 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(collected_args[0], OsString::from("-n"));
-        assert_eq!(collected_args[1], explicit_program.into_os_string());
-        assert_eq!(collected_args.len(), 2);
+        assert_eq!(collected_args[1], resolve_env_program().into_os_string());
+        assert_eq!(collected_args[2], OsString::from("--"));
+        assert_eq!(
+            collected_args[3],
+            OsString::from_vec(vec![
+                0x4f, 0x4d, 0x4e, 0x45, 0x5f, 0x54, 0x45, 0x53, 0x54, 0x5f, 0x56, 0x41, 0x4c, 0x55,
+                0x45, 0x3d, 0x66, 0x6f, 0x80,
+            ])
+        );
+        assert_eq!(collected_args[4], OsString::from("apt-get"));
     }
 
     #[cfg(unix)]
     #[test]
-    fn non_executable_paths_are_not_available_or_spawnable() {
+    fn non_executable_paths_are_available_but_not_spawnable() {
+        use std::os::unix::fs::PermissionsExt;
+
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = temp.path().join("plain-script");
-        std::fs::write(
-            &command_path,
-            format!("#!{}\nexit 0\n", unix_test_shell_path().display()),
-        )
-        .expect("write plain script");
+        std::fs::write(&command_path, "#!/bin/sh\nexit 0\n").expect("write plain script");
         let mut permissions = std::fs::metadata(&command_path)
             .expect("stat plain script")
             .permissions();
@@ -1460,6 +1131,10 @@ mod tests {
         std::fs::set_permissions(&command_path, permissions).expect("chmod plain script");
 
         let command_path_string = command_path.to_string_lossy().into_owned();
+        assert!(command_available(&command_path_string));
+        assert!(command_available_os(command_path.as_os_str()));
+        assert!(!command_path_exists(&command_path));
+
         let args = Vec::new();
         let request = HostCommandRequest {
             program: command_path.as_os_str(),
@@ -1468,10 +1143,6 @@ mod tests {
             working_directory: None,
             sudo_mode: HostCommandSudoMode::Never,
         };
-        assert!(!command_available(&command_path_string));
-        assert!(!command_available_os(command_path.as_os_str()));
-        assert!(!command_available_for_request(&request));
-        assert!(!command_path_exists(&command_path));
 
         let error = run_host_command(&request).expect_err("non-executable path should fail");
         match error {
@@ -1481,169 +1152,66 @@ mod tests {
             HostCommandError::SpawnFailed { source, .. } => {
                 assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
             }
-            HostCommandError::CaptureFailed { .. } => {
-                panic!("non-executable path must fail before output capture starts");
-            }
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn bare_request_path_shadow_preserves_missing_interpreter_as_spawn_failure() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let command_path = write_unix_executable(
-            temp.path(),
-            "bad-loader",
-            "#!/definitely/missing/interpreter\nexit 0\n",
-        );
-        let env = vec![(
-            OsString::from("PATH"),
-            temp.path().as_os_str().to_os_string(),
-        )];
-        let request = HostCommandRequest {
-            program: OsStr::new("bad-loader"),
-            args: &[],
-            env: &env,
-            working_directory: None,
-            sudo_mode: HostCommandSudoMode::Never,
-        };
-
-        assert!(command_available_for_request(&request));
-        assert_eq!(resolve_program_for_direct_spawn(&request), command_path);
-
-        let error = run_host_command(&request).expect_err("missing interpreter should fail spawn");
-        match error {
-            HostCommandError::CommandNotFound { .. } => {
-                panic!("missing interpreter must not be mislabeled as command not found");
-            }
-            HostCommandError::SpawnFailed { source, .. } => {
-                assert_eq!(source.kind(), io::ErrorKind::NotFound);
-            }
-            HostCommandError::CaptureFailed { .. } => {
-                panic!("missing interpreter must fail before output capture starts");
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn explicit_system_package_manager_path_rejects_different_binary() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let host_program = write_test_command(temp.path(), "apt-get");
-        let other_program = write_test_command(temp.path(), "apt-get-other");
-
-        assert!(!explicit_system_package_manager_path_with_resolved(
-            &other_program,
-            Some(host_program),
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn resolve_host_system_package_manager_path_ignores_non_package_managers() {
-        assert!(resolve_host_system_package_manager_path(OsStr::new("sh")).is_none());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn explicit_system_package_manager_path_rejects_non_matching_explicit_path() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let host_program = write_test_command(temp.path(), "apt-get");
-        let mismatched_name = write_test_command(temp.path(), "dnf");
-
-        assert!(!explicit_system_package_manager_path_with_resolved(
-            &mismatched_name,
-            Some(host_program),
-        ));
     }
 
     #[cfg(unix)]
     fn write_test_command(dir: &Path, name: &str) -> PathBuf {
-        write_shell_executable(
+        write_unix_executable(
             dir,
             name,
-            "printf 'arg=%s\\n' \"$1\"\nprintf 'env=%s\\n' \"$OMNE_TEST_VALUE\"\n",
+            "#!/bin/sh\nprintf 'arg=%s\\n' \"$1\"\nprintf 'env=%s\\n' \"$OMNE_TEST_VALUE\"\n",
         )
     }
 
     #[cfg(unix)]
     fn write_pwd_command(dir: &Path, name: &str) -> PathBuf {
-        write_shell_executable(dir, name, "pwd\n")
+        write_unix_executable(dir, name, "#!/bin/sh\npwd\n")
     }
 
     #[cfg(unix)]
     fn write_count_command(dir: &Path, name: &str) -> PathBuf {
-        write_shell_executable(dir, name, "printf 'run\\n' >> \"$OMNE_COUNT_FILE\"\n")
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\nprintf 'run\\n' >> \"$OMNE_COUNT_FILE\"\n",
+        )
     }
 
     #[cfg(unix)]
     fn write_failing_command(dir: &Path, name: &str) -> PathBuf {
-        write_shell_executable(
+        write_unix_executable(
             dir,
             name,
-            "printf 'stdout-message'\nprintf 'stderr-message' >&2\nexit 7\n",
+            "#!/bin/sh\nprintf 'stdout-message'\nprintf 'stderr-message' >&2\nexit 7\n",
         )
     }
 
     #[cfg(unix)]
     fn write_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        write_payload_cat_command(dir, name, "stdout", 8 * 1024 * 1024 + 1)
-    }
-
-    #[cfg(unix)]
-    fn write_background_writer_command(dir: &Path, name: &str, stream: &str) -> PathBuf {
-        let body = match stream {
-            "stdout" => "(sleep 2; printf 'late-child\\n') &\nprintf 'parent-ready\\n'\n",
-            "stderr" => "(sleep 2; printf 'late-child\\n' >&2) &\nprintf 'parent-ready\\n' >&2\n",
-            other => panic!("unexpected background stream: {other}"),
-        };
-        write_shell_executable(dir, name, body)
-    }
-
-    #[cfg(unix)]
-    fn write_very_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        write_payload_cat_command(dir, name, "stdout", 32 * 1024 * 1024)
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (8 * 1024 * 1024 + 1))\nPY\n",
+        )
     }
 
     #[cfg(unix)]
     fn write_exact_limit_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        write_payload_cat_command(dir, name, "stdout", 8 * 1024 * 1024)
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('x' * (8 * 1024 * 1024))\nPY\n",
+        )
     }
 
     #[cfg(unix)]
     fn write_large_stderr_command(dir: &Path, name: &str) -> PathBuf {
-        write_payload_cat_command(dir, name, "stderr", 8 * 1024 * 1024 + 1)
-    }
-
-    #[cfg(unix)]
-    fn write_payload_cat_command(dir: &Path, name: &str, stream: &str, size: usize) -> PathBuf {
-        let payload_path = dir.join(format!("{name}.payload"));
-        std::fs::write(&payload_path, vec![b'x'; size]).expect("write payload");
-        let payload = shell_quote_path(&payload_path);
-        let body = match stream {
-            "stdout" => format!("cat {payload}\n"),
-            "stderr" => format!("cat {payload} >&2\n"),
-            other => panic!("unexpected payload stream: {other}"),
-        };
-        write_shell_executable(dir, name, &body)
-    }
-
-    #[cfg(unix)]
-    fn write_shell_executable(dir: &Path, name: &str, body: &str) -> PathBuf {
-        let shell = unix_test_shell_path();
-        write_unix_executable(dir, name, &format!("#!{}\n{body}", shell.display()))
-    }
-
-    #[cfg(unix)]
-    fn unix_test_shell_path() -> PathBuf {
-        crate::command_path::resolve_command_path_or_standard_location_os(OsStr::new("sh"))
-            .expect("resolve test shell")
-    }
-
-    #[cfg(unix)]
-    fn shell_quote_path(path: &Path) -> String {
-        let escaped = path.display().to_string().replace('\'', "'\"'\"'");
-        format!("'{escaped}'")
+        write_unix_executable(
+            dir,
+            name,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stderr.write('x' * (8 * 1024 * 1024 + 1))\nPY\n",
+        )
     }
 
     #[cfg(unix)]
@@ -1660,6 +1228,11 @@ mod tests {
         std::fs::set_permissions(&temp_path, perms).expect("chmod unix command");
         std::fs::rename(&temp_path, &path).expect("rename unix command");
         path
+    }
+
+    #[cfg(unix)]
+    fn relative_command_path(name: &str) -> String {
+        format!("./{name}")
     }
 
     #[cfg(windows)]
@@ -1711,17 +1284,6 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn write_very_large_stdout_command(dir: &Path, name: &str) -> PathBuf {
-        let path = dir.join(format!("{name}.cmd"));
-        std::fs::write(
-            &path,
-            "@echo off\r\npowershell -NoLogo -NoProfile -Command \"$s = 'x' * 32MB; [Console]::Out.Write($s)\"\r\n",
-        )
-        .expect("write windows very loud command");
-        path
-    }
-
-    #[cfg(windows)]
     fn write_exact_limit_stdout_command(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(format!("{name}.cmd"));
         std::fs::write(
@@ -1741,5 +1303,10 @@ mod tests {
         )
         .expect("write windows loud stderr command");
         path
+    }
+
+    #[cfg(windows)]
+    fn relative_command_path(name: &str) -> String {
+        format!(".\\{name}.cmd")
     }
 }

@@ -39,10 +39,6 @@
 - `crates/omne-process-primitives/docs/docs-system-map.md`
 - `crates/omne-system-package-primitives/docs/docs-system-map.md`
 
-嵌套 workspace package 如果仍落在某个现有 crate 边界内，例如 `crates/omne-fs/cli`，继续
-沿用父边界的文档系统，不单独复制一套顶层 crate docs skeleton。`../scripts/check-docs-system.sh`
-仍会按 `Cargo.toml` 的真实 workspace members 校验这些嵌套 package 是否落在已记录边界内。
-
 ## 维护要求
 
 - 新增 crate 时，同步补齐该 crate 的文档系统骨架。

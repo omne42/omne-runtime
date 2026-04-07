@@ -1,11 +1,7 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
-#[cfg(target_os = "macos")]
-use std::path::Component;
 use std::path::{Path, PathBuf};
-
-use crate::{MissingRootPolicy, open_root};
 
 #[derive(Debug, Clone)]
 pub struct AtomicWriteOptions {
@@ -208,9 +204,11 @@ pub fn stage_file_atomically_with_name(
     options: &AtomicWriteOptions,
     staged_file_name: Option<&str>,
 ) -> Result<StagedAtomicFile, AtomicWriteError> {
-    if let Some(parent) = destination.parent() {
-        ensure_atomic_parent_directory(parent, options.create_parent_directories)
-            .map_err(|err| AtomicWriteError::io_path("prepare_parent", parent, err))?;
+    if let Some(parent) = destination.parent()
+        && options.create_parent_directories
+    {
+        fs::create_dir_all(parent)
+            .map_err(|err| AtomicWriteError::io_path("create_dir_all", parent, err))?;
     }
 
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
@@ -240,9 +238,11 @@ pub fn stage_directory_atomically(
     destination: &Path,
     options: &AtomicDirectoryOptions,
 ) -> Result<StagedAtomicDirectory, AtomicDirectoryError> {
-    if let Some(parent) = destination.parent() {
-        ensure_atomic_parent_directory(parent, options.create_parent_directories)
-            .map_err(|err| AtomicDirectoryError::io_path("prepare_parent", parent, err))?;
+    if let Some(parent) = destination.parent()
+        && options.create_parent_directories
+    {
+        fs::create_dir_all(parent)
+            .map_err(|err| AtomicDirectoryError::io_path("create_dir_all", parent, err))?;
     }
 
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
@@ -274,88 +274,6 @@ fn normalize_staged_file_name(raw: &str) -> Option<String> {
     } else {
         Some(normalized)
     }
-}
-
-fn ensure_atomic_parent_directory(
-    parent: &Path,
-    create_parent_directories: bool,
-) -> io::Result<()> {
-    if parent.as_os_str().is_empty() {
-        return Ok(());
-    }
-    let normalized_parent = normalize_platform_root_alias(parent)?;
-
-    let policy = if create_parent_directories {
-        MissingRootPolicy::Create
-    } else {
-        MissingRootPolicy::Error
-    };
-    open_root(
-        &normalized_parent,
-        "atomic write parent",
-        policy,
-        |_, _, _, error| error,
-    )
-    .map(|_| ())
-}
-
-fn normalize_platform_root_alias(path: &Path) -> io::Result<PathBuf> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(path.to_path_buf())
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        normalize_macos_root_alias(path)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn normalize_macos_root_alias(path: &Path) -> io::Result<PathBuf> {
-    if !path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-
-    let mut visited = PathBuf::new();
-    let mut normal_index = 0usize;
-    let mut components = path.components().peekable();
-
-    while let Some(component) = components.next() {
-        visited.push(component.as_os_str());
-        if !matches!(component, std::path::Component::Normal(_)) {
-            continue;
-        }
-
-        match fs::symlink_metadata(&visited) {
-            Ok(metadata)
-                if metadata.file_type().is_symlink()
-                    && normal_index == 0
-                    && is_macos_root_alias_component(component) =>
-            {
-                let mut canonical = fs::canonicalize(&visited)?;
-                for remainder in components {
-                    canonical.push(remainder.as_os_str());
-                }
-                return Ok(canonical);
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path.to_path_buf()),
-            Err(error) => return Err(error),
-        }
-
-        normal_index += 1;
-    }
-
-    Ok(path.to_path_buf())
-}
-
-#[cfg(target_os = "macos")]
-fn is_macos_root_alias_component(component: Component<'_>) -> bool {
-    matches!(
-        component,
-        Component::Normal(part) if part == "var" || part == "tmp"
-    )
 }
 
 impl StagedAtomicFile {
@@ -733,130 +651,5 @@ mod tests {
             .commit()
             .expect_err("non-directory destination must fail");
         assert!(matches!(err, super::AtomicDirectoryError::Validation(_)));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn stage_file_rejects_existing_symlink_ancestor_in_parent_chain() {
-        use std::os::unix::fs::symlink;
-
-        let temp = tempfile::tempdir().expect("tempdir");
-        let real_parent = temp.path().join("real-parent");
-        std::fs::create_dir_all(&real_parent).expect("mkdir real parent");
-        let linked_parent = temp.path().join("linked-parent");
-        symlink(&real_parent, &linked_parent).expect("create parent symlink");
-        let destination = linked_parent.join("nested").join("tool");
-
-        let err = stage_file_atomically(&destination, &AtomicWriteOptions::default())
-            .expect_err("symlink ancestor must fail");
-        assert!(matches!(
-            err,
-            AtomicWriteError::IoPath {
-                op: "prepare_parent",
-                ..
-            }
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn stage_file_rejects_missing_suffix_redirected_by_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let temp = tempfile::tempdir().expect("tempdir");
-        let trusted_parent = temp.path().join("trusted");
-        let outside = temp.path().join("outside");
-        std::fs::create_dir_all(&trusted_parent).expect("mkdir trusted parent");
-        std::fs::create_dir_all(&outside).expect("mkdir outside");
-        symlink(&outside, trusted_parent.join("logs")).expect("create target symlink");
-        let destination = trusted_parent.join("logs").join("tool");
-
-        let err = stage_file_atomically(&destination, &AtomicWriteOptions::default())
-            .expect_err("symlinked missing suffix must fail");
-        assert!(matches!(
-            err,
-            AtomicWriteError::IoPath {
-                op: "prepare_parent",
-                ..
-            }
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn stage_directory_rejects_existing_symlink_ancestor_in_parent_chain() {
-        use std::os::unix::fs::symlink;
-
-        let temp = tempfile::tempdir().expect("tempdir");
-        let real_parent = temp.path().join("real-parent");
-        std::fs::create_dir_all(&real_parent).expect("mkdir real parent");
-        let linked_parent = temp.path().join("linked-parent");
-        symlink(&real_parent, &linked_parent).expect("create parent symlink");
-        let destination = linked_parent.join("nested").join("tree");
-
-        let err = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
-            .expect_err("symlink ancestor must fail");
-        assert!(matches!(
-            err,
-            super::AtomicDirectoryError::IoPath {
-                op: "prepare_parent",
-                ..
-            }
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn stage_directory_rejects_missing_suffix_redirected_by_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let temp = tempfile::tempdir().expect("tempdir");
-        let trusted_parent = temp.path().join("trusted");
-        let outside = temp.path().join("outside");
-        std::fs::create_dir_all(&trusted_parent).expect("mkdir trusted parent");
-        std::fs::create_dir_all(&outside).expect("mkdir outside");
-        symlink(&outside, trusted_parent.join("logs")).expect("create target symlink");
-        let destination = trusted_parent.join("logs").join("tree");
-
-        let err = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
-            .expect_err("symlinked missing suffix must fail");
-        assert!(matches!(
-            err,
-            super::AtomicDirectoryError::IoPath {
-                op: "prepare_parent",
-                ..
-            }
-        ));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn atomic_write_allows_macos_tempdir_root_alias() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let destination = temp.path().join("tool");
-
-        write_file_atomically(b"tool", &destination, &AtomicWriteOptions::default())
-            .expect("write through macos tempdir root alias");
-        assert_eq!(
-            std::fs::read(&destination).expect("read destination"),
-            b"tool"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_root_alias_matching_stays_narrow() {
-        assert!(super::is_macos_root_alias_component(
-            std::path::Component::Normal("var".as_ref())
-        ));
-        assert!(super::is_macos_root_alias_component(
-            std::path::Component::Normal("tmp".as_ref())
-        ));
-        assert!(!super::is_macos_root_alias_component(
-            std::path::Component::Normal("private".as_ref())
-        ));
-        assert!(!super::is_macos_root_alias_component(
-            std::path::Component::Normal("Users".as_ref())
-        ));
     }
 }

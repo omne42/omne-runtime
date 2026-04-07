@@ -15,46 +15,34 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed if requested isolation exceeds host support
 - fail-closed if a request marked as `policy_default` no longer matches the gateway's current policy default
 - fail-closed if `program` is neither a bare command name nor an absolute path
-- explicit absolute `program` paths must already resolve to spawnable executables, are bound as file identities, and are revalidated immediately before spawn; this narrows but cannot eliminate the final OS-level race between the last check and `exec`
-- bare command names are resolved to an absolute executable path during preflight, rebound as an executable identity, and rejected fail-closed if lookup cannot be bound
-- workspace boundary enforcement (`cwd` must stay inside `workspace_root`; `cwd` / `workspace_root` reject symlink or reparse-point ancestors before canonical binding, except for macOS root aliases such as `/var` and `/tmp`, and execution revalidates the bound directory identities before spawn)
+- explicit absolute `program` paths are bound as file identities and revalidated immediately before spawn
+- workspace boundary enforcement (`cwd` must stay inside `workspace_root`, and execution binds canonicalized directory identities before spawn)
 - explicit mutation declaration for every request when mutation enforcement is enabled
-- fail-closed denial for shell-like or interpreter launchers such as `sh`, `cmd`, `pwsh`, `python`, and `node` when callers label them `declared_mutation = false`; they must cross the mutating allowlist boundary instead of pretending to be read-only
+- fail-closed denial for shell-like or interpreter launchers such as `sh`, `cmd`, `pwsh`, `python`, and `node` unless they are explicitly allowlisted
 - fail-closed denial for known mutating tool families such as `git`, `make`, `cargo`, `go`, package managers, and core file-mutating utilities unless they declare mutation and use an explicitly allowlisted path
 - gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
-- structured decision events for audit/logging, including lossy display fields plus exact JSON encodings for `program` / `args` / explicit environment entries when OS strings are not valid UTF-8
-- mutating and non-mutating allowlists, plus opaque-launcher and known-mutator gates, evaluate native `OsStr` / `Path` inputs directly instead of relying on lossy UTF-8 coercion
+- structured decision events for audit/logging, including lossy display fields plus exact JSON encodings for `program` / `args` when OS strings are not valid UTF-8
 
 ## Important Scope Notes
 
 - `BestEffort` is a compatibility tier, not a strong sandbox guarantee.
 - Linux, macOS, and Windows currently do not expose a native `BestEffort` or `Strict` sandbox. Requests above `None` fail closed.
-- the in-memory `GatewayPolicy::default()` baseline now uses `allow_isolation_none = true` plus `default_isolation = none`, so a default `ExecGateway::new()` stays usable on today's `None`-only hosts; callers that want fail-closed sandbox preference must opt into `best_effort` or `strict` explicitly.
 - Linux's previous native Landlock path is intentionally disabled until it can be reintroduced without relying on unsafe post-`fork` Rust execution.
 - when `enforce_allowlisted_program_for_mutation = true`, callers must always set `with_declared_mutation(...)` intentionally instead of relying on the constructor default.
-- declared mutations must bind to a `mutating_program_allowlist` executable identity via an explicit program path, and declared non-mutating requests must bind to a `non_mutating_program_allowlist` executable identity via an explicit program path.
-- when mutation enforcement is enabled, allowlisted execution also rejects startup-sensitive request env such as `PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, `PYTHONPATH`, `RUBYOPT`, and `NODE_OPTIONS`, so audited program identity cannot be widened again through loader/interpreter hooks.
+- allowlisted mutating programs must explicitly set `declared_mutation = true`, and declared mutations must bind to an allowlisted executable identity via an explicit program path.
 - shell-like and interpreter launchers are denied by default because the gateway cannot trust `declared_mutation = false` for runtimes that can execute arbitrary subcommands or scripts.
 - known mutating tool families such as `git`, `make`, `cargo`, `go`, package managers, and core file-mutating utilities are also denied by default when callers label them `declared_mutation = false`; the built-in guardrail currently covers commands like `npm`, `pip`, `apt`, `dnf`, `yum`, `pacman`, `brew`, `rm`, `mkdir`, `touch`, `chmod`, and `ln`. To run them, callers must declare mutation and use an explicitly allowlisted path.
-- mutation authorization now requires explicit program paths in both the request and the relevant policy allowlist. Bare program names are denied fail-closed because they do not bind to a stable executable, and allowlist checks resolve by executable identity rather than basename text.
+- mutation authorization now requires explicit program paths in both the request and policy allowlist. Bare program names are denied fail-closed because they do not bind to a stable executable, and allowlist checks resolve by executable identity rather than basename text.
 - relative executable paths such as `./tool` or `bin/tool` are denied fail-closed because their spawn semantics can drift with the gateway process context; callers must use a bare command name or absolute path.
-- bare command names remain allowed for `execute()`, but the gateway immediately resolves them to a concrete executable path and audits that resolved path instead of the original bare token.
-- explicit program paths are revalidated as file identities before the spawn call, which narrows alias drift and preflight/path-swap bugs but does not eliminate the final OS-level race between that check and process creation.
-- `prepare_command()` now requires the caller-supplied `Command` to already point at the same resolved executable path that the gateway bound during preflight; handing it an unresolved bare command name is rejected fail-closed as a prepared-command mismatch.
-- `prepare_command()` also rejects caller-supplied explicit env or `current_dir` state when it does not match the audited request identity, so the validation input cannot silently describe a different execution context before the gateway rebuilds the final spawn command.
+- explicit program paths are revalidated as file identities before spawn, so even stable aliases such as symlinks cannot silently drift to a different executable after preflight succeeds.
 - allowlist matching binds explicit paths to executable identity; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
 - JSON surfaces keep readable lossy `program` / `args` fields and also emit `program_exact` / `args_exact`, so audit consumers can reconstruct non-UTF-8 argv exactly instead of guessing from replacement characters.
-- `GatewayPolicy::load_json()` only accepts no-follow regular files and fail-closed ancestor directory walks via `omne-fs-primitives`, so symlinks/reparse points cannot silently stand in for trusted policy input.
-- `cwd` and `workspace_root` fail closed when their input path traverses a symlink or reparse-point ancestor, except for macOS system root aliases such as `/var` and `/tmp`, so request path validation does not silently re-authorize caller-controlled aliased directories during canonicalization.
-- `ExecRequest` now carries explicit environment entries; `execute()` and `prepare_command()` clear inherited process state and apply only that audited environment before spawn.
-- when `enforce_allowlisted_program_for_mutation = true`, request env is still audited, but startup-sensitive loader/interpreter/search-path overrides are denied fail-closed before preflight can authorize the execution.
-- the CLI request adapter also rejects unknown JSON fields fail-closed, and `program` / `args` / explicit env entries now accept either plain UTF-8 strings or the exact OS-string JSON object encoding used in gateway output.
-- if `audit_log_path` is configured, `evaluate()` / `resolve_request()` / `preflight()` stay side-effect free; audit parent creation and appendability checks move to `execute()` / `prepare_command()`, ancestor symlink/reparse point or non-directory blockers still fail closed before audited execution proceeds, and the final record write stays bound to the appendable file handle opened during preparation instead of reopening the path again after execution.
-- allowlisted mutating and non-mutating programs bind both file identity and a preflight content fingerprint, and spawn revalidation rejects in-place executable rewrites before launch.
+- `GatewayPolicy::load_json()` only accepts no-follow regular files, so symlinks and other special files cannot silently stand in for trusted policy input.
+- the CLI request adapter also rejects unknown JSON fields fail-closed, so misspelled request keys cannot silently degrade execution boundaries.
+- if `audit_log_path` is configured, preflight creates missing parent directories and rejects requests fail-closed when the audit log cannot be opened for append.
 - if audit append succeeds during preflight but the final record write later fails, the execution result is surfaced as an explicit audit-log write failure instead of silently degrading to stderr-only reporting. When the command had already failed for another reason, the returned audit error now also includes that original execution error summary.
 - `prepare_command` returns a spawn-only `PreparedCommand` wrapper instead of handing a mutable validated `Command` back to callers.
-- `PreparedCommand::spawn()` returns a `PreparedChild` that carries the post-spawn sandbox observation alongside the owned child handle, so prepared spawns do not silently drop runtime sandbox metadata after preflight.
-- `prepare_command` only emits the preflight `prepared`/`prepare_error` audit record. Final exit-status auditing still remains part of `execute()`, because handing back a spawn-only wrapper transfers child-lifecycle ownership to the caller.
+- `prepare_command` only emits the preflight `prepared`/`prepare_error` audit record. Final exit-status auditing and runtime sandbox observation remain part of `execute()`, because handing back a spawn-only wrapper transfers child-lifecycle ownership to the caller.
 - `execute()` and `PreparedCommand::spawn()` both revalidate bound `cwd` / `workspace_root` identities immediately before spawn.
 - missing, inaccessible, or non-directory `cwd` values are reported as `cwd_invalid` instead of being mislabeled as workspace boundary violations.
 - `execute()` and `PreparedCommand::spawn()` bind `stdin/stdout/stderr` to null handles; callers that need interactive or captured stdio should use a different process primitive.

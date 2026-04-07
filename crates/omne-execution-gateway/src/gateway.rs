@@ -1,10 +1,9 @@
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use crate::audit::{ExecDecision, ExecEvent, SandboxRuntimeObservation, requested_policy_meta};
-use crate::audit_log::{AuditLogger, PreparedAuditSink};
+use crate::audit::{ExecDecision, ExecEvent, requested_policy_meta};
+use crate::audit_log::AuditLogger;
 use crate::error::{ExecError, ExecResult};
 use crate::policy::GatewayPolicy;
 use crate::sandbox;
@@ -12,7 +11,6 @@ use crate::types::{ExecRequest, RequestResolution, RequestedIsolationSource};
 use policy_meta::ExecutionIsolation;
 use same_file::Handle as SameFileHandle;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 #[derive(Debug)]
 struct BoundDirectory {
@@ -30,7 +28,7 @@ struct ResolvedRequestPaths {
 struct PreparedExecRequest {
     event: ExecEvent,
     required_isolation: ExecutionIsolation,
-    bound_program: BoundProgram,
+    bound_program: Option<BoundProgram>,
     resolved_paths: ResolvedRequestPaths,
 }
 
@@ -38,7 +36,6 @@ struct PreparedExecRequest {
 struct BoundProgram {
     path: PathBuf,
     identity: SameFileHandle,
-    content_fingerprint: Option<[u8; 32]>,
 }
 
 #[derive(Debug)]
@@ -74,13 +71,6 @@ pub struct ExecutionOutcome {
 }
 
 #[derive(Debug)]
-#[must_use = "prepared spawn outcomes carry child ownership and sandbox metadata"]
-pub struct PreparedChild {
-    pub child: std::process::Child,
-    pub sandbox_runtime: Option<SandboxRuntimeObservation>,
-}
-
-#[derive(Debug)]
 #[must_use = "prepared commands must be spawned to apply validated cwd and sandbox state"]
 pub struct PreparedCommand {
     command: Command,
@@ -93,21 +83,15 @@ impl ExecutionOutcome {
     }
 }
 
-impl PreparedChild {
-    pub fn into_parts(self) -> (std::process::Child, Option<SandboxRuntimeObservation>) {
-        (self.child, self.sandbox_runtime)
-    }
-}
-
 impl PreparedCommand {
     pub fn current_dir(&self) -> Option<&Path> {
         self.command.get_current_dir()
     }
 
-    pub fn spawn(mut self) -> ExecResult<PreparedChild> {
+    pub fn spawn(mut self) -> ExecResult<std::process::Child> {
         configure_noninteractive_stdio(&mut self.command);
         apply_prepared_request(&self.prepared, &mut self.command)
-            .and_then(|monitor| spawn_command_with_monitor(&mut self.command, monitor))
+            .and_then(|_monitor| self.command.spawn().map_err(ExecError::Spawn))
     }
 }
 
@@ -119,11 +103,8 @@ impl Default for ExecGateway {
 
 impl ExecGateway {
     pub fn new() -> Self {
-        let supported_isolation = sandbox::detect_supported_isolation();
-        Self::with_policy_and_supported_isolation(
-            GatewayPolicy::default_for_supported_isolation(supported_isolation),
-            supported_isolation,
-        )
+        let policy = GatewayPolicy::default();
+        Self::with_policy_and_supported_isolation(policy, sandbox::detect_supported_isolation())
     }
 
     pub fn with_policy(policy: GatewayPolicy) -> Self {
@@ -143,10 +124,7 @@ impl ExecGateway {
     }
 
     pub fn with_supported_isolation(supported_isolation: ExecutionIsolation) -> Self {
-        Self::with_policy_and_supported_isolation(
-            GatewayPolicy::default_for_supported_isolation(supported_isolation),
-            supported_isolation,
-        )
+        Self::with_policy_and_supported_isolation(GatewayPolicy::default(), supported_isolation)
     }
 
     pub fn capability_report(&self) -> CapabilityReport {
@@ -181,45 +159,33 @@ impl ExecGateway {
 
     /// Execute a request and retain the authoritative policy/audit event.
     pub fn execute(&self, request: &ExecRequest) -> ExecutionOutcome {
-        let (event, result, audit_sink) = match self.prepare_request(request) {
-            Ok(prepared) => match self.prepare_audit_sink(&prepared.event) {
-                Ok(mut audit_sink) => {
-                    let mut command = Command::new(&prepared.bound_program.path);
-                    command.args(&request.args);
-                    configure_request_environment(&prepared.event.env, &mut command);
-                    configure_noninteractive_stdio(&mut command);
-                    let result =
-                        apply_prepared_request(&prepared, &mut command).and_then(|monitor| {
-                            let prepared_child = spawn_command_with_monitor(&mut command, monitor)?;
-                            let (mut child, sandbox_runtime) = prepared_child.into_parts();
-                            let status = child.wait().map_err(ExecError::Spawn)?;
-                            Ok((sandbox_runtime, status))
-                        });
-                    match result {
-                        Ok((sandbox_runtime, status)) => {
-                            let mut event = prepared.event;
-                            event.sandbox_runtime = sandbox_runtime;
-                            (event, Ok(status), audit_sink.take())
-                        }
-                        Err(err) => (prepared.event, Err(err), audit_sink.take()),
+        let mut command = Command::new(&request.program);
+        command.args(&request.args);
+        configure_noninteractive_stdio(&mut command);
+
+        let (event, result) = match self.prepare_request(request) {
+            Ok(prepared) => {
+                let result = apply_prepared_request(&prepared, &mut command).and_then(|monitor| {
+                    let mut child = command.spawn().map_err(ExecError::Spawn)?;
+                    let sandbox_runtime = monitor.observe_after_spawn();
+                    let status = child.wait().map_err(ExecError::Spawn)?;
+                    Ok((sandbox_runtime, status))
+                });
+                match result {
+                    Ok((sandbox_runtime, status)) => {
+                        let mut event = prepared.event;
+                        event.sandbox_runtime = sandbox_runtime;
+                        (event, Ok(status))
                     }
+                    Err(err) => (prepared.event, Err(err)),
                 }
-                Err(err) => {
-                    let (event, err) = err.into_parts();
-                    (event, Err(err), None)
-                }
-            },
+            }
             Err(err) => {
                 let (event, err) = err.into_parts();
-                (event, Err(err), None)
+                (event, Err(err))
             }
         };
-        let result = if audit_error_already_reported(&result) {
-            result
-        } else if let Some(mut audit_sink) = audit_sink {
-            let audit_result = audit_sink.write_execution_record(&event, &result);
-            combine_result_with_audit_write(result, audit_result)
-        } else if let Some(audit) = &self.audit {
+        let result = if let Some(audit) = &self.audit {
             let audit_result = audit.write_execution_record(&event, &result);
             combine_result_with_audit_write(result, audit_result)
         } else {
@@ -239,45 +205,37 @@ impl ExecGateway {
         request: &ExecRequest,
         command: Command,
     ) -> (ExecEvent, ExecResult<PreparedCommand>) {
-        let (event, result, audit_sink) = match self.prepare_request(request) {
-            Ok(prepared) => match self.prepare_audit_sink(&prepared.event) {
-                Ok(mut audit_sink) => match validate_prepared_command_matches_request(
-                    prepared.bound_program.path.as_os_str(),
+        let (event, result) = match self.prepare_request(request) {
+            Ok(prepared) => {
+                let expected_program = prepared
+                    .bound_program
+                    .as_ref()
+                    .map(|program| program.path.as_os_str())
+                    .unwrap_or(request.program.as_os_str());
+                match validate_prepared_command_matches_request(
+                    expected_program,
                     &request.args,
-                    &request.env,
-                    &prepared.resolved_paths.cwd.path,
                     &command,
                 ) {
                     Ok(()) => {
-                        let command = build_prepared_spawn_command(&prepared, &request.args);
+                        let mut command = command;
+                        configure_noninteractive_stdio(&mut command);
+                        command.current_dir(&prepared.resolved_paths.cwd.path);
                         let event = prepared.event.clone();
-                        (
-                            event,
-                            Ok(PreparedCommand { command, prepared }),
-                            audit_sink.take(),
-                        )
+                        (event, Ok(PreparedCommand { command, prepared }))
                     }
                     Err(err) => {
                         let event = self.deny_event(prepared.event, "prepared_command_mismatch");
-                        (event, Err(err), audit_sink.take())
+                        (event, Err(err))
                     }
-                },
-                Err(err) => {
-                    let (event, err) = err.into_parts();
-                    (event, Err(err), None)
                 }
-            },
+            }
             Err(err) => {
                 let (event, err) = err.into_parts();
-                (event, Err(err), None)
+                (event, Err(err))
             }
         };
-        let result = if audit_error_already_reported(&result) {
-            result
-        } else if let Some(mut audit_sink) = audit_sink {
-            let audit_result = audit_sink.write_prepare_record(&event, &result);
-            combine_result_with_audit_write(result, audit_result)
-        } else if let Some(audit) = &self.audit {
+        let result = if let Some(audit) = &self.audit {
             let audit_result = audit.write_prepare_record(&event, &result);
             combine_result_with_audit_write(result, audit_result)
         } else {
@@ -286,12 +244,10 @@ impl ExecGateway {
         (event, result)
     }
 
-    #[allow(clippy::result_large_err)]
     pub fn preflight(&self, request: &ExecRequest) -> Result<ExecEvent, PreflightError> {
         self.prepare_request(request).map(|prepared| prepared.event)
     }
 
-    #[allow(clippy::result_large_err)]
     fn prepare_request(
         &self,
         request: &ExecRequest,
@@ -323,7 +279,6 @@ impl ExecGateway {
             ));
         }
 
-        let mut must_bind_program_contents = false;
         if self.policy.enforce_allowlisted_program_for_mutation {
             if !request.declared_mutation_is_explicit() {
                 return Err(self.deny_preflight(
@@ -332,73 +287,43 @@ impl ExecGateway {
                     ExecError::MutationDeclarationRequired,
                 ));
             }
-            if let Some(name) = first_startup_sensitive_env_name(&request.env) {
+            let program = request.program.to_string_lossy();
+            let program_is_allowlisted = self.policy.is_mutating_program_allowlisted(&program);
+            if request.declared_mutation && !program_is_allowlisted {
                 return Err(self.deny_preflight(
                     event,
-                    "startup_sensitive_env_forbidden",
-                    ExecError::PolicyDenied(format!(
-                        "allowlisted execution forbids startup-sensitive environment variable `{name}`"
-                    )),
+                    "mutation_requires_allowlisted_program",
+                    ExecError::PolicyDenied(
+                        "declared mutating command must use an allowlisted program".to_string(),
+                    ),
                 ));
             }
-            let program_path = Path::new(&request.program);
-            let mutating_allowlisted = self
-                .policy
-                .is_mutating_program_allowlisted_path(program_path);
-            let non_mutating_allowlisted = self
-                .policy
-                .is_non_mutating_program_allowlisted_path(program_path);
-
-            if request.declared_mutation {
-                if !mutating_allowlisted {
-                    return Err(self.deny_preflight(
-                        event,
-                        "mutation_requires_allowlisted_program",
-                        ExecError::PolicyDenied(
-                            "declared mutating command must use an allowlisted program".to_string(),
-                        ),
-                    ));
-                }
-                must_bind_program_contents = true;
-            } else {
-                if mutating_allowlisted {
-                    return Err(self.deny_preflight(
-                        event,
-                        "allowlisted_program_requires_declared_mutation",
-                        ExecError::PolicyDenied(
-                            "allowlisted mutating program must declare mutation".to_string(),
-                        ),
-                    ));
-                }
-                if uses_opaque_command_launcher(&request.program) {
-                    return Err(self.deny_preflight(
-                        event,
-                        "opaque_command_requires_declared_mutation",
-                        ExecError::PolicyDenied(
-                            "opaque command launchers must declare mutation".to_string(),
-                        ),
-                    ));
-                }
-                if uses_known_mutating_program(&request.program) {
-                    return Err(self.deny_preflight(
-                        event,
-                        "known_mutating_program_requires_declared_mutation",
-                        ExecError::PolicyDenied(
-                            "known mutating tools must declare mutation".to_string(),
-                        ),
-                    ));
-                }
-                if !non_mutating_allowlisted {
-                    return Err(self.deny_preflight(
-                        event,
-                        "non_mutating_requires_allowlisted_program",
-                        ExecError::PolicyDenied(
-                            "declared non-mutating command must use an allowlisted program"
-                                .to_string(),
-                        ),
-                    ));
-                }
-                must_bind_program_contents = true;
+            if uses_opaque_command_launcher(&request.program) && !program_is_allowlisted {
+                return Err(self.deny_preflight(
+                    event,
+                    "opaque_command_requires_allowlisted_program",
+                    ExecError::PolicyDenied(
+                        "opaque command launchers must use an allowlisted program".to_string(),
+                    ),
+                ));
+            }
+            if uses_known_mutating_program(&request.program) && !request.declared_mutation {
+                return Err(self.deny_preflight(
+                    event,
+                    "known_mutating_program_requires_declared_mutation",
+                    ExecError::PolicyDenied(
+                        "known mutating tools must declare mutation".to_string(),
+                    ),
+                ));
+            }
+            if program_is_allowlisted && !request.declared_mutation {
+                return Err(self.deny_preflight(
+                    event,
+                    "allowlisted_program_requires_declared_mutation",
+                    ExecError::PolicyDenied(
+                        "allowlisted mutating program must declare mutation".to_string(),
+                    ),
+                ));
             }
         }
 
@@ -414,41 +339,40 @@ impl ExecGateway {
         }
 
         if let Some(audit) = &self.audit
-            && let Err(err) = audit.validate_ready_without_side_effects()
+            && let Err(err) = audit.ensure_ready()
         {
             return Err(self.deny_preflight(event, "audit_log_unavailable", err));
         }
 
         match resolve_request_paths(&request.cwd, &request.workspace_root) {
-            Ok(resolved_paths) => {
-                match bind_program_path(&request.program, must_bind_program_contents) {
-                    Ok(bound_program) => {
-                        event.cwd = resolved_paths.cwd.path.clone();
-                        event.workspace_root = resolved_paths.workspace_root.path.clone();
+            Ok(resolved_paths) => match bind_explicit_program_path(&request.program) {
+                Ok(bound_program) => {
+                    event.cwd = resolved_paths.cwd.path.clone();
+                    event.workspace_root = resolved_paths.workspace_root.path.clone();
+                    if let Some(bound_program) = &bound_program {
                         event.program = bound_program.path.clone().into();
-                        Ok(PreparedExecRequest {
-                            event,
-                            required_isolation: request.required_isolation,
-                            bound_program,
-                            resolved_paths,
-                        })
                     }
-                    Err(err @ ExecError::RelativeProgramPath { .. }) => {
-                        Err(self.deny_preflight(event, "relative_program_path_forbidden", err))
-                    }
-                    Err(
-                        err @ ExecError::ProgramPathInvalid { .. }
-                        | err @ ExecError::ProgramLookupFailed { .. },
-                    ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
-                    Err(
-                        err @ ExecError::PathIdentityUnavailable { .. }
-                        | err @ ExecError::RequestPathChanged { .. },
-                    ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
-                    Err(err) => {
-                        unreachable!("bind_explicit_program_path returned unexpected error: {err}")
-                    }
+                    Ok(PreparedExecRequest {
+                        event,
+                        required_isolation: request.required_isolation,
+                        bound_program,
+                        resolved_paths,
+                    })
                 }
-            }
+                Err(err @ ExecError::RelativeProgramPath { .. }) => {
+                    Err(self.deny_preflight(event, "relative_program_path_forbidden", err))
+                }
+                Err(err @ ExecError::ProgramPathInvalid { .. }) => {
+                    Err(self.deny_preflight(event, "program_path_invalid", err))
+                }
+                Err(
+                    err @ ExecError::PathIdentityUnavailable { .. }
+                    | err @ ExecError::RequestPathChanged { .. },
+                ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
+                Err(err) => {
+                    unreachable!("bind_explicit_program_path returned unexpected error: {err}")
+                }
+            },
             Err(err @ ExecError::WorkspaceRootInvalid { .. }) => {
                 Err(self.deny_preflight(event, "workspace_root_invalid", err))
             }
@@ -472,7 +396,6 @@ impl ExecGateway {
             supported_isolation: self.supported_isolation,
             program: request.program.clone(),
             args: request.args.clone(),
-            env: request.env.clone(),
             cwd: request.cwd.clone(),
             workspace_root: request.workspace_root.clone(),
             declared_mutation: request.declared_mutation,
@@ -494,30 +417,17 @@ impl ExecGateway {
             error: err,
         }
     }
-
-    #[allow(clippy::result_large_err)]
-    fn prepare_audit_sink(
-        &self,
-        event: &ExecEvent,
-    ) -> Result<Option<PreparedAuditSink>, PreflightError> {
-        if let Some(audit) = &self.audit {
-            return audit
-                .prepare_sink()
-                .map(Some)
-                .map_err(|err| self.deny_preflight(event.clone(), "audit_log_unavailable", err));
-        }
-
-        Ok(None)
-    }
 }
 
 fn uses_opaque_command_launcher(program: &OsStr) -> bool {
-    program_basename_ascii(program).is_some_and(|normalized| {
+    fn matches_opaque_command_name(candidate: &str) -> bool {
+        let normalized = candidate
+            .strip_suffix(".exe")
+            .unwrap_or(candidate)
+            .to_ascii_lowercase();
         matches!(
             normalized.as_str(),
-            "env"
-                | "sh"
-                | "bash"
+            "sh" | "bash"
                 | "dash"
                 | "zsh"
                 | "fish"
@@ -536,175 +446,79 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
                 | "php"
                 | "lua"
         )
-    })
+    }
+
+    let path = Path::new(program);
+    path.to_str().is_some_and(matches_opaque_command_name)
+        || path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(matches_opaque_command_name)
 }
 
 fn uses_known_mutating_program(program: &OsStr) -> bool {
-    program_basename_ascii(program).is_some_and(|normalized| {
-        matches!(
-            normalized.as_str(),
-            "git"
-                | "make"
-                | "gmake"
-                | "cargo"
-                | "go"
-                | "npm"
-                | "npx"
-                | "pnpm"
-                | "yarn"
-                | "bun"
-                | "pip"
-                | "pip3"
-                | "uv"
-                | "apt"
-                | "apt-get"
-                | "dnf"
-                | "yum"
-                | "pacman"
-                | "zypper"
-                | "apk"
-                | "brew"
-                | "winget"
-                | "choco"
-                | "scoop"
-                | "rm"
-                | "mv"
-                | "cp"
-                | "install"
-                | "mkdir"
-                | "rmdir"
-                | "touch"
-                | "chmod"
-                | "chown"
-                | "chgrp"
-                | "ln"
-        )
-    })
-}
-
-fn program_basename_ascii(program: &OsStr) -> Option<String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-
-        let basename = Path::new(program).file_name().unwrap_or(program).as_bytes();
-        ascii_program_name_from_bytes(basename)
-    }
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-
-        let basename = Path::new(program).file_name().unwrap_or(program);
-        let mut ascii = String::new();
-        for unit in basename.encode_wide() {
-            let byte = u8::try_from(unit).ok()?;
-            if !byte.is_ascii() {
-                return None;
-            }
-            ascii.push(char::from(byte.to_ascii_lowercase()));
-        }
-        Some(strip_windows_exe_suffix_owned(ascii))
-    }
-
-    #[cfg(all(not(unix), not(windows)))]
-    {
-        Path::new(program)
-            .file_name()
-            .unwrap_or(program)
-            .to_str()
-            .map(|value| strip_windows_exe_suffix_owned(value.to_ascii_lowercase()))
-    }
-}
-
-#[cfg(unix)]
-fn ascii_program_name_from_bytes(bytes: &[u8]) -> Option<String> {
-    if !bytes.is_ascii() {
-        return None;
-    }
-    let normalized = bytes
-        .iter()
-        .map(|byte| char::from(byte.to_ascii_lowercase()))
-        .collect::<String>();
-    Some(strip_windows_exe_suffix_owned(normalized))
-}
-
-fn strip_windows_exe_suffix_owned(value: String) -> String {
-    value.strip_suffix(".exe").unwrap_or(&value).to_string()
-}
-
-fn first_startup_sensitive_env_name(env: &[(OsString, OsString)]) -> Option<String> {
-    env.iter().find_map(|(name, _)| {
-        is_startup_sensitive_env_name(name).then(|| name.to_string_lossy().into_owned())
-    })
-}
-
-fn is_startup_sensitive_env_name(name: &OsStr) -> bool {
-    let Some(normalized) = normalized_env_name_ascii(name) else {
-        return true;
-    };
+    let program_name = Path::new(program)
+        .file_name()
+        .unwrap_or(program)
+        .to_string_lossy();
+    let normalized = program_name
+        .strip_suffix(".exe")
+        .unwrap_or(&program_name)
+        .to_ascii_lowercase();
 
     matches!(
         normalized.as_str(),
-        "PATH"
-            | "ENV"
-            | "BASH_ENV"
-            | "CDPATH"
-            | "GIT_EXEC_PATH"
-            | "NODE_OPTIONS"
-            | "NODE_PATH"
-            | "PERL5LIB"
-            | "PERLLIB"
-            | "PERL5OPT"
-            | "PYTHONHOME"
-            | "PYTHONPATH"
-            | "PYTHONSTARTUP"
-            | "RUBYLIB"
-            | "RUBYOPT"
-    ) || normalized.starts_with("LD_")
-        || normalized.starts_with("DYLD_")
-}
-
-#[cfg(unix)]
-fn normalized_env_name_ascii(name: &OsStr) -> Option<String> {
-    use std::os::unix::ffi::OsStrExt;
-
-    let bytes = name.as_bytes();
-    bytes.is_ascii().then(|| {
-        bytes
-            .iter()
-            .map(|byte| char::from(byte.to_ascii_uppercase()))
-            .collect()
-    })
-}
-
-#[cfg(windows)]
-fn normalized_env_name_ascii(name: &OsStr) -> Option<String> {
-    use std::os::windows::ffi::OsStrExt;
-
-    let mut normalized = String::new();
-    for unit in name.encode_wide() {
-        let byte = u8::try_from(unit).ok()?;
-        if !byte.is_ascii() {
-            return None;
-        }
-        normalized.push(char::from(byte.to_ascii_uppercase()));
-    }
-    Some(normalized)
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn normalized_env_name_ascii(name: &OsStr) -> Option<String> {
-    let text = name.to_str()?;
-    text.is_ascii().then(|| text.to_ascii_uppercase())
+        "git"
+            | "make"
+            | "gmake"
+            | "cargo"
+            | "go"
+            | "npm"
+            | "npx"
+            | "pnpm"
+            | "yarn"
+            | "bun"
+            | "pip"
+            | "pip3"
+            | "uv"
+            | "apt"
+            | "apt-get"
+            | "dnf"
+            | "yum"
+            | "pacman"
+            | "zypper"
+            | "apk"
+            | "brew"
+            | "winget"
+            | "choco"
+            | "scoop"
+            | "rm"
+            | "mv"
+            | "cp"
+            | "install"
+            | "mkdir"
+            | "rmdir"
+            | "touch"
+            | "chmod"
+            | "chown"
+            | "chgrp"
+            | "ln"
+    )
 }
 
 fn canonicalize_workspace_root(path: &Path) -> ExecResult<PathBuf> {
-    canonicalize_directory_without_forbidden_ancestors(path).map_err(|_| {
-        ExecError::WorkspaceRootInvalid {
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| ExecError::WorkspaceRootInvalid {
             path: path.to_path_buf(),
-        }
-    })
+        })?;
+    if !std::fs::metadata(&canonical)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
+    {
+        return Err(ExecError::WorkspaceRootInvalid { path: canonical });
+    }
+    Ok(canonical)
 }
 
 fn resolve_request_paths(cwd: &Path, workspace_root: &Path) -> ExecResult<ResolvedRequestPaths> {
@@ -721,12 +535,20 @@ fn resolve_request_paths(cwd: &Path, workspace_root: &Path) -> ExecResult<Resolv
 }
 
 fn canonicalize_cwd_within_workspace(cwd: &Path, workspace_root: &Path) -> ExecResult<PathBuf> {
-    let cwd = canonicalize_directory_without_forbidden_ancestors(cwd).map_err(|detail| {
-        ExecError::CwdInvalid {
-            cwd: cwd.to_path_buf(),
-            detail,
-        }
+    let cwd = cwd.canonicalize().map_err(|err| ExecError::CwdInvalid {
+        cwd: cwd.to_path_buf(),
+        detail: err.to_string(),
     })?;
+    let metadata = std::fs::metadata(&cwd).map_err(|err| ExecError::CwdInvalid {
+        cwd: cwd.clone(),
+        detail: err.to_string(),
+    })?;
+    if !metadata.is_dir() {
+        return Err(ExecError::CwdInvalid {
+            cwd,
+            detail: "path is not a directory".to_string(),
+        });
+    }
     if !path_starts_with(&cwd, workspace_root) {
         return Err(ExecError::CwdOutsideWorkspace {
             cwd,
@@ -735,126 +557,6 @@ fn canonicalize_cwd_within_workspace(cwd: &Path, workspace_root: &Path) -> ExecR
     }
 
     Ok(cwd)
-}
-
-fn canonicalize_directory_without_forbidden_ancestors(path: &Path) -> Result<PathBuf, String> {
-    let absolute = absolute_path_lexical(path)?;
-    reject_forbidden_directory_ancestors(&absolute)?;
-    let canonical = absolute.canonicalize().map_err(|err| err.to_string())?;
-    let metadata = std::fs::metadata(&canonical).map_err(|err| err.to_string())?;
-    if !metadata.is_dir() {
-        return Err("path is not a directory".to_string());
-    }
-    Ok(canonical)
-}
-
-fn absolute_path_lexical(path: &Path) -> Result<PathBuf, String> {
-    let mut absolute = if path.is_absolute() {
-        PathBuf::new()
-    } else {
-        std::env::current_dir().map_err(|err| err.to_string())?
-    };
-
-    for component in path.components() {
-        match component {
-            std::path::Component::Prefix(prefix) => absolute.push(prefix.as_os_str()),
-            std::path::Component::RootDir => absolute.push(component.as_os_str()),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                absolute.pop();
-            }
-            std::path::Component::Normal(segment) => absolute.push(segment),
-        }
-    }
-
-    Ok(absolute)
-}
-
-fn reject_forbidden_directory_ancestors(path: &Path) -> Result<(), String> {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
-            std::path::Component::RootDir => current.push(component.as_os_str()),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                current.pop();
-            }
-            std::path::Component::Normal(segment) => {
-                current.push(segment);
-                let metadata =
-                    std::fs::symlink_metadata(&current).map_err(|err| err.to_string())?;
-                if file_metadata_has_forbidden_link_ancestor(&metadata)
-                    && !is_permitted_platform_root_alias(&current)
-                {
-                    return Err(format!(
-                        "path must not traverse symlink or reparse-point ancestors: {}",
-                        current.display()
-                    ));
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn file_metadata_has_forbidden_link_ancestor(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn file_metadata_has_forbidden_link_ancestor(metadata: &std::fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
-}
-
-#[cfg(target_os = "macos")]
-fn is_permitted_platform_root_alias(path: &Path) -> bool {
-    path.parent() == Some(Path::new("/"))
-        && matches!(
-            path.file_name(),
-            Some(name) if name == OsStr::new("var") || name == OsStr::new("tmp")
-        )
-}
-
-#[cfg(not(target_os = "macos"))]
-fn is_permitted_platform_root_alias(_: &Path) -> bool {
-    false
-}
-
-fn explicit_path_like_os(program: &OsStr) -> bool {
-    let path = Path::new(program);
-    path.is_absolute() || os_str_has_path_separator(program)
-}
-
-#[cfg(unix)]
-fn os_str_has_path_separator(value: &OsStr) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-
-    value
-        .as_bytes()
-        .iter()
-        .any(|byte| matches!(byte, b'/' | b'\\'))
-}
-
-#[cfg(windows)]
-fn os_str_has_path_separator(value: &OsStr) -> bool {
-    use std::os::windows::ffi::OsStrExt;
-
-    value
-        .encode_wide()
-        .any(|unit| matches!(char::from_u32(u32::from(unit)), Some('/' | '\\')))
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn os_str_has_path_separator(value: &OsStr) -> bool {
-    value
-        .to_str()
-        .is_some_and(|text| text.chars().any(|ch| matches!(ch, '/' | '\\')))
 }
 
 fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<BoundDirectory> {
@@ -866,15 +568,11 @@ fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<Boun
     Ok(BoundDirectory { path, identity })
 }
 
-fn bind_program_path(program: &OsStr, bind_contents: bool) -> ExecResult<BoundProgram> {
-    if is_explicit_program_path(program) {
-        bind_explicit_program_path(program, bind_contents)
-    } else {
-        bind_bare_program_path(program, bind_contents)
+fn bind_explicit_program_path(program: &OsStr) -> ExecResult<Option<BoundProgram>> {
+    if !is_explicit_program_path(program) {
+        return Ok(None);
     }
-}
 
-fn bind_explicit_program_path(program: &OsStr, bind_contents: bool) -> ExecResult<BoundProgram> {
     let requested_path = Path::new(program);
     if !requested_path.is_absolute() {
         return Err(ExecError::RelativeProgramPath {
@@ -882,23 +580,6 @@ fn bind_explicit_program_path(program: &OsStr, bind_contents: bool) -> ExecResul
         });
     }
 
-    bind_absolute_program_path(requested_path, bind_contents)
-}
-
-fn bind_bare_program_path(program: &OsStr, bind_contents: bool) -> ExecResult<BoundProgram> {
-    let resolved_path =
-        resolve_bare_program_path(program).ok_or_else(|| ExecError::ProgramLookupFailed {
-            program: program.to_string_lossy().into_owned(),
-            detail: "program not found in PATH or standard locations".to_string(),
-        })?;
-
-    bind_absolute_program_path(&resolved_path, bind_contents)
-}
-
-fn bind_absolute_program_path(
-    requested_path: &Path,
-    bind_contents: bool,
-) -> ExecResult<BoundProgram> {
     let metadata =
         std::fs::metadata(requested_path).map_err(|err| ExecError::ProgramPathInvalid {
             path: requested_path.to_path_buf(),
@@ -910,12 +591,6 @@ fn bind_absolute_program_path(
             detail: "program path must reference a regular file".to_string(),
         });
     }
-    if !is_spawnable_program_path(requested_path) {
-        return Err(ExecError::ProgramPathInvalid {
-            path: requested_path.to_path_buf(),
-            detail: "program path must reference a spawnable executable".to_string(),
-        });
-    }
 
     let identity = SameFileHandle::from_path(requested_path).map_err(|_| {
         ExecError::PathIdentityUnavailable {
@@ -923,13 +598,10 @@ fn bind_absolute_program_path(
             path: requested_path.to_path_buf(),
         }
     })?;
-    Ok(BoundProgram {
+    Ok(Some(BoundProgram {
         path: requested_path.to_path_buf(),
         identity,
-        content_fingerprint: bind_contents
-            .then(|| fingerprint_program_contents(requested_path))
-            .transpose()?,
-    })
+    }))
 }
 
 fn revalidate_prepared_request_paths(paths: &ResolvedRequestPaths) -> ExecResult<()> {
@@ -957,13 +629,6 @@ fn revalidate_bound_program(program: &BoundProgram) -> ExecResult<()> {
             detail: "path is no longer a regular file".to_string(),
         });
     }
-    if !is_spawnable_program_path(&program.path) {
-        return Err(ExecError::RequestPathChanged {
-            kind: "program",
-            path: program.path.clone(),
-            detail: "path is no longer executable".to_string(),
-        });
-    }
 
     let current_identity = SameFileHandle::from_path(&program.path).map_err(|_| {
         ExecError::PathIdentityUnavailable {
@@ -977,16 +642,6 @@ fn revalidate_bound_program(program: &BoundProgram) -> ExecResult<()> {
             path: program.path.clone(),
             detail: "file identity changed".to_string(),
         });
-    }
-    if let Some(expected_fingerprint) = program.content_fingerprint {
-        let current_fingerprint = fingerprint_program_contents(&program.path)?;
-        if current_fingerprint != expected_fingerprint {
-            return Err(ExecError::RequestPathChanged {
-                kind: "program",
-                path: program.path.clone(),
-                detail: "file contents changed".to_string(),
-            });
-        }
     }
 
     Ok(())
@@ -1037,35 +692,16 @@ fn apply_prepared_request(
     prepared: &PreparedExecRequest,
     command: &mut Command,
 ) -> ExecResult<sandbox::SandboxMonitor> {
-    revalidate_bound_program(&prepared.bound_program)?;
+    if let Some(program) = &prepared.bound_program {
+        revalidate_bound_program(program)?;
+    }
     revalidate_prepared_request_paths(&prepared.resolved_paths)?;
-    configure_request_environment(&prepared.event.env, command);
     command.current_dir(&prepared.resolved_paths.cwd.path);
     sandbox::apply_sandbox(
         command,
         prepared.required_isolation,
         &prepared.resolved_paths.workspace_root.path,
     )
-}
-
-fn spawn_command_with_monitor(
-    command: &mut Command,
-    monitor: sandbox::SandboxMonitor,
-) -> ExecResult<PreparedChild> {
-    let child = command.spawn().map_err(ExecError::Spawn)?;
-    Ok(PreparedChild {
-        child,
-        sandbox_runtime: monitor.observe_after_spawn(),
-    })
-}
-
-fn build_prepared_spawn_command(prepared: &PreparedExecRequest, args: &[OsString]) -> Command {
-    let mut command = Command::new(&prepared.bound_program.path);
-    command.args(args);
-    configure_request_environment(&prepared.event.env, &mut command);
-    configure_noninteractive_stdio(&mut command);
-    command.current_dir(&prepared.resolved_paths.cwd.path);
-    command
 }
 
 fn configure_noninteractive_stdio(command: &mut Command) {
@@ -1075,40 +711,9 @@ fn configure_noninteractive_stdio(command: &mut Command) {
         .stderr(Stdio::null());
 }
 
-fn configure_request_environment(env: &[(OsString, OsString)], command: &mut Command) {
-    command.env_clear();
-    for (name, value) in env {
-        command.env(name, value);
-    }
-}
-
-fn fingerprint_program_contents(path: &Path) -> ExecResult<[u8; 32]> {
-    let mut file = std::fs::File::open(path).map_err(|err| ExecError::ProgramPathInvalid {
-        path: path.to_path_buf(),
-        detail: err.to_string(),
-    })?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 8192];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|err| ExecError::ProgramPathInvalid {
-                path: path.to_path_buf(),
-                detail: err.to_string(),
-            })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(hasher.finalize().into())
-}
-
 fn validate_prepared_command_matches_request(
     requested_program: &OsStr,
     requested_args: &[OsString],
-    requested_env: &[(OsString, OsString)],
-    requested_cwd: &Path,
     command: &Command,
 ) -> ExecResult<()> {
     let actual_program = command.get_program();
@@ -1116,14 +721,6 @@ fn validate_prepared_command_matches_request(
     let requested_args = requested_args
         .iter()
         .map(OsString::as_os_str)
-        .collect::<Vec<_>>();
-    let actual_env = command
-        .get_envs()
-        .map(|(name, value)| (name.to_os_string(), value.map(OsStr::to_os_string)))
-        .collect::<Vec<_>>();
-    let requested_env = requested_env
-        .iter()
-        .map(|(name, value)| (name.clone(), Some(value.clone())))
         .collect::<Vec<_>>();
 
     if !programs_match(actual_program, requested_program) || actual_args != requested_args {
@@ -1138,162 +735,19 @@ fn validate_prepared_command_matches_request(
                 .into_iter()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect(),
-            detail: "program or args differ".to_string(),
         });
-    }
-
-    if actual_env != requested_env {
-        return Err(ExecError::PreparedCommandMismatch {
-            requested_program: requested_program.to_string_lossy().into_owned(),
-            requested_args: requested_args
-                .iter()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect(),
-            actual_program: actual_program.to_string_lossy().into_owned(),
-            actual_args: actual_args
-                .iter()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect(),
-            detail: "explicit environment differs".to_string(),
-        });
-    }
-
-    if let Some(actual_cwd) = command.get_current_dir() {
-        let actual_cwd =
-            actual_cwd
-                .canonicalize()
-                .map_err(|err| ExecError::PreparedCommandMismatch {
-                    requested_program: requested_program.to_string_lossy().into_owned(),
-                    requested_args: requested_args
-                        .iter()
-                        .map(|arg| arg.to_string_lossy().into_owned())
-                        .collect(),
-                    actual_program: actual_program.to_string_lossy().into_owned(),
-                    actual_args: actual_args
-                        .iter()
-                        .map(|arg| arg.to_string_lossy().into_owned())
-                        .collect(),
-                    detail: format!("explicit current_dir is invalid: {err}"),
-                })?;
-        if !path_equals(&actual_cwd, requested_cwd) {
-            return Err(ExecError::PreparedCommandMismatch {
-                requested_program: requested_program.to_string_lossy().into_owned(),
-                requested_args: requested_args
-                    .iter()
-                    .map(|arg| arg.to_string_lossy().into_owned())
-                    .collect(),
-                actual_program: actual_program.to_string_lossy().into_owned(),
-                actual_args: actual_args
-                    .iter()
-                    .map(|arg| arg.to_string_lossy().into_owned())
-                    .collect(),
-                detail: format!(
-                    "explicit current_dir {:?} differs from request cwd {:?}",
-                    actual_cwd, requested_cwd
-                ),
-            });
-        }
     }
 
     Ok(())
 }
 
 fn is_explicit_program_path(program: &OsStr) -> bool {
-    explicit_path_like_os(program)
-}
-
-fn resolve_bare_program_path(program: &OsStr) -> Option<PathBuf> {
-    resolve_bare_program_path_from_env(program)
-        .or_else(|| resolve_bare_program_path_from_standard_locations(program))
-}
-
-fn resolve_bare_program_path_from_env(program: &OsStr) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        if let Some(path) = resolve_bare_program_in_dir(program, &dir) {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn resolve_bare_program_path_from_standard_locations(program: &OsStr) -> Option<PathBuf> {
-    #[cfg(not(windows))]
-    let candidate_dirs = [
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-        "/opt/homebrew/bin",
-        "/opt/local/bin",
-    ];
-    #[cfg(windows)]
-    let candidate_dirs: [&str; 0] = [];
-
-    for dir in candidate_dirs {
-        if let Some(path) = resolve_bare_program_in_dir(program, Path::new(dir)) {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn resolve_bare_program_in_dir(program: &OsStr, dir: &Path) -> Option<PathBuf> {
-    let candidate = dir.join(program);
-
-    #[cfg(windows)]
-    {
-        let has_ext = Path::new(program).extension().is_some();
-        if has_ext {
-            return is_spawnable_program_path(&candidate).then_some(candidate);
-        }
-
-        let program_name = program.to_string_lossy();
-        for ext in windows_path_extensions() {
-            let ext_candidate = dir.join(format!("{program_name}{ext}"));
-            if is_spawnable_program_path(&ext_candidate) {
-                return Some(ext_candidate);
-            }
-        }
-
-        is_spawnable_program_path(&candidate).then_some(candidate)
-    }
-
-    #[cfg(not(windows))]
-    {
-        is_spawnable_program_path(&candidate).then_some(candidate)
-    }
-}
-
-fn is_spawnable_program_path(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let Ok(metadata) = std::fs::metadata(path) else {
-            return false;
-        };
-        metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0)
-    }
-
-    #[cfg(windows)]
-    {
-        path.is_file()
-    }
-
-    #[cfg(all(not(unix), not(windows)))]
-    {
-        path.is_file()
-    }
-}
-
-#[cfg(windows)]
-fn windows_path_extensions() -> Vec<String> {
-    std::env::var("PATHEXT")
-        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
-        .split(';')
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
-        .collect()
+    let path = Path::new(program);
+    path.is_absolute()
+        || program
+            .to_string_lossy()
+            .chars()
+            .any(|ch| ch == '/' || ch == '\\')
 }
 
 #[cfg(windows)]
@@ -1389,22 +843,10 @@ fn combine_result_with_audit_write<T>(
     }
 }
 
-fn audit_error_already_reported<T>(result: &ExecResult<T>) -> bool {
-    matches!(
-        result,
-        Err(ExecError::AuditLogUnavailable { .. }
-            | ExecError::AuditLogWriteFailed { .. }
-            | ExecError::AuditLogWriteFailedAfterExecutionError { .. })
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
     use std::fs;
-    #[cfg(unix)]
-    use std::os::unix::ffi::OsStringExt;
-    use std::path::PathBuf;
     #[cfg(unix)]
     use std::process::Stdio;
     #[cfg(unix)]
@@ -1414,33 +856,6 @@ mod tests {
 
     use super::*;
     use crate::policy::GatewayPolicy;
-
-    fn canonical_test_root(dir: &tempfile::TempDir) -> PathBuf {
-        dir.path()
-            .canonicalize()
-            .unwrap_or_else(|_| dir.path().to_path_buf())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn known_mutating_detection_rejects_non_utf8_basename() {
-        let program = OsString::from_vec(vec![0x67, 0x69, 0x74, 0x80]);
-        assert!(!uses_known_mutating_program(program.as_os_str()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn opaque_launcher_detection_rejects_non_utf8_basename() {
-        let program = OsString::from_vec(vec![0x70, 0x79, 0x74, 0x68, 0x6f, 0x6e, 0x80]);
-        assert!(!uses_opaque_command_launcher(program.as_os_str()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn explicit_path_detection_keeps_non_utf8_separator_checks_native() {
-        let program = OsString::from_vec(vec![0x2f, 0x74, 0x6d, 0x70, 0x2f, 0x66, 0x6f, 0x80]);
-        assert!(is_explicit_program_path(program.as_os_str()));
-    }
 
     #[test]
     fn fail_closed_when_required_isolation_exceeds_supported() {
@@ -1583,7 +998,7 @@ mod tests {
         let workspace = tempdir().expect("create temp workspace");
         let target = workspace.path().join("tool");
         let symlink_path = workspace.path().join("tool-link");
-        write_unix_shell_executable(&target, "exit 0\n");
+        fs::write(&target, "#!/bin/sh\nexit 0\n").expect("write tool");
         symlink(&target, &symlink_path).expect("create symlink");
 
         let request = ExecRequest::new(
@@ -1702,7 +1117,7 @@ mod tests {
 
         let err = gateway
             .preflight(&request)
-            .expect_err("non-directory audit parent should be rejected");
+            .expect_err("unwritable audit log should deny request");
         let (event, err) = err.into_parts();
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(event.reason.as_deref(), Some("audit_log_unavailable"));
@@ -1712,45 +1127,11 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
-    fn preflight_denies_when_audit_log_path_traverses_ancestor_symlink() {
-        use std::os::unix::fs::symlink;
-
+    fn preflight_creates_missing_audit_log_parent_directories() {
         let workspace = tempdir().expect("create temp workspace");
-        let real_dir = workspace.path().join("real-audit");
-        let alias_dir = workspace.path().join("alias-audit");
-        fs::create_dir(&real_dir).expect("create real audit dir");
-        symlink(&real_dir, &alias_dir).expect("create audit dir symlink");
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                enforce_allowlisted_program_for_mutation: false,
-                audit_log_path: Some(alias_dir.join("nested").join("audit.jsonl")),
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::BestEffort,
-        );
-        let request = ExecRequest::new(
-            OsString::from(dummy_program()),
-            Vec::<OsString>::new(),
-            workspace.path(),
-            ExecutionIsolation::BestEffort,
-            workspace.path(),
-        );
-
-        let err = gateway
-            .preflight(&request)
-            .expect_err("ancestor symlink should deny audit log path");
-        let (event, err) = err.into_parts();
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("audit_log_unavailable"));
-        assert!(matches!(err, ExecError::AuditLogUnavailable { .. }));
-    }
-
-    #[test]
-    fn pure_request_projections_do_not_create_missing_audit_log_parent_directories() {
-        let workspace = tempdir().expect("create temp workspace");
-        let audit_path = canonical_test_root(&workspace)
+        let audit_path = workspace
+            .path()
             .join("logs")
             .join("audit")
             .join("gateway.jsonl");
@@ -1769,98 +1150,13 @@ mod tests {
             ExecutionIsolation::BestEffort,
             workspace.path(),
         );
-
-        let resolution = gateway.resolve_request(&request);
-        assert!(Path::new(&resolution.program).is_absolute());
-        assert!(
-            !audit_path.exists(),
-            "resolve_request must stay side-effect free"
-        );
-
-        let event = gateway.evaluate(&request);
-        assert_eq!(event.decision, ExecDecision::Run);
-        assert!(!audit_path.exists(), "evaluate must stay side-effect free");
 
         let event = gateway.preflight(&request).expect("preflight should pass");
         assert_eq!(event.decision, ExecDecision::Run);
-        assert!(!audit_path.exists(), "preflight must stay side-effect free");
-    }
-
-    #[test]
-    fn execute_creates_missing_audit_log_parent_directories() {
-        let workspace = tempdir().expect("create temp workspace");
-        let audit_path = canonical_test_root(&workspace)
-            .join("logs")
-            .join("audit")
-            .join("gateway.jsonl");
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                audit_log_path: Some(audit_path.clone()),
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let request = ExecRequest::new(
-            dummy_program_absolute_path(),
-            vec![OsString::from(dummy_shell_flag()), OsString::from("exit 0")],
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        );
-
-        let (event, result) = gateway.execute(&request).into_parts();
-        assert_eq!(event.decision, ExecDecision::Run);
-        let status = result.expect("execute should still succeed");
-        assert!(status.success(), "unexpected status: {status}");
         assert!(
             audit_path.exists(),
-            "execute should prepare and write the audit file"
+            "audit file should be created during preflight"
         );
-    }
-
-    #[test]
-    fn prepare_command_creates_audit_log_and_writes_prepare_record() {
-        let workspace = tempdir().expect("create temp workspace");
-        let audit_path = canonical_test_root(&workspace)
-            .join("logs")
-            .join("audit")
-            .join("gateway.jsonl");
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                audit_log_path: Some(audit_path.clone()),
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let request = ExecRequest::new(
-            non_mutating_program(),
-            Vec::<OsString>::new(),
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let command = Command::new(resolved_non_mutating_program_path());
-        let (event, result) = gateway.prepare_command(&request, command);
-
-        assert_eq!(event.decision, ExecDecision::Run);
-        assert!(result.is_ok(), "prepare_command should succeed: {result:?}");
-        assert!(
-            audit_path.exists(),
-            "prepare_command should prepare and write the audit file"
-        );
-
-        let content = fs::read_to_string(&audit_path).expect("read audit log");
-        let record: serde_json::Value =
-            serde_json::from_str(content.lines().next().expect("audit line"))
-                .expect("parse audit json");
-        assert_eq!(record["result"]["status"], "prepared");
-        assert_eq!(record["event"]["decision"], "run");
     }
 
     #[test]
@@ -1872,14 +1168,6 @@ mod tests {
             report.policy_default_isolation,
             ExecutionIsolation::BestEffort
         );
-    }
-
-    #[test]
-    fn default_gateway_policy_default_matches_none_only_hosts() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::None);
-        let report = gateway.capability_report();
-        assert_eq!(report.supported_isolation, ExecutionIsolation::None);
-        assert_eq!(report.policy_default_isolation, ExecutionIsolation::None);
     }
 
     #[test]
@@ -1982,7 +1270,7 @@ mod tests {
     fn allows_mutation_for_explicitly_allowlisted_program_path() {
         let program = allowlisted_program_path();
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec![program.display().to_string()],
+            mutating_program_allowlist: vec![program.to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2004,189 +1292,6 @@ mod tests {
             event.requested_policy_meta,
             crate::audit::requested_policy_meta(ExecutionIsolation::BestEffort)
         );
-    }
-
-    #[test]
-    fn denies_non_mutating_for_non_allowlisted_program() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            resolved_non_mutating_program_path(),
-            Vec::<OsString>::new(),
-            workspace.path(),
-            ExecutionIsolation::BestEffort,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let event = gateway.evaluate(&request);
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(
-            event.reason.as_deref(),
-            Some("non_mutating_requires_allowlisted_program")
-        );
-    }
-
-    #[test]
-    fn allows_non_mutating_for_explicitly_allowlisted_program_path() {
-        let program = resolved_non_mutating_program_path();
-        let policy = GatewayPolicy {
-            non_mutating_program_allowlist: vec![program.display().to_string()],
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            ExecutionIsolation::BestEffort,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            &program,
-            Vec::<OsString>::new(),
-            workspace.path(),
-            ExecutionIsolation::BestEffort,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let event = gateway.evaluate(&request);
-        assert_eq!(event.decision, ExecDecision::Run);
-    }
-
-    #[test]
-    fn denies_non_mutating_allowlisted_program_with_startup_sensitive_env() {
-        let program = resolved_non_mutating_program_path();
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                non_mutating_program_allowlist: vec![program.display().to_string()],
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::BestEffort,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            &program,
-            Vec::<OsString>::new(),
-            workspace.path(),
-            ExecutionIsolation::BestEffort,
-            workspace.path(),
-        )
-        .with_env([("PATH", "/tmp/shadow")])
-        .with_declared_mutation(false);
-
-        let (event, result) = gateway.execute(&request).into_parts();
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(
-            event.reason.as_deref(),
-            Some("startup_sensitive_env_forbidden")
-        );
-        assert!(matches!(
-            result,
-            Err(ExecError::PolicyDenied(detail))
-                if detail.contains("startup-sensitive environment variable `PATH`")
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn denies_mutating_allowlisted_program_with_loader_env() {
-        let workspace = tempdir().expect("create temp workspace");
-        let program = workspace.path().join("allowlisted.sh");
-        write_unix_shell_executable(&program, "exit 0\n");
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                mutating_program_allowlist: vec![program.display().to_string()],
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let request = ExecRequest::new(
-            &program,
-            Vec::<OsString>::new(),
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_env([("LD_PRELOAD", "/tmp/evil.so")])
-        .with_declared_mutation(true);
-
-        let (event, result) = gateway.execute(&request).into_parts();
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(
-            event.reason.as_deref(),
-            Some("startup_sensitive_env_forbidden")
-        );
-        assert!(matches!(
-            result,
-            Err(ExecError::PolicyDenied(detail))
-                if detail.contains("startup-sensitive environment variable `LD_PRELOAD`")
-        ));
-    }
-
-    #[test]
-    fn allows_benign_env_for_allowlisted_non_mutating_program() {
-        let program = resolved_non_mutating_program_path();
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                non_mutating_program_allowlist: vec![program.display().to_string()],
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::BestEffort,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            &program,
-            Vec::<OsString>::new(),
-            workspace.path(),
-            ExecutionIsolation::BestEffort,
-            workspace.path(),
-        )
-        .with_env([("LANG", "C")])
-        .with_declared_mutation(false);
-
-        let event = gateway.evaluate(&request);
-        assert_eq!(event.decision, ExecDecision::Run);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepared_allowlisted_program_rejects_in_place_content_change() {
-        let workspace = tempdir().expect("create temp workspace");
-        let program = workspace.path().join("allowlisted.sh");
-        write_unix_shell_executable(&program, "exit 0\n");
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                mutating_program_allowlist: vec![program.display().to_string()],
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let request = ExecRequest::new(
-            &program,
-            Vec::<OsString>::new(),
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_declared_mutation(true);
-        let command = Command::new(&program);
-        let (_event, result) = gateway.prepare_command(&request, command);
-        let prepared = result.expect("prepare command");
-
-        write_unix_shell_executable(&program, "exit 1\n");
-
-        let err = prepared
-            .spawn()
-            .expect_err("content drift should be rejected before spawn");
-        assert!(matches!(
-            err,
-            ExecError::RequestPathChanged {
-                kind: "program",
-                ref detail,
-                ..
-            } if detail == "file contents changed"
-        ));
     }
 
     #[test]
@@ -2218,35 +1323,6 @@ mod tests {
     }
 
     #[test]
-    fn denies_non_mutating_for_bare_program_even_when_same_name_is_allowlisted() {
-        let resolved_program = resolved_non_mutating_program_path();
-        let policy = GatewayPolicy {
-            non_mutating_program_allowlist: vec![resolved_program.display().to_string()],
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            ExecutionIsolation::BestEffort,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            non_mutating_program(),
-            Vec::<OsString>::new(),
-            workspace.path(),
-            ExecutionIsolation::BestEffort,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let event = gateway.evaluate(&request);
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(
-            event.reason.as_deref(),
-            Some("non_mutating_requires_allowlisted_program")
-        );
-    }
-
-    #[test]
     fn denies_mutation_for_explicit_path_that_only_matches_allowlisted_basename() {
         let policy = GatewayPolicy {
             mutating_program_allowlist: vec!["omne-fs".to_string()],
@@ -2258,7 +1334,7 @@ mod tests {
         );
         let workspace = tempdir().expect("create temp workspace");
         let program = non_allowlisted_program_path(&workspace);
-        write_test_executable_placeholder(&program);
+        fs::write(&program, "placeholder").expect("write program placeholder");
         let request = ExecRequest::new(
             &program,
             Vec::<OsString>::new(),
@@ -2293,34 +1369,7 @@ mod tests {
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(
             event.reason.as_deref(),
-            Some("opaque_command_requires_declared_mutation")
-        );
-    }
-
-    #[test]
-    fn detects_env_as_opaque_command_launcher() {
-        assert!(uses_opaque_command_launcher(OsStr::new("env")));
-        assert!(uses_opaque_command_launcher(OsStr::new("/usr/bin/env")));
-    }
-
-    #[test]
-    fn denies_env_launcher_without_allowlist() {
-        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            "/usr/bin/env",
-            vec!["sh", "-c", "echo hello"],
-            workspace.path(),
-            ExecutionIsolation::BestEffort,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let event = gateway.evaluate(&request);
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(
-            event.reason.as_deref(),
-            Some("opaque_command_requires_declared_mutation")
+            Some("opaque_command_requires_allowlisted_program")
         );
     }
 
@@ -2351,7 +1400,7 @@ mod tests {
         let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let program = workspace.path().join("git");
-        write_test_executable_placeholder(&program);
+        fs::write(&program, "placeholder").expect("write program placeholder");
         let request = ExecRequest::new(
             &program,
             vec!["status"],
@@ -2373,17 +1422,7 @@ mod tests {
     fn allows_known_mutating_program_when_declared_and_allowlisted() {
         let workspace = tempdir().expect("create temp workspace");
         let program = workspace.path().join("git");
-        write_test_executable_placeholder(&program);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = fs::metadata(&program)
-                .expect("program metadata")
-                .permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&program, permissions).expect("chmod program");
-        }
+        fs::write(&program, "placeholder").expect("write program placeholder");
         let policy = GatewayPolicy {
             mutating_program_allowlist: vec![program.display().to_string()],
             ..GatewayPolicy::default()
@@ -2446,15 +1485,18 @@ mod tests {
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(
             event.reason.as_deref(),
-            Some("opaque_command_requires_declared_mutation")
+            Some("opaque_command_requires_allowlisted_program")
         );
     }
 
     #[test]
     fn allows_opaque_command_launcher_when_explicitly_allowlisted() {
-        let program = dummy_program_absolute_path();
+        #[cfg(windows)]
+        let program = r"C:\Windows\System32\cmd.exe";
+        #[cfg(not(windows))]
+        let program = "/bin/sh";
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec![program.display().to_string()],
+            mutating_program_allowlist: vec![program.to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2463,7 +1505,7 @@ mod tests {
         );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
-            &program,
+            program,
             vec![dummy_shell_flag(), "echo hello"],
             workspace.path(),
             ExecutionIsolation::BestEffort,
@@ -2479,7 +1521,7 @@ mod tests {
     fn denies_explicitly_allowlisted_program_without_declared_mutation() {
         let program = allowlisted_program_path();
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec![program.display().to_string()],
+            mutating_program_allowlist: vec![program.to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2556,7 +1598,6 @@ mod tests {
     fn prepare_command_sets_current_dir() {
         let policy = GatewayPolicy {
             allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2565,14 +1606,15 @@ mod tests {
         );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
-            non_mutating_program(),
-            Vec::<OsString>::new(),
+            "echo",
+            vec!["hello"],
             workspace.path(),
             host_supported_test_isolation(),
             workspace.path(),
         )
         .with_declared_mutation(false);
-        let command = Command::new(resolved_non_mutating_program_path());
+        let mut command = Command::new("echo");
+        command.arg("hello");
         let (_event, result) = gateway.prepare_command(&request, command);
         let prepared = result.expect("prepare command");
         let expected_cwd = workspace
@@ -2584,334 +1626,9 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn execute_status_applies_audited_request_environment() {
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let program = dummy_program_absolute_path();
-        let request = ExecRequest::new(
-            &program,
-            vec![
-                "-c",
-                "test \"$OMNE_GATEWAY_REQUEST\" = expected && test -z \"$OMNE_GATEWAY_AMBIENT\"",
-            ],
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_env([("OMNE_GATEWAY_REQUEST", "expected")])
-        .with_declared_mutation(false);
-
-        let status = gateway
-            .execute_status(&request)
-            .expect("execute should apply request env");
-        assert!(status.success(), "unexpected status: {status}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_command_allows_matching_preconfigured_environment() {
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let program = dummy_program_absolute_path();
-        let request = ExecRequest::new(
-            &program,
-            vec![
-                "-c",
-                "test \"$OMNE_GATEWAY_REQUEST\" = expected && test -z \"$OMNE_GATEWAY_AMBIENT\"",
-            ],
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_env([("OMNE_GATEWAY_REQUEST", "expected")])
-        .with_declared_mutation(false);
-        let mut command = Command::new(&program);
-        command.args([
-            "-c",
-            "test \"$OMNE_GATEWAY_REQUEST\" = expected && test -z \"$OMNE_GATEWAY_AMBIENT\"",
-        ]);
-        command.env("OMNE_GATEWAY_REQUEST", "expected");
-
-        let (_event, result) = gateway.prepare_command(&request, command);
-        let status = result
-            .expect("prepare command")
-            .spawn()
-            .expect("spawn prepared command")
-            .child
-            .wait()
-            .expect("wait prepared command");
-        assert!(status.success(), "unexpected status: {status}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_command_discards_preconfigured_stdio_overrides() {
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let program = dummy_program_absolute_path();
-        let request = ExecRequest::new(
-            &program,
-            vec!["-c", "exit 0"],
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-        let mut command = Command::new(&program);
-        command.args(["-c", "exit 0"]);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let (_event, result) = gateway.prepare_command(&request, command);
-        let mut prepared_child = result
-            .expect("prepare command")
-            .spawn()
-            .expect("spawn prepared command");
-
-        assert!(
-            prepared_child.child.stdin.is_none(),
-            "prepared command should discard caller stdin override"
-        );
-        assert!(
-            prepared_child.child.stdout.is_none(),
-            "prepared command should discard caller stdout override"
-        );
-        assert!(
-            prepared_child.child.stderr.is_none(),
-            "prepared command should discard caller stderr override"
-        );
-        let status = prepared_child.child.wait().expect("wait prepared command");
-        assert!(status.success(), "unexpected status: {status}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_command_discards_preconfigured_arg0_override() {
-        use std::os::unix::process::CommandExt;
-
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let program = dummy_program_absolute_path();
-        let request = ExecRequest::new(
-            &program,
-            vec!["-c", "test \"$0\" != leaked-argv0"],
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-        let mut command = Command::new(&program);
-        command.args(["-c", "test \"$0\" != leaked-argv0"]);
-        command.arg0("leaked-argv0");
-
-        let (_event, result) = gateway.prepare_command(&request, command);
-        let status = result
-            .expect("prepare command")
-            .spawn()
-            .expect("spawn prepared command without leaked argv0")
-            .child
-            .wait()
-            .expect("wait prepared command");
-        assert!(status.success(), "unexpected status: {status}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_command_discards_process_group_override_from_input_command() {
-        use std::os::unix::process::CommandExt;
-
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let program = dummy_program_absolute_path();
-        let request = ExecRequest::new(
-            &program,
-            vec![
-                "-c",
-                "pgid=$(ps -o pgid= -p \"$$\" | tr -d ' ')\ntest \"$pgid\" != \"$$\"",
-            ],
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-        let mut command = Command::new(&program);
-        command.args([
-            "-c",
-            "pgid=$(ps -o pgid= -p \"$$\" | tr -d ' ')\ntest \"$pgid\" != \"$$\"",
-        ]);
-        command.process_group(0);
-
-        let (_event, result) = gateway.prepare_command(&request, command);
-        let status = result
-            .expect("prepare command")
-            .spawn()
-            .expect("spawn prepared command without inherited process-group override")
-            .child
-            .wait()
-            .expect("wait prepared command");
-        assert!(status.success(), "unexpected status: {status}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_command_discards_preconfigured_stdio_handles() {
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let program = dummy_program_absolute_path();
-        let request = ExecRequest::new(
-            &program,
-            vec!["-c", "exit 0"],
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-        let mut command = Command::new(&program);
-        command.args(["-c", "exit 0"]);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let (_event, result) = gateway.prepare_command(&request, command);
-        let mut prepared_child = result
-            .expect("prepare command")
-            .spawn()
-            .expect("spawn prepared command");
-        assert!(
-            prepared_child.child.stdin.is_none(),
-            "prepared command should not inherit stdin"
-        );
-        assert!(
-            prepared_child.child.stdout.is_none(),
-            "prepared command should not expose stdout capture handles"
-        );
-        assert!(
-            prepared_child.child.stderr.is_none(),
-            "prepared command should not expose stderr capture handles"
-        );
-        let status = prepared_child.child.wait().expect("wait prepared command");
-        assert!(status.success(), "unexpected status: {status}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_non_executable_explicit_program_path() {
+    fn prepared_command_fails_closed_when_program_identity_changes_before_spawn() {
         use std::os::unix::fs::PermissionsExt;
 
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let program = workspace.path().join("plain-tool");
-        fs::write(&program, "echo hi\n").expect("write plain program");
-        let mut permissions = fs::metadata(&program).expect("metadata").permissions();
-        permissions.set_mode(0o644);
-        fs::set_permissions(&program, permissions).expect("chmod plain program");
-
-        let request = ExecRequest::new(
-            &program,
-            Vec::<OsString>::new(),
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let (event, result) = gateway.execute(&request).into_parts();
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("program_path_invalid"));
-        assert!(matches!(
-            result,
-            Err(ExecError::ProgramPathInvalid { ref detail, .. })
-                if detail == "program path must reference a spawnable executable"
-        ));
-    }
-
-    #[test]
-    fn prepare_command_denies_unbound_bare_command() {
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            non_mutating_program(),
-            Vec::<OsString>::new(),
-            workspace.path(),
-            host_supported_test_isolation(),
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let command = Command::new(non_mutating_program());
-        let (event, result) = gateway.prepare_command(&request, command);
-
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("prepared_command_mismatch"));
-        assert!(matches!(
-            result,
-            Err(ExecError::PreparedCommandMismatch { .. })
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepared_command_fails_closed_when_program_identity_changes_before_spawn() {
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             enforce_allowlisted_program_for_mutation: false,
@@ -2924,8 +1641,11 @@ mod tests {
         let workspace = tempdir().expect("create temp workspace");
         let program = workspace.path().join("tool.sh");
         let replacement = workspace.path().join("tool-replacement.sh");
-        write_unix_shell_executable(&program, "exit 0\n");
-        write_unix_shell_executable(&replacement, "exit 1\n");
+        fs::write(&program, "#!/bin/sh\nexit 0\n").expect("write program");
+        fs::write(&replacement, "#!/bin/sh\nexit 1\n").expect("write replacement");
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).expect("chmod program");
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o755))
+            .expect("chmod replacement");
 
         let request = ExecRequest::new(
             &program,
@@ -2956,7 +1676,6 @@ mod tests {
     fn prepare_command_denies_mismatched_command_identity() {
         let policy = GatewayPolicy {
             allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2984,85 +1703,13 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn prepare_command_denies_mismatched_command_environment() {
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            "echo",
-            vec!["hello"],
-            workspace.path(),
-            host_supported_test_isolation(),
-            workspace.path(),
-        )
-        .with_env([("OMNE_GATEWAY_REQUEST", "expected")])
-        .with_declared_mutation(false);
-        let mut command = Command::new("echo");
-        command.arg("hello");
-        command.env("OMNE_GATEWAY_REQUEST", "different");
-
-        let (event, result) = gateway.prepare_command(&request, command);
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("prepared_command_mismatch"));
-        assert!(matches!(
-            result,
-            Err(ExecError::PreparedCommandMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn prepare_command_denies_mismatched_command_current_dir() {
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request_cwd = workspace.path().join("request");
-        let other_cwd = workspace.path().join("other");
-        fs::create_dir_all(&request_cwd).expect("create request cwd");
-        fs::create_dir_all(&other_cwd).expect("create other cwd");
-        let request = ExecRequest::new(
-            "echo",
-            vec!["hello"],
-            &request_cwd,
-            host_supported_test_isolation(),
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-        let mut command = Command::new("echo");
-        command.arg("hello");
-        command.current_dir(&other_cwd);
-
-        let (event, result) = gateway.prepare_command(&request, command);
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("prepared_command_mismatch"));
-        assert!(matches!(
-            result,
-            Err(ExecError::PreparedCommandMismatch { .. })
-        ));
-    }
-
     #[cfg(unix)]
     #[test]
-    fn prepare_command_rejects_symlink_cwd_ancestor() {
+    fn prepare_command_canonicalizes_symlink_cwd() {
         use std::os::unix::fs::symlink;
 
         let policy = GatewayPolicy {
             allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -3076,91 +1723,20 @@ mod tests {
         symlink(&real_dir, &link_dir).expect("create symlink");
 
         let request = ExecRequest::new(
-            non_mutating_program(),
-            Vec::<OsString>::new(),
+            "echo",
+            vec!["hello"],
             &link_dir,
             host_supported_test_isolation(),
             workspace.path(),
         )
         .with_declared_mutation(false);
-        let command = Command::new(resolved_non_mutating_program_path());
+        let mut command = Command::new("echo");
+        command.arg("hello");
         let (event, result) = gateway.prepare_command(&request, command);
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("cwd_invalid"));
-        match result.expect_err("symlink cwd ancestor should fail closed") {
-            ExecError::CwdInvalid { cwd, detail } => {
-                assert_eq!(cwd, link_dir);
-                assert!(
-                    detail.contains("must not traverse symlink"),
-                    "unexpected detail: {detail}"
-                );
-            }
-            other => panic!("unexpected error: {other}"),
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn resolve_request_rejects_symlink_workspace_root_ancestor() {
-        use std::os::unix::fs::symlink;
-
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let real_root = workspace.path().join("real");
-        let alias_root = workspace.path().join("alias");
-        let cwd = real_root.join("cwd");
-        fs::create_dir_all(&cwd).expect("create real cwd");
-        symlink(&real_root, &alias_root).expect("create workspace-root symlink");
-
-        let request = ExecRequest::new(
-            non_mutating_program(),
-            Vec::<OsString>::new(),
-            &cwd,
-            host_supported_test_isolation(),
-            &alias_root,
-        )
-        .with_declared_mutation(false);
-
-        let event = gateway.evaluate(&request);
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("workspace_root_invalid"));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn evaluate_allows_macos_system_temp_root_alias() {
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let cwd = workspace.path().join("cwd");
-        fs::create_dir_all(&cwd).expect("create cwd");
-
-        let request = ExecRequest::new(
-            non_mutating_program(),
-            Vec::<OsString>::new(),
-            &cwd,
-            host_supported_test_isolation(),
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let event = gateway.evaluate(&request);
-        assert_eq!(event.decision, ExecDecision::Run);
+        let prepared = result.expect("prepare command");
+        let expected_cwd = real_dir.canonicalize().expect("canonicalize real dir");
+        assert_eq!(event.cwd, expected_cwd);
+        assert_eq!(prepared.current_dir(), Some(expected_cwd.as_path()));
     }
 
     #[test]
@@ -3196,58 +1772,6 @@ mod tests {
         assert_eq!(resolution.workspace_root, canonical_workspace);
     }
 
-    #[test]
-    fn resolve_request_resolves_bare_program_to_absolute_path() {
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            non_mutating_program(),
-            Vec::<OsString>::new(),
-            workspace.path(),
-            host_supported_test_isolation(),
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let resolution = gateway.resolve_request(&request);
-
-        assert_eq!(resolution.program, resolved_non_mutating_program_path());
-    }
-
-    #[test]
-    fn evaluate_resolves_bare_program_to_absolute_path_in_event() {
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            non_mutating_program(),
-            Vec::<OsString>::new(),
-            workspace.path(),
-            host_supported_test_isolation(),
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let event = gateway.evaluate(&request);
-
-        assert_eq!(event.program, resolved_non_mutating_program_path());
-    }
-
     #[cfg(unix)]
     #[test]
     fn prepared_command_fails_closed_when_cwd_identity_changes_before_spawn() {
@@ -3272,7 +1796,7 @@ mod tests {
             host_supported_test_isolation(),
             workspace.path(),
         );
-        let mut command = Command::new(dummy_program_absolute_path());
+        let mut command = Command::new("sh");
         command.args(["-c", "exit 0"]);
 
         let (_event, result) = gateway.prepare_command(&request, command);
@@ -3338,20 +1862,20 @@ mod tests {
     #[test]
     fn execute_status_audit_records_nonzero_exit() {
         let workspace = tempdir().expect("create temp workspace");
-        let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
-        let (program, args) = shell_exit_nonzero_command();
+        let audit_path = workspace.path().join("audit.jsonl");
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             audit_log_path: Some(audit_path.clone()),
-            mutating_program_allowlist: vec![program.display().to_string()],
+            mutating_program_allowlist: vec![shell_exit_nonzero_command().0.to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             policy,
             host_supported_test_isolation(),
         );
+        let (program, args) = shell_exit_nonzero_command();
         let request = ExecRequest::new(
-            &program,
+            program,
             args,
             workspace.path(),
             host_supported_test_isolation(),
@@ -3402,10 +1926,9 @@ mod tests {
     #[test]
     fn execute_status_audit_records_spawn_failure() {
         let workspace = tempdir().expect("create temp workspace");
-        let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
+        let audit_path = workspace.path().join("audit.jsonl");
         let policy = GatewayPolicy {
             allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
             audit_log_path: Some(audit_path.clone()),
             ..GatewayPolicy::default()
         };
@@ -3425,23 +1948,20 @@ mod tests {
         let err = gateway
             .execute_status(&request)
             .expect_err("spawn should fail");
-        assert!(matches!(err, ExecError::ProgramLookupFailed { .. }));
+        assert!(matches!(err, ExecError::Spawn(_)));
 
         let content = fs::read_to_string(audit_path).expect("read audit");
-        assert!(content.contains("\"status\":\"prepare_error\""));
+        assert!(content.contains("\"status\":\"spawn_error\""));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn execute_status_reuses_prepared_audit_sink_after_path_replacement() {
+    fn execute_status_fails_when_audit_write_breaks_after_preflight() {
         let workspace = tempdir().expect("create temp workspace");
-        let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
-        let moved_audit_path = canonical_test_root(&workspace).join("audit.moved.jsonl");
-        let (program, args) = audit_rebinding_shell_command(&audit_path, &moved_audit_path);
+        let audit_path = workspace.path().join("audit.jsonl");
         let policy = GatewayPolicy {
             allow_isolation_none: true,
             audit_log_path: Some(audit_path.clone()),
-            mutating_program_allowlist: vec![program.display().to_string()],
+            mutating_program_allowlist: vec![audit_breaking_shell_program().to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -3449,25 +1969,21 @@ mod tests {
             host_supported_test_isolation(),
         );
         let request = ExecRequest::new(
-            &program,
-            args,
+            audit_breaking_shell_program(),
+            audit_breaking_shell_args(&audit_path),
             workspace.path(),
             host_supported_test_isolation(),
             workspace.path(),
         )
         .with_declared_mutation(true);
 
-        let status = gateway
+        let err = gateway
             .execute_status(&request)
-            .expect("prepared audit sink should survive path replacement");
-        assert!(status.success());
-        assert!(
-            audit_path.is_dir(),
-            "original audit path should now be a directory"
-        );
-
-        let content = fs::read_to_string(&moved_audit_path).expect("read moved audit file");
-        assert!(content.contains("\"status\":\"exited\""));
+            .expect_err("audit write failure should be surfaced");
+        match err {
+            ExecError::AuditLogWriteFailed { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[cfg(unix)]
@@ -3482,28 +1998,6 @@ mod tests {
         run_noninteractive_stdin_helper("prepare");
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn spawn_command_with_monitor_returns_sandbox_runtime_observation() {
-        let observation = crate::audit::SandboxRuntimeObservation {
-            mechanism: crate::audit::SandboxRuntimeMechanism::Landlock,
-            outcome: crate::audit::SandboxRuntimeOutcome::NotEnforced,
-            detail: Some("test observation".to_string()),
-        };
-        let mut command = Command::new(dummy_program_absolute_path());
-        command.arg(dummy_shell_flag()).arg("exit 0");
-
-        let mut prepared_child = spawn_command_with_monitor(
-            &mut command,
-            sandbox::SandboxMonitor::with_observation(Some(observation.clone())),
-        )
-        .expect("spawn command with test monitor");
-
-        assert_eq!(prepared_child.sandbox_runtime, Some(observation));
-        let status = prepared_child.child.wait().expect("wait for spawned child");
-        assert!(status.success());
-    }
-
     #[cfg(windows)]
     fn dummy_program() -> &'static str {
         "cmd"
@@ -3514,18 +2008,14 @@ mod tests {
         "sh"
     }
 
-    fn non_mutating_program() -> &'static str {
-        "whoami"
+    #[cfg(windows)]
+    fn dummy_program_absolute_path() -> &'static str {
+        r"C:\Windows\System32\cmd.exe"
     }
 
-    fn resolved_non_mutating_program_path() -> PathBuf {
-        resolve_bare_program_path(OsStr::new(non_mutating_program()))
-            .expect("resolve non-mutating test program")
-    }
-
-    fn dummy_program_absolute_path() -> PathBuf {
-        resolve_bare_program_path(OsStr::new(dummy_program()))
-            .expect("resolve dummy test program to absolute path")
+    #[cfg(not(windows))]
+    fn dummy_program_absolute_path() -> &'static str {
+        "/bin/sh"
     }
 
     #[cfg(windows)]
@@ -3538,7 +2028,7 @@ mod tests {
         "python3"
     }
 
-    fn allowlisted_program_path() -> PathBuf {
+    fn allowlisted_program_path() -> &'static str {
         dummy_program_absolute_path()
     }
 
@@ -3553,37 +2043,44 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn shell_exit_nonzero_command() -> (PathBuf, Vec<OsString>) {
-        (
-            dummy_program_absolute_path(),
-            vec![OsString::from("/C"), OsString::from("exit 1")],
-        )
+    fn shell_exit_nonzero_command() -> (&'static str, Vec<&'static str>) {
+        (r"C:\Windows\System32\cmd.exe", vec!["/C", "exit 1"])
     }
 
     #[cfg(not(windows))]
-    fn shell_exit_nonzero_command() -> (PathBuf, Vec<OsString>) {
-        (
-            dummy_program_absolute_path(),
-            vec![OsString::from("-c"), OsString::from("exit 1")],
-        )
+    fn shell_exit_nonzero_command() -> (&'static str, Vec<&'static str>) {
+        ("/bin/sh", vec!["-c", "exit 1"])
+    }
+
+    #[cfg(windows)]
+    fn audit_breaking_shell_program() -> &'static str {
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
     }
 
     #[cfg(not(windows))]
-    fn audit_rebinding_shell_command(
-        audit_path: &Path,
-        moved_path: &Path,
-    ) -> (PathBuf, Vec<OsString>) {
-        (
-            dummy_program_absolute_path(),
-            vec![
-                OsString::from("-c"),
-                OsString::from(format!(
-                    "mv \"{0}\" \"{1}\" && mkdir \"{0}\"",
-                    audit_path.display(),
-                    moved_path.display()
-                )),
-            ],
-        )
+    fn audit_breaking_shell_program() -> &'static str {
+        "/bin/sh"
+    }
+
+    #[cfg(windows)]
+    fn audit_breaking_shell_args(audit_path: &Path) -> Vec<OsString> {
+        let quoted_audit_path = audit_path.to_string_lossy().replace('\'', "''");
+        vec![
+            OsString::from("-NoProfile"),
+            OsString::from("-Command"),
+            OsString::from(format!(
+                "if (Test-Path -LiteralPath '{0}') {{ Remove-Item -LiteralPath '{0}' -Force }}; New-Item -ItemType Directory -Path '{0}' | Out-Null; exit 0",
+                quoted_audit_path
+            )),
+        ]
+    }
+
+    #[cfg(not(windows))]
+    fn audit_breaking_shell_args(audit_path: &Path) -> Vec<OsString> {
+        vec![
+            OsString::from("-c"),
+            OsString::from(format!("rm \"{0}\" && mkdir \"{0}\"", audit_path.display())),
+        ]
     }
 
     #[cfg(windows)]
@@ -3616,34 +2113,6 @@ mod tests {
         "open('deleteme.txt','w').write('x')"
     }
 
-    #[cfg(unix)]
-    fn write_unix_executable(path: &Path, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::write(path, body).expect("write executable");
-        let mut permissions = fs::metadata(path).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).expect("set permissions");
-    }
-
-    #[cfg(unix)]
-    fn write_unix_shell_executable(path: &Path, body: &str) {
-        write_unix_executable(
-            path,
-            &format!("#!{}\n{body}", dummy_program_absolute_path().display()),
-        );
-    }
-
-    #[cfg(unix)]
-    fn write_test_executable_placeholder(path: &Path) {
-        write_unix_shell_executable(path, "exit 0\n");
-    }
-
-    #[cfg(windows)]
-    fn write_test_executable_placeholder(path: &Path) {
-        fs::write(path, "@echo off\r\nexit /b 0\r\n").expect("write executable placeholder");
-    }
-
     fn host_supported_test_isolation() -> ExecutionIsolation {
         ExecutionIsolation::None
     }
@@ -3671,13 +2140,8 @@ mod tests {
             },
             ExecutionIsolation::None,
         );
-        #[cfg(windows)]
-        let program = workspace.path().join("stdin-helper.exe");
-        #[cfg(not(windows))]
-        let program = workspace.path().join("stdin-helper");
-        write_test_executable_placeholder(&program);
         let request = ExecRequest::new(
-            &program,
+            "/bin/sh",
             Vec::<OsString>::new(),
             workspace.path(),
             ExecutionIsolation::None,
@@ -3692,12 +2156,12 @@ mod tests {
                 assert!(status.success());
             }
             "prepare" => {
-                let command = Command::new(&program);
+                let command = Command::new("/bin/sh");
                 let (_event, result) = gateway.prepare_command(&request, command);
                 let prepared = result.expect("prepare command");
-                let mut prepared_child = prepared.spawn().expect("prepared command should spawn");
-                let status = prepared_child
-                    .child
+                let status = prepared
+                    .spawn()
+                    .expect("prepared command should spawn")
                     .wait()
                     .expect("wait for prepared command");
                 assert!(status.success());
@@ -3719,7 +2183,7 @@ mod tests {
             .spawn()
             .expect("spawn helper test process");
         let _blocking_stdin = child.stdin.take().expect("helper stdin");
-        let status = wait_for_child_with_timeout(&mut child, Duration::from_secs(10));
+        let status = wait_for_child_with_timeout(&mut child, Duration::from_secs(3));
         assert!(
             status.success(),
             "helper process should exit successfully, got {status}"
@@ -3743,44 +2207,5 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_non_executable_explicit_program_paths() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let program = workspace.path().join("plain-script");
-        fs::write(&program, "#!/usr/bin/env sh\nexit 0\n").expect("write plain script");
-        let mut permissions = fs::metadata(&program).expect("metadata").permissions();
-        permissions.set_mode(0o644);
-        fs::set_permissions(&program, permissions).expect("set permissions");
-
-        let request = ExecRequest::new(
-            &program,
-            Vec::<OsString>::new(),
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        );
-
-        let (event, result) = gateway.execute(&request).into_parts();
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("program_path_invalid"));
-        assert!(matches!(
-            result,
-            Err(ExecError::ProgramPathInvalid { ref detail, .. })
-                if detail == "program path must reference a spawnable executable"
-        ));
     }
 }

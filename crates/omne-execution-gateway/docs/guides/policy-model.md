@@ -6,20 +6,20 @@
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `allow_isolation_none` | `bool` | `true` | Allows `policy_meta::ExecutionIsolation::None` when true. |
+| `allow_isolation_none` | `bool` | `false` | Allows `policy_meta::ExecutionIsolation::None` when true. |
 | `enforce_allowlisted_program_for_mutation` | `bool` | `true` | Requires every request to declare mutation intent explicitly, requires declared mutations to use allowlisted programs, requires allowlisted mutating programs to set `declared_mutation = true`, and fail-closes shell-like opaque launchers plus known mutating tool families when callers try to mark them non-mutating. |
 | `mutating_program_allowlist` | `Vec<String>` | empty | Explicit program paths whose resolved executable identity may authorize declared mutation. Bare program names are not trusted for mutation authorization. |
-| `default_isolation` | `policy_meta::ExecutionIsolation` | `None` | Fallback isolation for CLI requests when not provided. |
+| `default_isolation` | `policy_meta::ExecutionIsolation` | `BestEffort` | Fallback isolation for CLI requests when not provided. |
 | `audit_log_path` | `Option<PathBuf>` | `None` | Optional JSONL audit file path. |
 
 ## Default Policy JSON
 
 ```json
 {
-  "allow_isolation_none": true,
+  "allow_isolation_none": false,
   "enforce_allowlisted_program_for_mutation": true,
   "mutating_program_allowlist": ["/usr/local/bin/omne-fs"],
-  "default_isolation": "none",
+  "default_isolation": "best_effort",
   "audit_log_path": "/tmp/omne_exec_audit.jsonl"
 }
 ```
@@ -45,7 +45,6 @@
 - the gateway still does not parse arbitrary tool-specific CLI syntax or infer arbitrary binary semantics for unknown non-allowlisted direct executables; the built-in mutator list is only a narrow fail-closed guardrail for obvious host-mutating entry points.
 - allowlist matching is executable-identity based for explicit paths; it is not binary provenance verification.
 - `execute()` owns the final execution audit record; `prepare_command()` only records the preflight `prepared` / `prepare_error` audit state because the caller owns the child lifecycle after `spawn()`.
-- `GatewayPolicy::default()` is a host-compatible unsandboxed baseline for current shipped hosts, so it defaults to `allow_isolation_none=true` and `default_isolation=none`; if a caller wants fail-closed sandbox preference, it must set `default_isolation` to `best_effort` or `strict` explicitly.
 - Linux、macOS 和 Windows 当前都只报告 `None` 为受支持能力；如果 policy/default/request 仍要求 `best_effort` 或 `strict`，gateway 会按 `isolation_not_supported` fail-closed。
 
 ## Denial Reasons

@@ -32,22 +32,15 @@ pub fn resolve_command_path_or_standard_location_os(command: &OsStr) -> Option<P
     })
 }
 
-pub(crate) fn resolve_command_path_in_standard_locations_os(command: &OsStr) -> Option<PathBuf> {
-    resolve_command_path_from_standard_locations(command, is_spawnable_command_path)
-}
-
-#[cfg(all(test, unix))]
 pub(crate) fn resolve_available_command_path(command: &str) -> Option<PathBuf> {
     resolve_available_command_path_os(OsStr::new(command))
 }
 
-#[cfg(all(test, unix))]
 pub(crate) fn resolve_available_command_path_os(command: &OsStr) -> Option<PathBuf> {
     resolve_available_command_path_with_path_var(command, std::env::var_os("PATH"))
 }
 
-#[cfg(all(test, unix))]
-pub(crate) fn resolve_available_command_path_with_path_var(
+fn resolve_available_command_path_with_path_var(
     command: &OsStr,
     path_var: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
@@ -77,7 +70,6 @@ pub(crate) fn is_spawnable_command_path(path: &Path) -> bool {
     }
 }
 
-#[cfg(any(test, windows))]
 pub(crate) fn is_regular_command_path(path: &Path) -> bool {
     path.is_file()
 }
@@ -159,13 +151,10 @@ mod tests {
     #[cfg(unix)]
     use super::{
         is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
-        resolve_command_in_dir, resolve_command_path_in_standard_locations_os,
-        resolve_command_path_or_standard_location,
+        resolve_command_in_dir, resolve_command_path_or_standard_location,
     };
     #[cfg(unix)]
     use std::ffi::OsStr;
-    #[cfg(unix)]
-    use std::path::PathBuf;
 
     #[test]
     fn missing_command_returns_none() {
@@ -182,33 +171,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn standard_location_resolution_ignores_ambient_path_shadow() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let shadow = temp.path().join("env");
-        std::fs::write(&shadow, "#!/bin/sh\nexit 0\n").expect("write shadow");
-        let mut permissions = std::fs::metadata(&shadow)
-            .expect("stat shadow")
-            .permissions();
-        use std::os::unix::fs::PermissionsExt;
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&shadow, permissions).expect("chmod shadow");
-
-        let resolved = resolve_command_path_in_standard_locations_os(OsStr::new("env"))
-            .expect("resolve env from trusted standard locations");
-
-        assert_ne!(resolved, shadow);
-        assert!(resolved.is_absolute());
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn resolve_command_path_requires_executable_bit() {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().expect("tempdir");
         let executable = temp.path().join("tool");
-        std::fs::write(&executable, format!("#!{}\n", test_shell_path().display()))
-            .expect("write executable");
+        std::fs::write(&executable, "#!/bin/sh\n").expect("write executable");
         let mut executable_permissions = std::fs::metadata(&executable)
             .expect("stat executable")
             .permissions();
@@ -265,10 +233,5 @@ mod tests {
 
         assert!(is_regular_command_path(&plain_file));
         assert!(!is_spawnable_command_path(&plain_file));
-    }
-
-    #[cfg(unix)]
-    fn test_shell_path() -> PathBuf {
-        resolve_command_path_or_standard_location("sh").expect("resolve test shell")
     }
 }

@@ -1,29 +1,19 @@
 use std::fmt::Display;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
-use omne_fs_primitives::{
-    open_appendable_regular_file_in_ambient_root, validate_appendable_regular_file_in_ambient_root,
-};
 use serde::Serialize;
 
 use crate::audit::ExecEvent;
 use crate::error::{ExecError, ExecResult};
 
-const APPENDABLE_OPEN_NOT_FOUND_RETRIES: usize = 4;
-
 #[derive(Debug, Clone)]
 pub(crate) struct AuditLogger {
     path: PathBuf,
-}
-
-#[derive(Debug)]
-pub(crate) struct PreparedAuditSink {
-    path: PathBuf,
-    file: std::fs::File,
 }
 
 impl AuditLogger {
@@ -52,9 +42,8 @@ impl AuditLogger {
         self.write_record(AuditRecord::from_execution(event, result))
     }
 
-    #[cfg(test)]
     pub(crate) fn ensure_ready(&self) -> ExecResult<()> {
-        self.try_open_sink()
+        self.try_open_appendable_file()
             .map(|_| ())
             .map_err(|err| ExecError::AuditLogUnavailable {
                 path: self.path.clone(),
@@ -62,80 +51,7 @@ impl AuditLogger {
             })
     }
 
-    pub(crate) fn prepare_sink(&self) -> ExecResult<PreparedAuditSink> {
-        self.try_open_sink()
-            .map_err(|err| ExecError::AuditLogUnavailable {
-                path: self.path.clone(),
-                detail: err.to_string(),
-            })
-    }
-
-    pub(crate) fn validate_ready_without_side_effects(&self) -> ExecResult<()> {
-        validate_appendable_regular_file_in_ambient_root(&self.path, "audit log").map_err(|err| {
-            ExecError::AuditLogUnavailable {
-                path: self.path.clone(),
-                detail: err.to_string(),
-            }
-        })
-    }
-
     fn write_record(&self, record: AuditRecord) -> ExecResult<()> {
-        self.try_open_sink()
-            .and_then(|mut sink| sink.try_write_record(record))
-            .map_err(|err| ExecError::AuditLogWriteFailed {
-                path: self.path.clone(),
-                detail: err.to_string(),
-            })
-    }
-
-    fn try_open_sink(&self) -> Result<PreparedAuditSink, Box<dyn std::error::Error>> {
-        let mut last_not_found = None;
-        for attempt in 0..APPENDABLE_OPEN_NOT_FOUND_RETRIES {
-            match open_appendable_regular_file_in_ambient_root(&self.path, "audit log") {
-                Ok(file) => {
-                    return Ok(PreparedAuditSink {
-                        path: self.path.clone(),
-                        file: file.into_std(),
-                    });
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    last_not_found = Some(err);
-                    if attempt + 1 < APPENDABLE_OPEN_NOT_FOUND_RETRIES {
-                        std::thread::yield_now();
-                        continue;
-                    }
-                }
-                Err(err) => return Err(err.into()),
-            }
-        }
-
-        Err(last_not_found
-            .unwrap_or_else(|| std::io::Error::other("audit log open failed without an error"))
-            .into())
-    }
-}
-
-impl PreparedAuditSink {
-    pub(crate) fn write_prepare_record<T, E>(
-        &mut self,
-        event: &ExecEvent,
-        result: &Result<T, E>,
-    ) -> ExecResult<()>
-    where
-        E: Display,
-    {
-        self.write_record(AuditRecord::from_prepare(event, result))
-    }
-
-    pub(crate) fn write_execution_record(
-        &mut self,
-        event: &ExecEvent,
-        result: &ExecResult<ExitStatus>,
-    ) -> ExecResult<()> {
-        self.write_record(AuditRecord::from_execution(event, result))
-    }
-
-    fn write_record(&mut self, record: AuditRecord) -> ExecResult<()> {
         self.try_write_record(record)
             .map_err(|err| ExecError::AuditLogWriteFailed {
                 path: self.path.clone(),
@@ -143,19 +59,106 @@ impl PreparedAuditSink {
             })
     }
 
-    fn try_write_record(&mut self, record: AuditRecord) -> Result<(), Box<dyn std::error::Error>> {
+    fn try_write_record(&self, record: AuditRecord) -> Result<(), Box<dyn std::error::Error>> {
         let line = serde_json::to_string(&record)?;
-        self.file.lock_exclusive()?;
-        let write_result = self
-            .file
+        let mut file = self.try_open_appendable_file()?;
+        file.lock_exclusive()?;
+        let write_result = file
             .seek(SeekFrom::End(0))
-            .and_then(|_| writeln!(self.file, "{line}"))
-            .and_then(|_| self.file.flush());
-        let unlock_result = self.file.unlock();
+            .and_then(|_| writeln!(file, "{line}"))
+            .and_then(|_| file.flush());
+        let unlock_result = file.unlock();
         write_result?;
         unlock_result?;
         Ok(())
     }
+
+    fn try_open_appendable_file(&self) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+        if let Some(parent) = self.path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            if let Some(existing_parent) = existing_ancestor(parent) {
+                ensure_existing_directory(existing_parent)?;
+            }
+            fs::create_dir_all(parent)?;
+            ensure_existing_directory(parent)?;
+        }
+        if self.path.exists() {
+            ensure_existing_regular_file_path(&self.path)?;
+        }
+        open_appendable_regular_file_nofollow(&self.path)
+    }
+}
+
+fn ensure_existing_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!("path is not a directory: {}", path.display()).into());
+    }
+    Ok(())
+}
+
+fn ensure_existing_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!("path is not a regular file: {}", path.display()).into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = OpenOptions::new();
+    options
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let file = options.open(path)?;
+    ensure_regular_file(path, file)
+}
+
+#[cfg(windows)]
+fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+    let mut options = OpenOptions::new();
+    options
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = options.open(path)?;
+    ensure_regular_file(path, file)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    ensure_regular_file(path, file)
+}
+
+fn ensure_regular_file(path: &Path, file: File) -> Result<File, Box<dyn std::error::Error>> {
+    let metadata = file.metadata()?;
+    if metadata.is_file() {
+        return Ok(file);
+    }
+
+    Err(format!("path is not a regular file: {}", path.display()).into())
+}
+
+fn existing_ancestor(path: &Path) -> Option<&Path> {
+    path.ancestors().find(|ancestor| ancestor.exists())
 }
 
 #[derive(Debug, Serialize)]
@@ -273,7 +276,6 @@ mod tests {
     use std::os::unix::fs::symlink;
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
-    use std::path::PathBuf;
     use std::process::Command;
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -285,16 +287,10 @@ mod tests {
     use crate::audit::{ExecDecision, ExecEvent};
     use policy_meta::ExecutionIsolation;
 
-    fn canonical_test_root(dir: &tempfile::TempDir) -> PathBuf {
-        dir.path()
-            .canonicalize()
-            .unwrap_or_else(|_| dir.path().to_path_buf())
-    }
-
     #[test]
     fn writes_jsonl_record() {
         let dir = tempdir().expect("tempdir");
-        let path = canonical_test_root(&dir).join("audit.jsonl");
+        let path = dir.path().join("audit.jsonl");
         let logger = AuditLogger::new(&path);
 
         let event = sample_event("echo");
@@ -321,7 +317,7 @@ mod tests {
     #[test]
     fn writes_execution_record_with_exit_metadata() {
         let dir = tempdir().expect("tempdir");
-        let path = canonical_test_root(&dir).join("audit.jsonl");
+        let path = dir.path().join("audit.jsonl");
         let logger = AuditLogger::new(&path);
 
         let event = sample_event("false");
@@ -348,7 +344,7 @@ mod tests {
     #[test]
     fn concurrent_prepare_writes_preserve_jsonl_lines() {
         let dir = tempdir().expect("tempdir");
-        let path = canonical_test_root(&dir).join("audit.jsonl");
+        let path = dir.path().join("audit.jsonl");
         let logger = Arc::new(AuditLogger::new(&path));
         let thread_count = 8;
         let writes_per_thread = 25;
@@ -386,10 +382,7 @@ mod tests {
     #[test]
     fn ensure_ready_creates_missing_parent_directories() {
         let dir = tempdir().expect("tempdir");
-        let path = canonical_test_root(&dir)
-            .join("nested")
-            .join("audit")
-            .join("audit.jsonl");
+        let path = dir.path().join("nested").join("audit").join("audit.jsonl");
         let logger = AuditLogger::new(&path);
 
         logger
@@ -406,7 +399,7 @@ mod tests {
     #[test]
     fn ensure_ready_rejects_non_directory_parent() {
         let dir = tempdir().expect("tempdir");
-        let parent_file = canonical_test_root(&dir).join("not-a-dir");
+        let parent_file = dir.path().join("not-a-dir");
         fs::write(&parent_file, "blocker").expect("write parent file");
         let audit_path = parent_file.join("audit.jsonl");
         let logger = AuditLogger::new(&audit_path);
@@ -425,10 +418,9 @@ mod tests {
     #[test]
     fn ensure_ready_rejects_symlink_audit_sink() {
         let dir = tempdir().expect("tempdir");
-        let root = canonical_test_root(&dir);
-        let target = root.join("real-audit.jsonl");
+        let target = dir.path().join("real-audit.jsonl");
         fs::write(&target, "target").expect("write target");
-        let audit_path = root.join("audit.jsonl");
+        let audit_path = dir.path().join("audit.jsonl");
         symlink(&target, &audit_path).expect("create audit symlink");
         let logger = AuditLogger::new(&audit_path);
 
@@ -446,7 +438,7 @@ mod tests {
     #[test]
     fn ensure_ready_rejects_special_file_sink() {
         let dir = tempdir().expect("tempdir");
-        let audit_path = canonical_test_root(&dir).join("audit.sock");
+        let audit_path = dir.path().join("audit.sock");
         let _listener = UnixListener::bind(&audit_path).expect("bind socket");
         let logger = AuditLogger::new(&audit_path);
 
@@ -464,10 +456,9 @@ mod tests {
     #[test]
     fn ensure_ready_rejects_symlink_parent_directory() {
         let dir = tempdir().expect("tempdir");
-        let root = canonical_test_root(&dir);
-        let target_parent = root.join("real-parent");
+        let target_parent = dir.path().join("real-parent");
         fs::create_dir(&target_parent).expect("create target parent");
-        let symlink_parent = root.join("linked-parent");
+        let symlink_parent = dir.path().join("linked-parent");
         symlink(&target_parent, &symlink_parent).expect("create parent symlink");
         let audit_path = symlink_parent.join("nested").join("audit.jsonl");
         let logger = AuditLogger::new(&audit_path);
@@ -485,7 +476,7 @@ mod tests {
     #[test]
     fn write_prepare_record_surfaces_post_ready_write_failure() {
         let dir = tempdir().expect("tempdir");
-        let path = canonical_test_root(&dir).join("audit.jsonl");
+        let path = dir.path().join("audit.jsonl");
         let logger = AuditLogger::new(&path);
         let event = sample_event("echo");
 
@@ -504,31 +495,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn prepared_sink_keeps_writing_to_bound_handle_after_path_replacement() {
-        let dir = tempdir().expect("tempdir");
-        let root = canonical_test_root(&dir);
-        let path = root.join("audit.jsonl");
-        let moved_path = root.join("audit.moved.jsonl");
-        let logger = AuditLogger::new(&path);
-        let event = sample_event("echo");
-
-        let mut sink = logger.prepare_sink().expect("prepare audit sink");
-        fs::rename(&path, &moved_path).expect("move prepared audit file");
-        fs::create_dir(&path).expect("replace original audit path with directory");
-
-        sink.write_prepare_record(&event, &Ok::<(), ExecError>(()))
-            .expect("prepared sink should keep writing through the bound handle");
-
-        let content = fs::read_to_string(&moved_path).expect("read moved audit file");
-        assert!(content.contains("\"status\":\"prepared\""));
-        assert!(
-            path.is_dir(),
-            "original audit path should now be a directory to prove no reopen happened"
-        );
-    }
-
     fn sample_event(program: impl Into<OsString>) -> ExecEvent {
         ExecEvent {
             decision: ExecDecision::Run,
@@ -539,7 +505,6 @@ mod tests {
             supported_isolation: ExecutionIsolation::BestEffort,
             program: program.into(),
             args: Vec::new(),
-            env: Vec::new(),
             cwd: ".".into(),
             workspace_root: ".".into(),
             declared_mutation: false,

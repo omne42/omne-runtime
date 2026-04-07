@@ -4,16 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-cap-std = "4"
+flate2 = "1"
 http-kit = { path = "../../../omne_foundation/crates/http-kit" }
 omne-archive-primitives = { path = "../omne-archive-primitives" }
 omne-fs-primitives = { path = "../omne-fs-primitives" }
 omne-integrity-primitives = { path = "../omne-integrity-primitives" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-tokio = { version = "1", features = ["rt"] }
+tar = "0.4"
+xz2 = "0.1"
+zip = "0.6"
 
 [dev-dependencies]
-tar = "0.4"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-zip = "0.6"

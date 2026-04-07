@@ -2,8 +2,7 @@ use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use omne_archive_primitives::{
-    ArchiveBinaryMatch, BinaryArchiveRequest, ExtractBinaryFromArchiveError,
-    extract_binary_from_archive_reader_to_writer,
+    ArchiveBinaryMatch, BinaryArchiveRequest, extract_binary_from_archive_reader_to_writer,
 };
 use omne_fs_primitives::{
     AtomicWriteOptions, stage_file_atomically, stage_file_atomically_with_name,
@@ -11,39 +10,9 @@ use omne_fs_primitives::{
 use omne_integrity_primitives::{Sha256Digest, verify_sha256_reader};
 
 use crate::artifact_download::{
-    ArtifactDownloadCandidate, ArtifactDownloader, ArtifactInstallError,
-    ArtifactInstallErrorDetail, candidate_failure_message,
-    download_candidate_to_writer_with_options, failed_candidates_error, no_candidates_error,
+    ArtifactDownloadCandidate, ArtifactInstallError, candidate_failure_message,
+    download_candidate_to_writer_with_options, failed_candidates_error,
 };
-use crate::install_lock::lock_install_destination;
-
-const BINARY_INSTALL_LOCK_PREFIX: &str = ".binary-install-";
-
-pub const DEFAULT_MAX_BINARY_ARCHIVE_EXTRACTED_BYTES: u64 =
-    omne_archive_primitives::DEFAULT_MAX_EXTRACTED_BINARY_BYTES;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryArchiveFormat {
-    TarGz,
-    TarXz,
-    Zip,
-}
-
-impl BinaryArchiveFormat {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::TarGz => "tar.gz",
-            Self::TarXz => "tar.xz",
-            Self::Zip => "zip",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BinaryArchiveMatch {
-    pub archive_format: BinaryArchiveFormat,
-    pub archive_path: String,
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct DownloadBinaryRequest<'a> {
@@ -60,6 +29,7 @@ pub struct BinaryArchiveInstallRequest<'a> {
     pub destination: &'a Path,
     pub asset_name: &'a str,
     pub binary_name: &'a str,
+    pub tool_name: &'a str,
     pub archive_binary_hint: Option<&'a str>,
     pub expected_sha256: Option<&'a Sha256Digest>,
     pub max_download_bytes: Option<u64>,
@@ -68,42 +38,33 @@ pub struct BinaryArchiveInstallRequest<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledArchiveBinary {
     pub source: ArtifactDownloadCandidate,
-    pub archive_match: BinaryArchiveMatch,
-}
-
-pub fn is_binary_archive_asset_name(asset_name: &str) -> bool {
-    omne_archive_primitives::is_binary_archive_asset_name(asset_name)
+    pub archive_match: ArchiveBinaryMatch,
 }
 
 pub fn install_binary_from_archive(
     asset_name: &str,
     content: &[u8],
     binary_name: &str,
+    tool_name: &str,
     destination: &Path,
     archive_binary_hint: Option<&str>,
-) -> Result<BinaryArchiveMatch, ArtifactInstallError> {
+) -> Result<ArchiveBinaryMatch, ArtifactInstallError> {
     let mut reader = Cursor::new(content);
     install_binary_from_archive_reader(
         asset_name,
         &mut reader,
         binary_name,
+        tool_name,
         destination,
         archive_binary_hint,
     )
 }
 
-pub async fn download_binary_to_destination<D>(
-    downloader: &D,
+pub async fn download_binary_to_destination(
+    client: &reqwest::Client,
     candidates: &[ArtifactDownloadCandidate],
     request: &DownloadBinaryRequest<'_>,
-) -> Result<ArtifactDownloadCandidate, ArtifactInstallError>
-where
-    D: ArtifactDownloader + ?Sized,
-{
-    if candidates.is_empty() {
-        return Err(no_candidates_error(request.canonical_url));
-    }
-
+) -> Result<ArtifactDownloadCandidate, ArtifactInstallError> {
     let mut errors = Vec::new();
     for candidate in candidates {
         let mut staged = stage_file_atomically_with_name(
@@ -114,7 +75,7 @@ where
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
 
         let download_result = download_candidate_to_writer_with_options(
-            downloader,
+            client,
             candidate,
             staged.file_mut(),
             request.max_download_bytes,
@@ -125,19 +86,14 @@ where
             continue;
         }
 
-        let expected_sha256 = request.expected_sha256.cloned();
-        let destination = request.destination.to_path_buf();
-        let install_result = run_blocking_install(move || {
-            let _install_lock = lock_binary_install_destination(&destination)?;
-            verify_downloaded_candidate(staged.file_mut(), expected_sha256.as_ref()).and_then(
+        let install_result =
+            verify_downloaded_candidate(staged.file_mut(), request.expected_sha256).and_then(
                 |_| {
                     staged
                         .commit()
                         .map_err(|err| ArtifactInstallError::install(err.to_string()))
                 },
-            )
-        })
-        .await;
+            );
         if let Err(err) = install_result {
             errors.push(candidate_failure_message(candidate, &err));
             continue;
@@ -148,18 +104,11 @@ where
     Err(failed_candidates_error(request.canonical_url, errors))
 }
 
-pub async fn download_and_install_binary_from_archive<D>(
-    downloader: &D,
+pub async fn download_and_install_binary_from_archive(
+    client: &reqwest::Client,
     candidates: &[ArtifactDownloadCandidate],
     request: &BinaryArchiveInstallRequest<'_>,
-) -> Result<InstalledArchiveBinary, ArtifactInstallError>
-where
-    D: ArtifactDownloader + ?Sized,
-{
-    if candidates.is_empty() {
-        return Err(no_candidates_error(request.canonical_url));
-    }
-
+) -> Result<InstalledArchiveBinary, ArtifactInstallError> {
     let mut errors = Vec::new();
     for candidate in candidates {
         let mut staged = stage_file_atomically_with_name(
@@ -170,7 +119,7 @@ where
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
 
         let download_result = download_candidate_to_writer_with_options(
-            downloader,
+            client,
             candidate,
             staged.file_mut(),
             request.max_download_bytes,
@@ -181,13 +130,8 @@ where
             continue;
         }
 
-        let expected_sha256 = request.expected_sha256.cloned();
-        let asset_name = request.asset_name.to_string();
-        let binary_name = request.binary_name.to_string();
-        let destination = request.destination.to_path_buf();
-        let archive_binary_hint = request.archive_binary_hint.map(str::to_string);
-        let install_result = run_blocking_install(move || {
-            verify_downloaded_candidate(staged.file_mut(), expected_sha256.as_ref())
+        let install_result =
+            verify_downloaded_candidate(staged.file_mut(), request.expected_sha256)
                 .and_then(|_| {
                     staged
                         .file_mut()
@@ -196,15 +140,14 @@ where
                 })
                 .and_then(|_| {
                     install_binary_from_archive_reader(
-                        &asset_name,
+                        request.asset_name,
                         staged.file_mut(),
-                        &binary_name,
-                        &destination,
-                        archive_binary_hint.as_deref(),
+                        request.binary_name,
+                        request.tool_name,
+                        request.destination,
+                        request.archive_binary_hint,
                     )
-                })
-        })
-        .await;
+                });
         let archive_match = match install_result {
             Ok(archive_match) => archive_match,
             Err(err) => {
@@ -225,69 +168,30 @@ fn install_binary_from_archive_reader<R>(
     asset_name: &str,
     reader: &mut R,
     binary_name: &str,
+    tool_name: &str,
     destination: &Path,
     archive_binary_hint: Option<&str>,
-) -> Result<BinaryArchiveMatch, ArtifactInstallError>
+) -> Result<ArchiveBinaryMatch, ArtifactInstallError>
 where
     R: Read + Seek + ?Sized,
 {
     let mut staged = stage_file_atomically(destination, &binary_write_options())
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    let _install_lock = lock_binary_install_destination(destination)?;
     let matched = extract_binary_from_archive_reader_to_writer(
         asset_name,
         reader,
         &BinaryArchiveRequest {
             binary_name,
+            tool_name,
             archive_binary_hint,
         },
         staged.file_mut(),
     )
-    .map_err(artifact_install_error_from_extract_error)?;
+    .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     staged
         .commit()
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    Ok(binary_archive_match_from_archive(matched))
-}
-
-fn binary_archive_match_from_archive(archive_match: ArchiveBinaryMatch) -> BinaryArchiveMatch {
-    BinaryArchiveMatch {
-        archive_format: match archive_match.archive_format {
-            omne_archive_primitives::BinaryArchiveFormat::TarGz => BinaryArchiveFormat::TarGz,
-            omne_archive_primitives::BinaryArchiveFormat::TarXz => BinaryArchiveFormat::TarXz,
-            omne_archive_primitives::BinaryArchiveFormat::Zip => BinaryArchiveFormat::Zip,
-        },
-        archive_path: archive_match.archive_path,
-    }
-}
-
-fn artifact_install_error_from_extract_error(
-    err: ExtractBinaryFromArchiveError,
-) -> ArtifactInstallError {
-    match err {
-        ExtractBinaryFromArchiveError::BinaryNotFound { .. } => {
-            ArtifactInstallError::install_with_detail(
-                ArtifactInstallErrorDetail::ArchiveBinaryNotFound,
-                err.to_string(),
-            )
-        }
-        _ => ArtifactInstallError::install(err.to_string()),
-    }
-}
-
-fn lock_binary_install_destination(
-    destination: &Path,
-) -> Result<omne_fs_primitives::AdvisoryLockGuard, ArtifactInstallError> {
-    lock_install_destination(
-        destination,
-        BINARY_INSTALL_LOCK_PREFIX,
-        "binary install lock root",
-    )
-}
-
-#[cfg(test)]
-fn binary_install_lock_file_name(destination: &Path) -> std::path::PathBuf {
-    crate::install_lock::install_lock_file_name(destination, BINARY_INSTALL_LOCK_PREFIX)
+    Ok(matched)
 }
 
 fn verify_downloaded_candidate<R>(
@@ -306,16 +210,6 @@ where
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     verify_sha256_reader(reader, expected_sha256)
         .map_err(|err| ArtifactInstallError::download(err.to_string()))
-}
-
-async fn run_blocking_install<T, F>(work: F) -> Result<T, ArtifactInstallError>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, ArtifactInstallError> + Send + 'static,
-{
-    tokio::task::spawn_blocking(work).await.map_err(|err| {
-        ArtifactInstallError::install(format!("blocking install task failed: {err}"))
-    })?
 }
 
 fn archive_download_stage_options() -> AtomicWriteOptions {
@@ -341,33 +235,16 @@ mod tests {
     use std::error::Error;
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
-    use std::path::PathBuf;
-    use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
 
-    use omne_archive_primitives::ArchiveBinaryMatch;
-    use omne_fs_primitives::lock_advisory_file_in_ambient_root;
     use omne_integrity_primitives::hash_sha256;
 
-    use crate::artifact_download::{
-        ArtifactDownloadCandidate, ArtifactDownloadFuture, ArtifactDownloader,
-        ArtifactInstallError, ArtifactInstallErrorDetail, ArtifactInstallErrorKind,
-    };
+    use crate::artifact_download::{ArtifactDownloadCandidate, ArtifactDownloadCandidateKind};
 
     use super::{
-        BinaryArchiveFormat, BinaryArchiveInstallRequest, BinaryArchiveMatch,
-        DEFAULT_MAX_BINARY_ARCHIVE_EXTRACTED_BYTES, DownloadBinaryRequest,
-        binary_archive_match_from_archive, binary_install_lock_file_name,
+        BinaryArchiveInstallRequest, DownloadBinaryRequest,
         download_and_install_binary_from_archive, download_binary_to_destination,
-        install_binary_from_archive, is_binary_archive_asset_name,
     };
-
-    fn canonical_test_root(dir: &tempfile::TempDir) -> PathBuf {
-        dir.path()
-            .canonicalize()
-            .unwrap_or_else(|_| dir.path().to_path_buf())
-    }
 
     fn spawn_mock_http_server(
         listener: TcpListener,
@@ -405,33 +282,6 @@ mod tests {
         })
     }
 
-    struct StaticDownloader {
-        responses: HashMap<String, Vec<u8>>,
-    }
-
-    impl ArtifactDownloader for StaticDownloader {
-        fn download_to_writer<'a, W>(
-            &'a self,
-            candidate: &'a ArtifactDownloadCandidate,
-            writer: &'a mut W,
-            _max_bytes: Option<u64>,
-        ) -> ArtifactDownloadFuture<'a>
-        where
-            W: Write + Send + ?Sized + 'a,
-        {
-            let response = self
-                .responses
-                .get(&candidate.url)
-                .cloned()
-                .unwrap_or_else(|| b"not found".to_vec());
-            Box::pin(async move {
-                writer
-                    .write_all(&response)
-                    .map_err(|err| ArtifactInstallError::download(err.to_string()))
-            })
-        }
-    }
-
     fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut writer = Cursor::new(Vec::new());
         {
@@ -467,18 +317,18 @@ mod tests {
         let handle = spawn_mock_http_server(listener, routes, 2);
 
         let temp = tempfile::tempdir()?;
-        let destination = canonical_test_root(&temp).join(&asset_name);
+        let destination = temp.path().join(&asset_name);
         let client = reqwest::Client::builder().build()?;
         let selected = download_binary_to_destination(
             &client,
             &[
                 ArtifactDownloadCandidate {
                     url: canonical_url.clone(),
-                    source_label: "canonical".to_string(),
+                    kind: ArtifactDownloadCandidateKind::Canonical,
                 },
                 ArtifactDownloadCandidate {
                     url: mirror_url,
-                    source_label: "mirror".to_string(),
+                    kind: ArtifactDownloadCandidateKind::Mirror,
                 },
             ],
             &DownloadBinaryRequest {
@@ -491,43 +341,10 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(selected.source_label, "mirror");
+        assert_eq!(selected.kind, ArtifactDownloadCandidateKind::Mirror);
         assert_eq!(std::fs::read(&destination)?, good_binary);
 
         handle.join().expect("mock server thread join");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn direct_binary_download_accepts_custom_downloader() -> Result<(), Box<dyn Error>> {
-        let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
-        let canonical_url = format!("https://example.invalid/{asset_name}");
-        let binary = b"demo-binary".to_vec();
-        let expected_sha256 = hash_sha256(&binary);
-        let temp = tempfile::tempdir()?;
-        let destination = canonical_test_root(&temp).join(&asset_name);
-        let downloader = StaticDownloader {
-            responses: HashMap::from([(canonical_url.clone(), binary.clone())]),
-        };
-
-        let selected = download_binary_to_destination(
-            &downloader,
-            &[ArtifactDownloadCandidate {
-                url: canonical_url.clone(),
-                source_label: "fixture".to_string(),
-            }],
-            &DownloadBinaryRequest {
-                canonical_url: &canonical_url,
-                destination: &destination,
-                asset_name: &asset_name,
-                expected_sha256: Some(&expected_sha256),
-                max_download_bytes: None,
-            },
-        )
-        .await?;
-
-        assert_eq!(selected.source_label, "fixture");
-        assert_eq!(std::fs::read(&destination)?, binary);
         Ok(())
     }
 
@@ -550,18 +367,18 @@ mod tests {
         let handle = spawn_mock_http_server(listener, routes, 2);
 
         let temp = tempfile::tempdir()?;
-        let destination = canonical_test_root(&temp).join(&binary_name);
+        let destination = temp.path().join(&binary_name);
         let client = reqwest::Client::builder().build()?;
         let installed = download_and_install_binary_from_archive(
             &client,
             &[
                 ArtifactDownloadCandidate {
                     url: canonical_url.clone(),
-                    source_label: "canonical".to_string(),
+                    kind: ArtifactDownloadCandidateKind::Canonical,
                 },
                 ArtifactDownloadCandidate {
                     url: mirror_url,
-                    source_label: "mirror".to_string(),
+                    kind: ArtifactDownloadCandidateKind::Mirror,
                 },
             ],
             &BinaryArchiveInstallRequest {
@@ -569,6 +386,7 @@ mod tests {
                 destination: &destination,
                 asset_name,
                 binary_name: &binary_name,
+                tool_name: "demo",
                 archive_binary_hint: None,
                 expected_sha256: None,
                 max_download_bytes: None,
@@ -576,313 +394,10 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(installed.source.source_label, "mirror");
+        assert_eq!(installed.source.kind, ArtifactDownloadCandidateKind::Mirror);
         assert_eq!(std::fs::read(&destination)?, b"good-binary");
 
         handle.join().expect("mock server thread join");
-        Ok(())
-    }
-
-    #[test]
-    fn archive_binary_not_found_preserves_structured_install_detail() -> Result<(), Box<dyn Error>>
-    {
-        let asset_name = "demo.zip";
-        let archive = make_zip_archive(&[("demo/bin/other", b"other-binary", 0o755)])?;
-        let temp = tempfile::tempdir()?;
-        let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
-        let destination = canonical_test_root(&temp).join(&binary_name);
-
-        let err = install_binary_from_archive(
-            asset_name,
-            &archive,
-            &binary_name,
-            &destination,
-            Some("demo/bin/demo"),
-        )
-        .expect_err("missing binary should fail");
-
-        assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
-        assert_eq!(
-            err.detail(),
-            Some(ArtifactInstallErrorDetail::ArchiveBinaryNotFound)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn archive_binary_install_requires_exact_hint_for_product_specific_layout()
-    -> Result<(), Box<dyn Error>> {
-        let asset_name = "MinGit-1.2.3-64-bit.zip";
-        let archive = make_zip_archive(&[("PortableGit/cmd/git.exe", b"MZ", 0o755)])?;
-        let temp = tempfile::tempdir()?;
-        let destination = canonical_test_root(&temp).join("git.exe");
-
-        let err = install_binary_from_archive(asset_name, &archive, "git.exe", &destination, None)
-            .expect_err("product-specific layout should require an explicit archive hint");
-
-        assert_eq!(err.kind(), ArtifactInstallErrorKind::Install);
-        assert_eq!(
-            err.detail(),
-            Some(ArtifactInstallErrorDetail::ArchiveBinaryNotFound)
-        );
-        assert!(!destination.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn archive_binary_install_accepts_exact_hint_for_product_specific_layout()
-    -> Result<(), Box<dyn Error>> {
-        let asset_name = "MinGit-1.2.3-64-bit.zip";
-        let archive = make_zip_archive(&[("PortableGit/cmd/git.exe", b"MZ", 0o755)])?;
-        let temp = tempfile::tempdir()?;
-        let destination = canonical_test_root(&temp).join("git.exe");
-
-        let matched = install_binary_from_archive(
-            asset_name,
-            &archive,
-            "git.exe",
-            &destination,
-            Some("PortableGit/cmd/git.exe"),
-        )?;
-
-        assert_eq!(matched.archive_path, "PortableGit/cmd/git.exe");
-        assert_eq!(matched.archive_format, BinaryArchiveFormat::Zip);
-        assert_eq!(std::fs::read(&destination)?, b"MZ");
-        Ok(())
-    }
-
-    #[test]
-    fn binary_archive_public_helpers_stay_local_to_this_crate() {
-        assert_eq!(
-            DEFAULT_MAX_BINARY_ARCHIVE_EXTRACTED_BYTES,
-            omne_archive_primitives::DEFAULT_MAX_EXTRACTED_BINARY_BYTES
-        );
-        assert!(is_binary_archive_asset_name("demo.zip"));
-        assert!(!is_binary_archive_asset_name("demo.tar"));
-    }
-
-    #[test]
-    fn archive_binary_match_conversion_preserves_archive_metadata() {
-        let matched = binary_archive_match_from_archive(ArchiveBinaryMatch {
-            archive_format: omne_archive_primitives::BinaryArchiveFormat::TarXz,
-            archive_path: "demo/bin/tool".to_string(),
-        });
-
-        assert_eq!(
-            matched,
-            BinaryArchiveMatch {
-                archive_format: BinaryArchiveFormat::TarXz,
-                archive_path: "demo/bin/tool".to_string(),
-            }
-        );
-        assert_eq!(matched.archive_format.label(), "tar.xz");
-    }
-
-    #[tokio::test]
-    async fn direct_binary_install_serializes_same_destination() -> Result<(), Box<dyn Error>> {
-        let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
-        let binary = b"demo-binary".to_vec();
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let addr = listener.local_addr()?;
-        let canonical_url = format!("http://{addr}/{asset_name}");
-
-        let mut routes = HashMap::new();
-        routes.insert(format!("/{asset_name}"), binary.clone());
-        let handle = spawn_mock_http_server(listener, routes, 1);
-
-        let temp = tempfile::tempdir()?;
-        let destination = canonical_test_root(&temp).join(&asset_name);
-        let lock_root = destination.parent().expect("destination parent");
-        let lock_file = binary_install_lock_file_name(&destination);
-        let guard = lock_advisory_file_in_ambient_root(
-            lock_root,
-            "binary install lock root",
-            &lock_file,
-            "artifact install lock file",
-        )?;
-        let destination_for_thread = destination.clone();
-        let canonical_url_for_thread = canonical_url.clone();
-        let (tx, rx) = mpsc::channel();
-        let install_thread = thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
-            let result = runtime.block_on(async move {
-                let client = reqwest::Client::builder()
-                    .build()
-                    .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-                download_binary_to_destination(
-                    &client,
-                    &[ArtifactDownloadCandidate {
-                        url: canonical_url_for_thread.clone(),
-                        source_label: "canonical".to_string(),
-                    }],
-                    &DownloadBinaryRequest {
-                        canonical_url: &canonical_url_for_thread,
-                        destination: &destination_for_thread,
-                        asset_name: &asset_name,
-                        expected_sha256: None,
-                        max_download_bytes: None,
-                    },
-                )
-                .await
-            });
-            tx.send(result).expect("send install result");
-        });
-
-        assert!(
-            matches!(
-                rx.recv_timeout(Duration::from_millis(200)),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ),
-            "same-destination binary install should wait for the advisory lock"
-        );
-
-        drop(guard);
-
-        rx.recv_timeout(Duration::from_secs(2))
-            .expect("install should complete after lock release")?;
-        install_thread.join().expect("install thread join");
-        assert_eq!(std::fs::read(&destination)?, binary);
-
-        handle.join().expect("mock server thread join");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn direct_binary_download_rejects_empty_candidate_list() -> Result<(), Box<dyn Error>> {
-        let temp = tempfile::tempdir()?;
-        let destination =
-            canonical_test_root(&temp).join(format!("demo{}", std::env::consts::EXE_SUFFIX));
-        let canonical_url = "https://example.invalid/demo";
-        let client = reqwest::Client::builder().build()?;
-
-        let err = download_binary_to_destination(
-            &client,
-            &[],
-            &DownloadBinaryRequest {
-                canonical_url,
-                destination: &destination,
-                asset_name: "demo",
-                expected_sha256: None,
-                max_download_bytes: None,
-            },
-        )
-        .await
-        .expect_err("empty candidate list must fail");
-
-        assert_eq!(err.kind(), ArtifactInstallErrorKind::Download);
-        assert!(
-            err.to_string()
-                .contains("requires at least one download candidate"),
-            "unexpected error: {err}"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn archive_binary_install_serializes_same_destination() -> Result<(), Box<dyn Error>> {
-        let asset_name = "demo.zip";
-        let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
-        let archive_path = format!("demo/bin/{binary_name}");
-        let archive = make_zip_archive(&[(archive_path.as_str(), b"archive-binary", 0o755)])?;
-
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let addr = listener.local_addr()?;
-        let canonical_url = format!("http://{addr}/{asset_name}");
-
-        let mut routes = HashMap::new();
-        routes.insert(format!("/{asset_name}"), archive);
-        let handle = spawn_mock_http_server(listener, routes, 1);
-
-        let temp = tempfile::tempdir()?;
-        let destination = canonical_test_root(&temp).join(&binary_name);
-        let lock_root = destination.parent().expect("destination parent");
-        let lock_file = binary_install_lock_file_name(&destination);
-        let guard = lock_advisory_file_in_ambient_root(
-            lock_root,
-            "binary install lock root",
-            &lock_file,
-            "artifact install lock file",
-        )?;
-        let destination_for_thread = destination.clone();
-        let canonical_url_for_thread = canonical_url.clone();
-        let binary_name_for_thread = binary_name.clone();
-        let (tx, rx) = mpsc::channel();
-        let install_thread = thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
-            let result = runtime.block_on(async move {
-                let client = reqwest::Client::builder()
-                    .build()
-                    .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-                download_and_install_binary_from_archive(
-                    &client,
-                    &[ArtifactDownloadCandidate {
-                        url: canonical_url_for_thread.clone(),
-                        source_label: "canonical".to_string(),
-                    }],
-                    &BinaryArchiveInstallRequest {
-                        canonical_url: &canonical_url_for_thread,
-                        destination: &destination_for_thread,
-                        asset_name,
-                        binary_name: &binary_name_for_thread,
-                        archive_binary_hint: None,
-                        expected_sha256: None,
-                        max_download_bytes: None,
-                    },
-                )
-                .await
-            });
-            tx.send(result).expect("send install result");
-        });
-
-        assert!(
-            matches!(
-                rx.recv_timeout(Duration::from_millis(200)),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ),
-            "same-destination archive-binary install should wait for the advisory lock"
-        );
-
-        drop(guard);
-
-        rx.recv_timeout(Duration::from_secs(2))
-            .expect("install should complete after lock release")?;
-        install_thread.join().expect("install thread join");
-        assert_eq!(std::fs::read(&destination)?, b"archive-binary");
-
-        handle.join().expect("mock server thread join");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn archive_binary_download_rejects_empty_candidate_list() -> Result<(), Box<dyn Error>> {
-        let temp = tempfile::tempdir()?;
-        let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
-        let destination = canonical_test_root(&temp).join(&binary_name);
-        let canonical_url = "https://example.invalid/demo.zip";
-        let client = reqwest::Client::builder().build()?;
-
-        let err = download_and_install_binary_from_archive(
-            &client,
-            &[],
-            &BinaryArchiveInstallRequest {
-                canonical_url,
-                destination: &destination,
-                asset_name: "demo.zip",
-                binary_name: &binary_name,
-                archive_binary_hint: None,
-                expected_sha256: None,
-                max_download_bytes: None,
-            },
-        )
-        .await
-        .expect_err("empty candidate list must fail");
-
-        assert_eq!(err.kind(), ArtifactInstallErrorKind::Download);
-        assert!(
-            err.to_string()
-                .contains("requires at least one download candidate"),
-            "unexpected error: {err}"
-        );
         Ok(())
     }
 }

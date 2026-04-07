@@ -46,6 +46,12 @@ pub fn is_binary_archive_asset_name(asset_name: &str) -> bool {
 #[derive(Debug, Clone, Copy)]
 pub struct BinaryArchiveRequest<'a> {
     pub binary_name: &'a str,
+    /// Compatibility field retained so existing callers do not need a lockstep API change.
+    ///
+    /// Generic archive matching does not interpret product/tool identity. Callers that need
+    /// layout-specific targeting must pass an exact archive-relative path via
+    /// `archive_binary_hint`.
+    pub tool_name: &'a str,
     /// Exact archive-relative path to the desired binary, normalized with `/`.
     pub archive_binary_hint: Option<&'a str>,
 }
@@ -854,6 +860,7 @@ mod tests {
             &archive,
             &BinaryArchiveRequest {
                 binary_name: "gh",
+                tool_name: "gh",
                 archive_binary_hint: None,
             },
         )
@@ -875,6 +882,7 @@ mod tests {
             &archive,
             &BinaryArchiveRequest {
                 binary_name: "node",
+                tool_name: "node",
                 archive_binary_hint: Some("node-v1.0.0-linux-x64/bin/node"),
             },
         )
@@ -899,6 +907,7 @@ mod tests {
             &archive,
             &BinaryArchiveRequest {
                 binary_name: "node",
+                tool_name: "node",
                 archive_binary_hint: Some("bin/node"),
             },
         )
@@ -931,6 +940,7 @@ mod tests {
             &archive,
             &BinaryArchiveRequest {
                 binary_name: "node",
+                tool_name: "node",
                 archive_binary_hint: Some("\\node-v1.0.0-linux-arm64\\bin\\node"),
             },
         )
@@ -948,6 +958,7 @@ mod tests {
             &archive,
             &BinaryArchiveRequest {
                 binary_name: "git.exe",
+                tool_name: "git",
                 archive_binary_hint: None,
             },
         )
@@ -970,6 +981,7 @@ mod tests {
             &archive,
             &BinaryArchiveRequest {
                 binary_name: "git.exe",
+                tool_name: "git",
                 archive_binary_hint: Some("PortableGit/cmd/git.exe"),
             },
         )
@@ -991,6 +1003,7 @@ mod tests {
             Cursor::new(archive),
             &BinaryArchiveRequest {
                 binary_name: "gh",
+                tool_name: "gh",
                 archive_binary_hint: None,
             },
         )
@@ -1013,6 +1026,7 @@ mod tests {
             Cursor::new(archive),
             &BinaryArchiveRequest {
                 binary_name: "gh",
+                tool_name: "gh",
                 archive_binary_hint: None,
             },
             &mut out,
@@ -1036,6 +1050,7 @@ mod tests {
             b"",
             &BinaryArchiveRequest {
                 binary_name: "tool",
+                tool_name: "tool",
                 archive_binary_hint: None,
             },
         )
@@ -1055,6 +1070,7 @@ mod tests {
             &archive,
             &BinaryArchiveRequest {
                 binary_name: "tool",
+                tool_name: "tool",
                 archive_binary_hint: None,
             },
         )
@@ -1083,6 +1099,7 @@ mod tests {
             &archive,
             &BinaryArchiveRequest {
                 binary_name: "gh",
+                tool_name: "gh",
                 archive_binary_hint: None,
             },
         )
@@ -1102,6 +1119,7 @@ mod tests {
             &archive,
             &BinaryArchiveRequest {
                 binary_name: "demo",
+                tool_name: "demo",
                 archive_binary_hint: Some("demo/bin/demo/"),
             },
         )
@@ -1121,6 +1139,7 @@ mod tests {
             Cursor::new(archive),
             &BinaryArchiveRequest {
                 binary_name: "demo",
+                tool_name: "demo",
                 archive_binary_hint: None,
             },
             16,
@@ -1142,6 +1161,7 @@ mod tests {
             Cursor::new(archive),
             &BinaryArchiveRequest {
                 binary_name: "demo",
+                tool_name: "demo",
                 archive_binary_hint: None,
             },
             &mut out,
@@ -1167,6 +1187,7 @@ mod tests {
             Cursor::new(archive),
             &BinaryArchiveRequest {
                 binary_name: "second",
+                tool_name: "demo",
                 archive_binary_hint: Some("bin/second"),
             },
             1024,
@@ -1195,6 +1216,7 @@ mod tests {
             Cursor::new(archive),
             &BinaryArchiveRequest {
                 binary_name: "second",
+                tool_name: "demo",
                 archive_binary_hint: Some("bin/second"),
             },
             &mut out,
@@ -1227,6 +1249,7 @@ mod tests {
             Cursor::new(archive),
             &BinaryArchiveRequest {
                 binary_name: "node.exe",
+                tool_name: "node",
                 archive_binary_hint: Some("node-v22.14.0-win-x64/node.exe"),
             },
             &mut out,

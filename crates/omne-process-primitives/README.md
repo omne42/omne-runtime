@@ -12,34 +12,23 @@ Low-level host-command and process-tree primitives shared across callers.
 ## Scope
 
 - host command discovery, including `OsStr`-friendly probe/resolve helpers
-- request-scoped command probes that honor request `PATH` overrides for bare direct commands without changing caller-cwd semantics for explicit relative program paths
-- `command_available*` probes that keep the same spawnable contract as execution and do not report non-executable files as available
-- host command execution with captured output that returns after the direct child exits even if daemonized descendants keep inherited stdout/stderr open
-- distinct host-command capture errors for post-spawn stdout/stderr read failures, so callers can distinguish execution-start failures from output-collection failures
+- host command execution with captured output
 - host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
 - non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
-- explicit relative program paths that keep caller-cwd semantics even when the child process runs under a different `working_directory`
-- sudo-style escalation that resolves the privileged target from trusted host locations and drops all request env at the sudo boundary, so elevated commands never reintroduce caller-controlled `PATH` or other request-scoped environment into the root-side target process
-- fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved from trusted standard install locations as a canonical system package manager command
-- direct explicit-path spawns only collapse `ENOENT` into `CommandNotFound` when the resolved target path itself is gone; if the file still exists, interpreter/loader failures remain structured spawn errors
-- sudo resolution that ignores both request-scoped and ambient `PATH` pollution when choosing the `sudo` binary or the elevated bare-command target, and only auto-escalates canonical system package manager commands whose explicit paths match the same binary identity trusted standard locations resolve for that manager name
-- default sudo-mode selection driven by the canonical `omne-system-package-primitives` manager catalog
+- sudo-style escalation that applies explicit request env inside the elevated target command via `env -- KEY=VALUE ...`, instead of depending on host `sudoers` env propagation
+- fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved in the effective `PATH`
+- default sudo-mode selection for common system-package commands
 - optional `sudo -n` probing on Unix
 - process-tree cleanup setup and best-effort termination
 - fail-closed process-tree capture on Unix unless the child was spawned into its own dedicated process group via `configure_command_for_process_tree`
 - Windows `taskkill` cleanup that waits for command success before skipping descendant fallback
-- Unix process-group cleanup that fails closed once the captured leader PID has been reused by a
-  different live process, and on Linux also fails closed when the leader exits before cleanup can
-  still bind the original `/proc` identity; only leaders captured successfully may later reap
-  same-session orphaned descendants after the original leader has actually exited, and the
-  captured process-group id, `start_ticks`, and `session_id` all come from the same
-  `/proc/<pid>/stat` snapshot so cleanup never mixes fields from different process lifetimes
+- Unix process-group cleanup that still fails closed on leader-PID reuse, while Linux can keep reaping same-session orphaned descendants both when the leader already exited before cleanup capture finished and when it exits shortly after capture
 
 ## Non-Goals
 
 - product allowlists
 - timeout policy
-- general direct-execution environment filtering, lossy UTF-8 coercion, or output-log leakage policy
+- environment filtering, lossy UTF-8 coercion, or output-log leakage policy
 - sandbox selection
 
 ## Verification

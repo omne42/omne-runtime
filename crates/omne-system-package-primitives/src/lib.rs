@@ -100,77 +100,6 @@ impl fmt::Display for SystemPackageNameError {
 
 impl std::error::Error for SystemPackageNameError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SupportedOperatingSystem {
-    Linux,
-    Macos,
-}
-
-impl SupportedOperatingSystem {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Linux => "linux",
-            Self::Macos => "macos",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Result<Self, SupportedOperatingSystemError> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Err(SupportedOperatingSystemError::Empty);
-        }
-
-        match trimmed.to_ascii_lowercase().as_str() {
-            "linux" => Ok(Self::Linux),
-            "macos" => Ok(Self::Macos),
-            other => Err(SupportedOperatingSystemError::Unsupported(
-                other.to_string(),
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SupportedOperatingSystemError {
-    Empty,
-    Unsupported(String),
-}
-
-impl fmt::Display for SupportedOperatingSystemError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => write!(f, "operating system must not be empty"),
-            Self::Unsupported(os) => write!(f, "unsupported operating system: {os}"),
-        }
-    }
-}
-
-impl std::error::Error for SupportedOperatingSystemError {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DefaultSystemPackageRecipeError {
-    InvalidOperatingSystem(SupportedOperatingSystemError),
-    InvalidPackageName(SystemPackageNameError),
-}
-
-impl fmt::Display for DefaultSystemPackageRecipeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidOperatingSystem(err) => fmt::Display::fmt(err, f),
-            Self::InvalidPackageName(err) => fmt::Display::fmt(err, f),
-        }
-    }
-}
-
-impl std::error::Error for DefaultSystemPackageRecipeError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::InvalidOperatingSystem(err) => Some(err),
-            Self::InvalidPackageName(err) => Some(err),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemPackageInstallRecipe {
     pub program: &'static str,
@@ -232,10 +161,6 @@ impl SystemPackageManager {
         }
     }
 
-    pub const fn requires_privileged_install(self) -> bool {
-        !matches!(self, Self::Brew)
-    }
-
     pub fn try_install_recipe(
         self,
         package: &str,
@@ -257,41 +182,36 @@ const LINUX_DEFAULT_SYSTEM_PACKAGE_MANAGERS: &[SystemPackageManager] = &[
 const MACOS_DEFAULT_SYSTEM_PACKAGE_MANAGERS: &[SystemPackageManager] =
     &[SystemPackageManager::Brew];
 
-fn default_system_package_managers_for_os(
-    os: SupportedOperatingSystem,
-) -> &'static [SystemPackageManager] {
+fn default_system_package_managers_for_os(os: &str) -> &'static [SystemPackageManager] {
     match os {
-        SupportedOperatingSystem::Linux => LINUX_DEFAULT_SYSTEM_PACKAGE_MANAGERS,
-        SupportedOperatingSystem::Macos => MACOS_DEFAULT_SYSTEM_PACKAGE_MANAGERS,
+        "linux" => LINUX_DEFAULT_SYSTEM_PACKAGE_MANAGERS,
+        "macos" => MACOS_DEFAULT_SYSTEM_PACKAGE_MANAGERS,
+        _ => &[],
     }
 }
 
 pub fn default_system_package_install_recipes_for_os(
     os: &str,
     package: &SystemPackageName,
-) -> Result<Vec<SystemPackageInstallRecipe>, SupportedOperatingSystemError> {
-    let os = SupportedOperatingSystem::parse(os)?;
-    Ok(default_system_package_managers_for_os(os)
+) -> Vec<SystemPackageInstallRecipe> {
+    default_system_package_managers_for_os(os)
         .iter()
         .copied()
         .map(|manager| manager.install_recipe(package))
-        .collect())
+        .collect()
 }
 
 pub fn try_default_system_package_install_recipes_for_os(
     os: &str,
     package: &str,
-) -> Result<Vec<SystemPackageInstallRecipe>, DefaultSystemPackageRecipeError> {
-    let package = SystemPackageName::new(package)
-        .map_err(DefaultSystemPackageRecipeError::InvalidPackageName)?;
-    default_system_package_install_recipes_for_os(os, &package)
-        .map_err(DefaultSystemPackageRecipeError::InvalidOperatingSystem)
+) -> Result<Vec<SystemPackageInstallRecipe>, SystemPackageNameError> {
+    let package = SystemPackageName::new(package)?;
+    Ok(default_system_package_install_recipes_for_os(os, &package))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DefaultSystemPackageRecipeError, SupportedOperatingSystem, SupportedOperatingSystemError,
         SystemPackageInstallRecipe, SystemPackageManager, SystemPackageName,
         SystemPackageNameError, default_system_package_install_recipes_for_os,
         default_system_package_managers_for_os, try_default_system_package_install_recipes_for_os,
@@ -348,7 +268,7 @@ mod tests {
 
     #[test]
     fn linux_defaults_include_apt() {
-        let managers = default_system_package_managers_for_os(SupportedOperatingSystem::Linux);
+        let managers = default_system_package_managers_for_os("linux");
         assert!(managers.contains(&SystemPackageManager::AptGet));
     }
 
@@ -357,14 +277,11 @@ mod tests {
         let package = SystemPackageName::new("git").expect("valid package name");
         assert!(
             default_system_package_install_recipes_for_os("linux", &package)
-                .expect("linux recipes")
                 .iter()
                 .any(|recipe| recipe.program == "apt-get")
         );
         assert_eq!(
-            default_system_package_install_recipes_for_os("macos", &package)
-                .expect("macos recipes")[0]
-                .program,
+            default_system_package_install_recipes_for_os("macos", &package)[0].program,
             "brew"
         );
     }
@@ -413,30 +330,6 @@ mod tests {
     fn try_default_recipes_reject_invalid_package_names() {
         let err = try_default_system_package_install_recipes_for_os("linux", "./git")
             .expect_err("invalid package should be rejected");
-        assert_eq!(
-            err,
-            DefaultSystemPackageRecipeError::InvalidPackageName(
-                SystemPackageNameError::ContainsPathSeparator,
-            )
-        );
-    }
-
-    #[test]
-    fn default_recipes_reject_unknown_operating_systems() {
-        let package = SystemPackageName::new("git").expect("valid package name");
-        assert_eq!(
-            default_system_package_install_recipes_for_os("windows", &package),
-            Err(SupportedOperatingSystemError::Unsupported(
-                "windows".to_string(),
-            ))
-        );
-    }
-
-    #[test]
-    fn parse_supported_operating_system_rejects_empty_values() {
-        assert_eq!(
-            SupportedOperatingSystem::parse("   "),
-            Err(SupportedOperatingSystemError::Empty)
-        );
+        assert_eq!(err, SystemPackageNameError::ContainsPathSeparator);
     }
 }

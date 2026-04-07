@@ -96,12 +96,6 @@ mod tests {
 
     use super::*;
 
-    fn canonical_temp_root(dir: &tempfile::TempDir) -> PathBuf {
-        dir.path()
-            .canonicalize()
-            .expect("canonicalize tempdir root")
-    }
-
     #[test]
     fn parse_args_accepts_json_flag() {
         assert_eq!(
@@ -156,26 +150,9 @@ mod tests {
     }
 
     #[test]
-    fn load_gateway_without_policy_uses_none_default_for_none_only_hosts() {
-        let gateway = load_gateway(&CapabilityArgs {
-            json: true,
-            policy_path: None,
-        })
-        .expect("load default gateway");
-
-        assert_eq!(
-            gateway.capability_report(),
-            CapabilityReport {
-                supported_isolation: ExecutionIsolation::None,
-                policy_default_isolation: ExecutionIsolation::None,
-            }
-        );
-    }
-
-    #[test]
     fn load_gateway_uses_policy_file_defaults() {
         let dir = tempdir().expect("tempdir");
-        let path = canonical_temp_root(&dir).join("policy.json");
+        let path = dir.path().join("policy.json");
         fs::write(
             &path,
             r#"{

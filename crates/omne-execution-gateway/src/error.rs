@@ -23,9 +23,6 @@ pub enum ExecError {
     #[error("program path is invalid: {path} ({detail})")]
     ProgramPathInvalid { path: PathBuf, detail: String },
 
-    #[error("program lookup failed for {program}: {detail}")]
-    ProgramLookupFailed { program: String, detail: String },
-
     #[error("working directory is outside workspace root: cwd={cwd}, root={workspace_root}")]
     CwdOutsideWorkspace {
         cwd: PathBuf,
@@ -59,14 +56,13 @@ pub enum ExecError {
     },
 
     #[error(
-        "prepared command does not match request identity: requested {requested_program:?} {requested_args:?}, actual {actual_program:?} {actual_args:?} ({detail})"
+        "prepared command does not match request identity: requested {requested_program:?} {requested_args:?}, actual {actual_program:?} {actual_args:?}"
     )]
     PreparedCommandMismatch {
         requested_program: String,
         requested_args: Vec<String>,
         actual_program: String,
         actual_args: Vec<String>,
-        detail: String,
     },
 
     #[error("sandbox backend rejected request: {0}")]
