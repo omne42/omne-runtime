@@ -226,7 +226,6 @@ impl Context {
         self.ensure_policy_permission(enabled, op)?;
         self.ensure_can_write(root_id, op)
     }
-
 }
 
 #[derive(Debug)]
