@@ -868,6 +868,12 @@ mod recursive_delete_commit_tests {
                         || path == PathBuf::from("sub").join("secrets").join("token.txt")
                 );
             }
+            crate::error::Error::InvalidPath(message) => {
+                assert!(
+                    message.contains("cannot verify parent identity during delete"),
+                    "unexpected invalid-path failure: {message}"
+                );
+            }
             other => panic!("unexpected error: {other:?}"),
         }
         assert!(

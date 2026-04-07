@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   best-effort success.
 - Added regression coverage for delete's fail-closed identity checks so unverifiable parent or
   target revalidation cannot silently continue removal again.
+- Windows regression coverage now accepts the earlier fail-closed delete identity branch when a
+  recursive-delete race is caught before the secret-path recheck fires, keeping the safety
+  contract platform-stable while avoiding a test-only false negative.
 - `git-permissions` now routes its `git` subprocesses through `omne-process-primitives` instead of
   open-coding `Command::new("git")` inside `omne-fs`, and the shared `scripts/gate.sh` now
   explicitly checks/clippies/tests that feature path.
