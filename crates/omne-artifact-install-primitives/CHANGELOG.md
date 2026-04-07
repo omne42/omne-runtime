@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- redact download-layer URLs before they reach public artifact-install errors, and add regression
+  coverage so credentials, query parameters, and fragments cannot leak back through reqwest or
+  aggregated candidate failure messages
 - replace the hard-coded `Gateway|Canonical|Mirror` candidate enum with caller-provided source
   labels, so the primitive keeps candidate error attribution without baking product source strategy
   into the public API

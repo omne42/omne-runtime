@@ -224,7 +224,7 @@ impl ArtifactDownloader for reqwest::Client {
             .get(url)
             .send()
             .await
-            .map_err(|err| ArtifactInstallError::download(err.to_string()))?;
+            .map_err(|err| ArtifactInstallError::download(redact_reqwest_error(err)))?;
         if !response.status().is_success() {
             return Err(ArtifactInstallError::download(format!(
                 "HTTP {}",
@@ -268,14 +268,16 @@ pub(crate) fn candidate_failure_message(
     candidate: &ArtifactDownloadCandidate,
     err: &ArtifactInstallError,
 ) -> ArtifactCandidateFailure {
+    let redacted_url = redact_url_for_error(&candidate.url);
+    let sanitized_error_message =
+        sanitize_candidate_error_message(&err.to_string(), &candidate.url);
     ArtifactCandidateFailure {
         kind: err.kind(),
         source_label: candidate.source_label.clone(),
-        redacted_url: redact_url_for_error(&candidate.url),
+        redacted_url: redacted_url.clone(),
         message: format!(
-            "{}:{} -> {err}",
-            candidate.source_label,
-            redact_url_for_error(&candidate.url)
+            "{}:{} -> {}",
+            candidate.source_label, redacted_url, sanitized_error_message
         ),
         detail: err.detail().cloned(),
     }
@@ -336,6 +338,20 @@ fn redact_url_for_error(raw: &str) -> String {
     url.to_string()
 }
 
+fn redact_reqwest_error(err: reqwest::Error) -> String {
+    let redacted_url = err.url().map(|url| redact_url_for_error(url.as_str()));
+    let message = err.without_url().to_string();
+    match redacted_url {
+        Some(url) => format!("{message} for url ({url})"),
+        None => message,
+    }
+}
+
+fn sanitize_candidate_error_message(raw_message: &str, candidate_url: &str) -> String {
+    let redacted_url = redact_url_for_error(candidate_url);
+    raw_message.replace(candidate_url, &redacted_url)
+}
+
 fn aggregate_failure_kind(errors: &[ArtifactCandidateFailure]) -> ArtifactInstallErrorKind {
     if errors
         .iter()
@@ -357,7 +373,8 @@ mod tests {
         ArtifactCandidateFailure, ArtifactDownloadCandidate, ArtifactDownloader,
         ArtifactInstallError, ArtifactInstallErrorDetail, ArtifactInstallErrorKind,
         candidate_failure_message, download_candidate_to_writer_with_options,
-        failed_candidates_error, require_download_candidates, run_blocking_install,
+        failed_candidates_error, redact_reqwest_error, require_download_candidates,
+        run_blocking_install,
     };
 
     struct RecordingDownloader {
@@ -414,6 +431,27 @@ mod tests {
             err.to_string()
                 .contains("all artifact download candidates failed"),
             "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn candidate_failure_message_redacts_candidate_url_embedded_in_error_text() {
+        let candidate = ArtifactDownloadCandidate {
+            url: "https://example.invalid/demo.zip?token=secret#fragment".to_string(),
+            source_label: "mirror".to_string(),
+        };
+
+        let failure = candidate_failure_message(
+            &candidate,
+            &ArtifactInstallError::download(format!("download failed for url ({})", candidate.url)),
+        );
+
+        assert!(!failure.message().contains("token=secret"));
+        assert!(!failure.message().contains("#fragment"));
+        assert!(
+            failure
+                .message()
+                .contains("https://example.invalid/demo.zip")
         );
     }
 
@@ -532,6 +570,21 @@ mod tests {
         assert!(!failure.message.contains("token@"));
         assert!(!failure.message.contains("sig=secret"));
         assert!(!failure.message.contains("#frag"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn redact_reqwest_error_removes_sensitive_url_components() {
+        let error = reqwest::Client::new()
+            .get("http://user:secret@127.0.0.1:9/demo.zip?token=secret#frag")
+            .send()
+            .await
+            .expect_err("closed loopback port should fail");
+
+        let message = redact_reqwest_error(error);
+        assert!(message.contains("127.0.0.1:9/demo.zip"));
+        assert!(!message.contains("user:secret@"));
+        assert!(!message.contains("token=secret"));
+        assert!(!message.contains("#frag"));
     }
 
     #[test]
