@@ -227,26 +227,6 @@ impl Context {
         self.ensure_can_write(root_id, op)
     }
 
-    #[inline]
-    pub(super) fn git_permission_fallback_enabled(&self) -> bool {
-        cfg!(feature = "git-permissions")
-    }
-
-    pub(super) fn ensure_git_revertible_write_allowed(
-        &self,
-        root_id: &str,
-        relative_path: &Path,
-        op: &str,
-        recursive: bool,
-    ) -> Result<()> {
-        super::git_permissions::ensure_revertible_write_allowed(
-            self,
-            root_id,
-            relative_path,
-            op,
-            recursive,
-        )
-    }
 }
 
 #[derive(Debug)]
