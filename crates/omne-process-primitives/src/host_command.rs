@@ -300,11 +300,7 @@ pub fn run_host_command_with_capture_options(
     capture_options: HostCommandCaptureOptions,
 ) -> Result<HostCommandOutput, HostCommandError> {
     validate_direct_request_program(request)?;
-    let execution = if should_try_sudo(request) {
-        HostCommandExecution::Sudo
-    } else {
-        HostCommandExecution::Direct
-    };
+    let execution = select_execution_for_request(request)?;
     if execution == HostCommandExecution::Sudo {
         ensure_sudo_target_is_available(request)?;
     }
@@ -737,35 +733,77 @@ where
     Ok(bytes)
 }
 
-fn should_try_sudo(request: &HostCommandRequest<'_>) -> bool {
-    should_try_sudo_for_request_with_status(request, unix_process_is_non_root())
+fn select_execution_for_request(
+    request: &HostCommandRequest<'_>,
+) -> Result<HostCommandExecution, HostCommandError> {
+    select_execution_for_request_with_status(request, unix_process_is_non_root(), sudo_available())
 }
 
+fn select_execution_for_request_with_status(
+    request: &HostCommandRequest<'_>,
+    process_is_non_root: bool,
+    sudo_available: bool,
+) -> Result<HostCommandExecution, HostCommandError> {
+    if !should_require_sudo_for_request_with_status(request, process_is_non_root) {
+        return Ok(HostCommandExecution::Direct);
+    }
+    if !sudo_available {
+        return Err(sudo_unavailable_error(request.program));
+    }
+    Ok(HostCommandExecution::Sudo)
+}
+
+#[cfg(test)]
 fn should_try_sudo_for_request_with_status(
     request: &HostCommandRequest<'_>,
     process_is_non_root: bool,
 ) -> bool {
-    should_try_sudo_with_status(
-        request.program,
-        request.sudo_mode,
-        process_is_non_root,
-        sudo_available(),
+    matches!(
+        select_execution_for_request_with_status(request, process_is_non_root, sudo_available()),
+        Ok(HostCommandExecution::Sudo)
     )
 }
 
+#[cfg(test)]
 fn should_try_sudo_with_status(
     program: &OsStr,
     sudo_mode: HostCommandSudoMode,
     process_is_non_root: bool,
     sudo_available: bool,
 ) -> bool {
+    should_require_sudo_with_status(program, sudo_mode, process_is_non_root) && sudo_available
+}
+
+fn should_require_sudo_for_request_with_status(
+    request: &HostCommandRequest<'_>,
+    process_is_non_root: bool,
+) -> bool {
+    should_require_sudo_with_status(request.program, request.sudo_mode, process_is_non_root)
+}
+
+fn should_require_sudo_with_status(
+    program: &OsStr,
+    sudo_mode: HostCommandSudoMode,
+    process_is_non_root: bool,
+) -> bool {
     if sudo_mode != HostCommandSudoMode::IfNonRootSystemCommand {
         return false;
     }
-    if !process_is_non_root || !sudo_available {
+    if !process_is_non_root {
         return false;
     }
     sudo_eligible_program(program)
+}
+
+fn sudo_unavailable_error(program: &OsStr) -> HostCommandError {
+    HostCommandError::SpawnFailed {
+        program: program.to_os_string(),
+        execution: HostCommandExecution::Sudo,
+        source: io::Error::new(
+            io::ErrorKind::NotFound,
+            "sudo is required for this request but is unavailable in trusted standard locations",
+        ),
+    }
 }
 
 #[cfg(unix)]
@@ -1132,7 +1170,7 @@ mod tests {
         command_available_for_request, command_exists, command_exists_for_request,
         command_path_exists, default_recipe_sudo_mode_for_program,
         resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
-        should_try_sudo_with_status,
+        select_execution_for_request_with_status, should_try_sudo_with_status,
     };
     #[cfg(unix)]
     use super::{run_host_command_with_options, run_host_recipe_with_options};
@@ -1217,6 +1255,29 @@ mod tests {
             false,
             true,
         ));
+    }
+
+    #[test]
+    fn missing_sudo_fails_closed_for_eligible_request() {
+        let request = HostCommandRequest {
+            program: OsStr::new("apt-get"),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let err = select_execution_for_request_with_status(&request, true, false)
+            .expect_err("missing sudo must not silently downgrade to direct execution");
+        match err {
+            HostCommandError::SpawnFailed {
+                execution, source, ..
+            } => {
+                assert_eq!(execution, HostCommandExecution::Sudo);
+                assert_eq!(source.kind(), io::ErrorKind::NotFound);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[cfg(unix)]

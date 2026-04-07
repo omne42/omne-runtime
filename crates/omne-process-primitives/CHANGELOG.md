@@ -36,6 +36,7 @@
 - make Unix host-command tests resolve an available shell and prebuilt payload files instead of
   assuming `/bin/sh` and `python3`, so `cargo test -p omne-process-primitives` stays portable
 - stop formatting full host recipe `stdout`/`stderr` into `HostRecipeError::Display`; surface only exit status and captured byte counts while preserving raw `Output` for callers
+- make `IfNonRootSystemCommand` fail closed when `sudo` itself is unavailable in trusted standard locations, instead of silently downgrading to direct execution and masking a missing privilege boundary as a target-command failure
 - make `command_available` / `command_available_os` / `command_available_for_request` require spawnable commands instead of treating any regular file as available
 - keep draining oversized stdout/stderr streams until EOF before returning the capture-limit error, so bounded capture cannot deadlock on a full pipe
 - make explicit `IfNonRootSystemCommand` sudo targets fail closed before spawn when the path is

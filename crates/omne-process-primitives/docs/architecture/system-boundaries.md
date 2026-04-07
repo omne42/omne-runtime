@@ -21,6 +21,7 @@
 - direct 显式路径 spawn 如果返回 `ENOENT`，只有在解析后的目标路径确实不存在时才会折叠成 `CommandNotFound`；如果目标文件仍在，本 crate 会保留原始 spawn 失败，让缺失 shebang 解释器或动态 loader 这类问题不会被误报成“命令不存在”。
 - 当命中 `sudo` 路径时，在提权边界内完全丢弃 request env；提权后的目标命令只接收受信任解析出的目标路径和 argv，避免把 request `PATH` 或其他调用方环境变量重新带进 root 侧进程语义。
 - `sudo` 可用性判定、`sudo` 可执行路径选择以及提权后的 bare target 解析都不使用 request 里显式覆盖的 `PATH`，也不信任 ambient `PATH` 里的 shadow binary；这些 control-plane 程序只会从受信任的标准安装目录解析。
+- 对需要走 `IfNonRootSystemCommand` 的请求，如果当前进程是 non-root 但受信任标准目录里根本解析不到 `sudo`，本 crate 会在本地直接 fail closed，而不是静默退回 direct execution 把“缺少提权能力”伪装成目标命令自己的失败。
 - 对需要走 `sudo` 的 bare command，如果受信任标准目录里解析不到对应的 canonical manager 二进制，会在真正调用 `sudo` 之前返回 `CommandNotFound`。
 - 对显式 `IfNonRootSystemCommand` 路径，也会在真正调用 `sudo` 之前做本地 fail-closed 校验：缺失目标、不可执行 regular file，或与受信标准目录解析到的 canonical manager 二进制不一致的路径，都会在本地直接拒绝，而不是把错误推迟成提权后子进程的运行期失败。
 - 对显式 package-manager 路径，只有它与受信标准目录对该 manager 名称解析到的 canonical 二进制是同一个文件时，才保留 `IfNonRootSystemCommand` 语义；相对路径、别名到不同目标的 symlink，或名字相同但不是这组 canonical manager 目标的其他可执行体都不会被误判成系统命令。

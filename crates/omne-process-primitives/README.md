@@ -29,6 +29,7 @@ Low-level host-command and process-tree primitives shared across callers.
 - non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
 - explicit relative program paths that resolve only against an explicit `working_directory`, instead of silently inheriting the caller process cwd
 - sudo-style escalation that resolves the privileged target from trusted host locations and drops all request env at the sudo boundary, so elevated commands never reintroduce caller-controlled `PATH` or other request-scoped environment into the root-side target process
+- `IfNonRootSystemCommand` requests fail closed when `sudo` itself is unavailable in trusted standard locations, instead of silently downgrading to direct execution and masking a missing privilege boundary as a target-command failure
 - fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved from trusted standard install locations as a canonical system package manager command
 - fail-closed local validation for explicit `IfNonRootSystemCommand` paths before invoking
   `sudo`, so missing, non-executable, or untrusted package-manager paths cannot escape into
