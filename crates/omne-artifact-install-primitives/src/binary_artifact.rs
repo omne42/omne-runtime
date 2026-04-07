@@ -82,6 +82,7 @@ impl<'a> BinaryArchiveInstallRequest<'a> {
     #[deprecated(
         note = "tool_name is ignored; use BinaryArchiveInstallRequest::new(...).with_archive_binary_hint(...) instead"
     )]
+    #[allow(clippy::too_many_arguments)]
     pub const fn from_legacy_parts(
         canonical_url: &'a str,
         destination: &'a Path,
