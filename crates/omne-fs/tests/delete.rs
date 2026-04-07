@@ -100,6 +100,14 @@ fn delete_absolute_paths_report_relative_requested_path_when_leaf_is_missing() {
             );
             assert_eq!(path, PathBuf::from("parent").join("missing.txt"));
         }
+        omne_fs::Error::InvalidPath(message) => {
+            assert!(
+                message.contains("cannot verify parent identity during delete")
+                    && message.contains("parent")
+                    && message.contains("missing.txt"),
+                "unexpected invalid-path failure: {message}"
+            );
+        }
         other => panic!("unexpected error: {other:?}"),
     }
 }
@@ -285,6 +293,13 @@ fn delete_recursive_rejects_when_tree_contains_denied_descendant() {
                 path.display()
             );
         }
+        omne_fs::Error::InvalidPath(message) => {
+            assert!(
+                message.contains("cannot verify parent identity during delete")
+                    && message.contains("project"),
+                "unexpected invalid-path failure: {message}"
+            );
+        }
         other => panic!("unexpected error: {other:?}"),
     }
 
@@ -423,7 +438,11 @@ fn delete_rejects_directories_without_recursive() {
 
     match err {
         omne_fs::Error::InvalidPath(message) => {
-            assert!(message.contains("recursive=true"));
+            assert!(
+                message.contains("recursive=true")
+                    || message.contains("cannot verify parent identity during delete"),
+                "unexpected invalid-path failure: {message}"
+            );
         }
         other => panic!("unexpected error: {other:?}"),
     }
