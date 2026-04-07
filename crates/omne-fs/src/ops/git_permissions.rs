@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use super::Context;
 
 #[cfg(feature = "git-permissions")]
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 
 #[cfg(feature = "git-permissions")]
 const GIT_BINARY_MISSING_HINT: &str =
@@ -103,7 +103,7 @@ fn run_git_status(
         )));
     };
     let mut cmd = build_git_command(&program, canonical_root, args, Some(relative_path));
-    let status = match cmd.status() {
+    let status = match run_command_status_silently(&mut cmd) {
         Ok(status) => status,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(Error::NotPermitted(format!(
@@ -129,7 +129,7 @@ fn run_git_output_no_path(canonical_root: &Path, op: &str, args: &[&str]) -> Res
         )));
     };
     let mut cmd = build_git_command(&program, canonical_root, args, None);
-    let output = match cmd.output() {
+    let output = match run_command_output(&mut cmd) {
         Ok(output) => output,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(Error::NotPermitted(format!(
@@ -151,6 +151,19 @@ fn run_git_output_no_path(canonical_root: &Path, op: &str, args: &[&str]) -> Res
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(feature = "git-permissions")]
+fn run_command_status_silently(cmd: &mut Command) -> std::io::Result<std::process::ExitStatus> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+}
+
+#[cfg(feature = "git-permissions")]
+fn run_command_output(cmd: &mut Command) -> std::io::Result<Output> {
+    cmd.stdin(Stdio::null()).output()
 }
 
 #[cfg(feature = "git-permissions")]
@@ -227,7 +240,9 @@ pub(super) fn ensure_revertible_write_allowed(
 
 #[cfg(all(test, feature = "git-permissions"))]
 mod tests {
-    use super::{build_git_command, is_git_env_name, sanitized_git_environment};
+    use super::{
+        build_git_command, is_git_env_name, run_command_status_silently, sanitized_git_environment,
+    };
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
 
@@ -264,6 +279,18 @@ mod tests {
                 OsStr::new("--is-inside-work-tree")
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn silent_status_runner_does_not_block_on_large_stderr_output() {
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("python3 - <<'PY'\nimport sys\nsys.stderr.write('x' * 131072)\nPY\n");
+
+        let status = run_command_status_silently(&mut command).expect("run silenced status");
+        assert!(status.success());
     }
 
     #[test]

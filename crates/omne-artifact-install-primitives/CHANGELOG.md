@@ -26,3 +26,6 @@
 - add regression coverage that preserves caller-defined candidate `source_label` values in
   aggregated failure surfaces, so the primitive boundary cannot silently regress back to a fixed
   source enum
+- route archive-tree archive parsing, path sanitization, link validation, and extraction-budget
+  accounting back through `omne-archive-primitives`, so `artifact-install` stops maintaining a
+  second copy of archive semantics outside the shared archive boundary

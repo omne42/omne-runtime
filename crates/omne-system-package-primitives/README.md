@@ -15,7 +15,8 @@ Low-level system package primitives shared across callers.
   whitespace are rejected instead of being normalized implicitly
 - validated `SystemPackageName` parsing for package identifiers before recipe construction
 - package-manager enum modeling
-- install recipe construction from validated package names, plus `try_*` helpers for string callers
+- install recipe construction from validated package names using only the canonical install verb and
+  package token; prompt suppression, cache policy, and similar workflow flags stay with callers
 - operating-system parsing that distinguishes known OS values from unknown OS strings
 - default package-manager order for recipe-capable OS values, with explicit unsupported-platform
   errors instead of silently returning an empty recipe list when a known OS like `windows` has no
