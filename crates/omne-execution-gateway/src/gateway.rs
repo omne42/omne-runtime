@@ -2021,6 +2021,10 @@ mod tests {
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(event.reason.as_deref(), Some("audit_log_unavailable"));
         assert!(matches!(err, ExecError::AuditLogUnavailable { .. }));
+        assert!(
+            !real_dir.join("nested").exists(),
+            "preflight must not create audit directories behind a rejected symlink ancestor"
+        );
     }
 
     #[test]
@@ -4143,6 +4147,52 @@ mod tests {
 
         let content = fs::read_to_string(&moved_audit_path).expect("read moved audit file");
         assert!(content.contains("\"status\":\"exited\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_command_reuses_prepared_audit_sink_after_path_replacement() {
+        let workspace = tempdir().expect("create temp workspace");
+        let audit_path = canonical_test_root(&workspace).join("audit.jsonl");
+        let moved_audit_path = canonical_test_root(&workspace).join("audit.moved.jsonl");
+        let (program, args) =
+            audit_rebinding_shell_command(&workspace, &audit_path, &moved_audit_path);
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            audit_log_path: Some(audit_path.clone()),
+            mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let request = ExecRequest::new(
+            &program,
+            args,
+            workspace.path(),
+            host_supported_test_isolation(),
+            workspace.path(),
+        )
+        .with_declared_mutation(true);
+        let command = Command::new(&program);
+
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let outcome = result
+            .expect("prepare command should succeed")
+            .spawn()
+            .expect("prepared audit sink should survive path replacement")
+            .wait();
+        let status = outcome.result.expect("wait prepared command");
+        assert!(status.success());
+        assert!(
+            audit_path.is_dir(),
+            "original audit path should now be a directory"
+        );
+
+        let records = fs::read_to_string(&moved_audit_path).expect("read moved audit file");
+        assert!(records.contains("\"status\":\"prepared\""));
+        assert!(records.contains("\"status\":\"exited\""));
     }
 
     #[cfg(unix)]
