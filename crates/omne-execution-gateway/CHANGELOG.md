@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- make the `omne-execution` CLI load request JSON through `omne-fs-primitives`' shared
+  descriptor-backed no-follow reader instead of maintaining a second local file-open path, so
+  request input stays on the same filesystem boundary as policy and audit-log handling
 - rewrite authoritative audit events to `Deny` when final pre-spawn path/identity revalidation
   fails, so `RequestPathChanged` and related fail-closed errors no longer emit contradictory
   `decision=Run` records
