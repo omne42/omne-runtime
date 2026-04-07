@@ -4,12 +4,9 @@ use std::io::{Cursor, Read, Seek, SeekFrom};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
-use std::os::unix::ffi::OsStringExt;
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
-use flate2::read::GzDecoder;
 use omne_fs_primitives::{
     AtomicDirectoryOptions, AtomicWriteOptions, Dir, create_directory_component,
     create_regular_file_at, lock_advisory_file_in_ambient_root, open_directory_component,
@@ -18,9 +15,12 @@ use omne_fs_primitives::{
 #[cfg(all(test, unix))]
 use omne_fs_primitives::{MissingRootPolicy, open_ambient_root};
 use omne_integrity_primitives::{Sha256Digest, hash_sha256, verify_sha256_reader};
-use tar::Archive as TarArchive;
-use xz2::read::XzDecoder;
-use zip::ZipArchive;
+use omne_archive_primitives::{
+    ArchiveTreeExtractionLimits as ArchiveExtractionLimits, ArchiveTreeVisitor,
+    WalkArchiveTreeError, walk_archive_tree,
+};
+#[cfg(all(test, unix))]
+use omne_archive_primitives::{walk_tar_archive_tree, walk_zip_archive_tree};
 
 use crate::artifact_download::{
     ArtifactDownloadCandidate, ArtifactDownloader, ArtifactInstallError, candidate_failure_message,
@@ -28,10 +28,12 @@ use crate::artifact_download::{
     require_download_candidates, run_blocking_install,
 };
 
-pub const DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
-pub const DEFAULT_MAX_ARCHIVE_TREE_ENTRIES: u64 = 65_536;
-#[cfg(unix)]
-const MAX_ZIP_SYMLINK_TARGET_BYTES: usize = 16 * 1024;
+pub const DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES: u64 =
+    omne_archive_primitives::DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES;
+pub const DEFAULT_MAX_ARCHIVE_TREE_ENTRIES: u64 =
+    omne_archive_primitives::DEFAULT_MAX_ARCHIVE_TREE_ENTRIES;
+#[cfg(all(test, unix))]
+const MAX_ZIP_SYMLINK_TARGET_BYTES: usize = omne_archive_primitives::MAX_ZIP_SYMLINK_TARGET_BYTES;
 const ARCHIVE_TREE_INSTALL_LOCK_PREFIX: &str = ".archive-tree-install-";
 const ARCHIVE_TREE_INSTALL_LOCK_SUFFIX: &str = ".lock";
 
@@ -162,31 +164,36 @@ where
     let _install_lock = lock_archive_tree_destination(destination)?;
     let staged = stage_directory_atomically(destination, &archive_tree_stage_options())
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    let extract_result = if asset_name.ends_with(".zip") {
-        let staged_root = staged
-            .try_clone_dir()
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-        extract_zip_tree_into_root(reader, &staged_root, limits)
-    } else if asset_name.ends_with(".tar.gz") {
-        let staged_root = staged
-            .try_clone_dir()
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-        extract_tar_tree_into_root(GzDecoder::new(reader), &staged_root, limits)
-    } else if asset_name.ends_with(".tar.xz") {
-        let staged_root = staged
-            .try_clone_dir()
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-        extract_tar_tree_into_root(XzDecoder::new(reader), &staged_root, limits)
-    } else {
-        Err(ArtifactInstallError::install(format!(
-            "unsupported archive tree asset `{asset_name}`"
-        )))
-    };
+    let staged_root = staged
+        .try_clone_dir()
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    let extract_result = extract_archive_tree_into_root(asset_name, reader, &staged_root, limits);
 
     extract_result?;
     staged
         .commit()
         .map_err(|err| ArtifactInstallError::install(err.to_string()))
+}
+
+fn extract_archive_tree_into_root<R>(
+    asset_name: &str,
+    reader: R,
+    destination_root: &Dir,
+    limits: ArchiveExtractionLimits,
+) -> Result<(), ArtifactInstallError>
+where
+    R: Read + Seek,
+{
+    let mut installer = ArchiveTreeInstaller::new(destination_root)?;
+    walk_archive_tree(asset_name, reader, limits, &mut installer).map_err(map_archive_walk_error)?;
+    installer.finish()
+}
+
+fn map_archive_walk_error(error: WalkArchiveTreeError<ArtifactInstallError>) -> ArtifactInstallError {
+    match error {
+        WalkArchiveTreeError::Visitor(error) => error,
+        other => ArtifactInstallError::install(other.to_string()),
+    }
 }
 
 fn lock_archive_tree_destination(
@@ -319,6 +326,55 @@ fn archive_tree_lock_identity_bytes(path: &Path) -> Vec<u8> {
     path.to_string_lossy().into_owned().into_bytes()
 }
 
+struct ArchiveTreeInstaller {
+    destination_root: Dir,
+    pending_hard_links: Vec<PendingTarHardLink>,
+}
+
+impl ArchiveTreeInstaller {
+    fn new(destination_root: &Dir) -> Result<Self, ArtifactInstallError> {
+        Ok(Self {
+            destination_root: open_archive_directory_root(destination_root)?,
+            pending_hard_links: Vec::new(),
+        })
+    }
+
+    fn finish(mut self) -> Result<(), ArtifactInstallError> {
+        resolve_pending_tar_hard_links(&mut self.pending_hard_links, &self.destination_root)
+    }
+}
+
+impl ArchiveTreeVisitor for ArchiveTreeInstaller {
+    type Error = ArtifactInstallError;
+
+    fn visit_directory(&mut self, path: &Path) -> Result<(), Self::Error> {
+        ensure_archive_directory_chain(path, path, &self.destination_root, true).map(|_| ())
+    }
+
+    fn visit_regular_file<R: Read>(
+        &mut self,
+        path: &Path,
+        reader: &mut R,
+        unix_mode: Option<u32>,
+    ) -> Result<(), Self::Error> {
+        write_archive_regular_file(path, path, &self.destination_root, reader, unix_mode)
+    }
+
+    fn visit_symlink(&mut self, path: &Path, target: &Path) -> Result<(), Self::Error> {
+        create_tar_symlink(path, path, target, &self.destination_root)
+    }
+
+    fn visit_hard_link(&mut self, path: &Path, target: &Path) -> Result<(), Self::Error> {
+        self.pending_hard_links.push(prepare_tar_hard_link(
+            path,
+            path,
+            target,
+            &self.destination_root,
+        )?);
+        Ok(())
+    }
+}
+
 #[cfg(all(test, unix))]
 fn extract_zip_tree<R>(
     reader: R,
@@ -332,6 +388,7 @@ where
     extract_zip_tree_into_root(reader, &destination_root, limits)
 }
 
+#[cfg(all(test, unix))]
 fn extract_zip_tree_into_root<R>(
     reader: R,
     destination_root: &Dir,
@@ -340,42 +397,9 @@ fn extract_zip_tree_into_root<R>(
 where
     R: Read + Seek,
 {
-    let destination_root = open_archive_directory_root(destination_root)?;
-    let mut budget = ExtractionBudget::new(limits);
-    let mut archive =
-        ZipArchive::new(reader).map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-        let enclosed = entry
-            .enclosed_name()
-            .ok_or_else(|| {
-                ArtifactInstallError::install(format!("unsafe archive entry path at index {index}"))
-            })?
-            .to_path_buf();
-        budget.record_entry(&enclosed)?;
-        if entry.is_dir() {
-            ensure_archive_directory_chain(&enclosed, &enclosed, &destination_root, true)?;
-            continue;
-        }
-        if zip_entry_is_symlink(&entry) {
-            budget.reserve_bytes(&enclosed, entry.size())?;
-            let link_target = read_zip_symlink_target(&enclosed, &mut entry)?;
-            create_tar_symlink(&enclosed, &enclosed, &link_target, &destination_root)?;
-            continue;
-        }
-        budget.reserve_bytes(&enclosed, entry.size())?;
-        let unix_mode = zip_entry_unix_mode(&entry);
-        write_archive_regular_file(
-            &enclosed,
-            &enclosed,
-            &destination_root,
-            &mut entry,
-            unix_mode,
-        )?;
-    }
-    Ok(())
+    let mut installer = ArchiveTreeInstaller::new(destination_root)?;
+    walk_zip_archive_tree(reader, limits, &mut installer).map_err(map_archive_walk_error)?;
+    installer.finish()
 }
 
 #[cfg(all(test, unix))]
@@ -391,6 +415,7 @@ where
     extract_tar_tree_into_root(reader, &destination_root, limits)
 }
 
+#[cfg(all(test, unix))]
 fn extract_tar_tree_into_root<R>(
     reader: R,
     destination_root: &Dir,
@@ -399,76 +424,9 @@ fn extract_tar_tree_into_root<R>(
 where
     R: Read,
 {
-    let destination_root = open_archive_directory_root(destination_root)?;
-    let mut budget = ExtractionBudget::new(limits);
-    let mut archive = TarArchive::new(reader);
-    let mut pending_hard_links = Vec::new();
-    let entries = archive
-        .entries()
-        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    for entry in entries {
-        let mut entry = entry.map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-        let path = entry
-            .path()
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?
-            .into_owned();
-        let sanitized = sanitize_archive_path(&path)?;
-        budget.record_entry(&sanitized)?;
-        let entry_type = entry.header().entry_type();
-        if entry_type.is_dir() {
-            ensure_archive_directory_chain(&sanitized, &sanitized, &destination_root, true)?;
-            continue;
-        }
-        if entry_type.is_file() {
-            budget.reserve_bytes(&path, entry.size())?;
-            let unix_mode = tar_entry_unix_mode(&entry)?;
-            write_archive_regular_file(
-                &sanitized,
-                &sanitized,
-                &destination_root,
-                &mut entry,
-                unix_mode,
-            )?;
-            continue;
-        }
-        if entry_type.is_symlink() {
-            let link_target = entry
-                .link_name()
-                .map_err(|err| ArtifactInstallError::install(err.to_string()))?
-                .ok_or_else(|| {
-                    ArtifactInstallError::install(format!(
-                        "missing symlink target for tar entry {}",
-                        path.display()
-                    ))
-                })?;
-            create_tar_symlink(&path, &sanitized, &link_target, &destination_root)?;
-            continue;
-        }
-        if entry_type.is_hard_link() {
-            let link_target = entry
-                .link_name()
-                .map_err(|err| ArtifactInstallError::install(err.to_string()))?
-                .ok_or_else(|| {
-                    ArtifactInstallError::install(format!(
-                        "missing hard link target for tar entry {}",
-                        path.display()
-                    ))
-                })?;
-            pending_hard_links.push(prepare_tar_hard_link(
-                &path,
-                &sanitized,
-                &link_target,
-                &destination_root,
-            )?);
-            continue;
-        }
-        return Err(ArtifactInstallError::install(format!(
-            "unsupported tar entry type for {}",
-            path.display()
-        )));
-    }
-    resolve_pending_tar_hard_links(&mut pending_hard_links, &destination_root)?;
-    Ok(())
+    let mut installer = ArchiveTreeInstaller::new(destination_root)?;
+    walk_tar_archive_tree(reader, limits, &mut installer).map_err(map_archive_walk_error)?;
+    installer.finish()
 }
 
 #[derive(Debug)]
@@ -686,75 +644,6 @@ fn remove_existing_regular_file_leaf(
     }
 }
 
-#[cfg(unix)]
-fn read_zip_symlink_target(
-    entry_path: &Path,
-    entry: &mut zip::read::ZipFile<'_>,
-) -> Result<PathBuf, ArtifactInstallError> {
-    let mut target = Vec::new();
-    entry
-        .take(
-            u64::try_from(MAX_ZIP_SYMLINK_TARGET_BYTES)
-                .unwrap_or(u64::MAX)
-                .saturating_add(1),
-        )
-        .read_to_end(&mut target)
-        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    if target.len() > MAX_ZIP_SYMLINK_TARGET_BYTES {
-        return Err(ArtifactInstallError::install(format!(
-            "zip symlink target for {} exceeds limit of {} bytes",
-            entry_path.display(),
-            MAX_ZIP_SYMLINK_TARGET_BYTES
-        )));
-    }
-    Ok(PathBuf::from(std::ffi::OsString::from_vec(target)))
-}
-
-#[cfg(not(unix))]
-fn read_zip_symlink_target(
-    entry_path: &Path,
-    entry: &mut zip::read::ZipFile<'_>,
-) -> Result<PathBuf, ArtifactInstallError> {
-    let _ = entry;
-    Err(ArtifactInstallError::install(format!(
-        "unsupported zip symlink entry for {} on this platform",
-        entry_path.display()
-    )))
-}
-
-fn zip_entry_unix_mode(entry: &zip::read::ZipFile<'_>) -> Option<u32> {
-    entry.unix_mode().map(sanitize_unix_mode)
-}
-
-fn zip_entry_is_symlink(entry: &zip::read::ZipFile<'_>) -> bool {
-    entry
-        .unix_mode()
-        .is_some_and(|mode| (mode & 0o170000) == 0o120000)
-}
-
-fn tar_entry_unix_mode<R>(entry: &tar::Entry<'_, R>) -> Result<Option<u32>, ArtifactInstallError>
-where
-    R: Read,
-{
-    #[cfg(unix)]
-    {
-        entry
-            .header()
-            .mode()
-            .map(|mode| Some(sanitize_unix_mode(mode)))
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = entry;
-        Ok(None)
-    }
-}
-
-fn sanitize_unix_mode(mode: u32) -> u32 {
-    mode & 0o777
-}
-
 fn ensure_archive_directory_chain(
     entry_path: &Path,
     directory: &Path,
@@ -960,66 +849,6 @@ fn archive_tree_stage_options() -> AtomicDirectoryOptions {
     AtomicDirectoryOptions {
         overwrite_existing: true,
         create_parent_directories: true,
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ArchiveExtractionLimits {
-    max_extracted_bytes: u64,
-    max_entries: u64,
-}
-
-impl Default for ArchiveExtractionLimits {
-    fn default() -> Self {
-        Self {
-            max_extracted_bytes: DEFAULT_MAX_ARCHIVE_TREE_EXTRACTED_BYTES,
-            max_entries: DEFAULT_MAX_ARCHIVE_TREE_ENTRIES,
-        }
-    }
-}
-
-struct ExtractionBudget {
-    limits: ArchiveExtractionLimits,
-    extracted_bytes: u64,
-    entries: u64,
-}
-
-impl ExtractionBudget {
-    fn new(limits: ArchiveExtractionLimits) -> Self {
-        Self {
-            limits,
-            extracted_bytes: 0,
-            entries: 0,
-        }
-    }
-
-    fn record_entry(&mut self, path: &Path) -> Result<(), ArtifactInstallError> {
-        self.entries = self.entries.saturating_add(1);
-        if self.entries > self.limits.max_entries {
-            return Err(ArtifactInstallError::install(format!(
-                "archive entry count exceeds limit of {} while extracting `{}`",
-                self.limits.max_entries,
-                path.display()
-            )));
-        }
-        Ok(())
-    }
-
-    fn reserve_bytes(&mut self, path: &Path, bytes: u64) -> Result<(), ArtifactInstallError> {
-        self.extracted_bytes = self.extracted_bytes.checked_add(bytes).ok_or_else(|| {
-            ArtifactInstallError::install(format!(
-                "archive extracted byte budget overflow while extracting `{}`",
-                path.display()
-            ))
-        })?;
-        if self.extracted_bytes > self.limits.max_extracted_bytes {
-            return Err(ArtifactInstallError::install(format!(
-                "archive extracted bytes exceed limit of {} while extracting `{}`",
-                self.limits.max_extracted_bytes,
-                path.display()
-            )));
-        }
-        Ok(())
     }
 }
 

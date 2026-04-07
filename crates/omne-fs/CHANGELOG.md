@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   callers get deterministic `Error::NotPermitted` instead of an external compile failure.
 - `git-permissions` now reports the correct fail-closed requirement when trusted `git`
   resolution fails: the fallback depends on standard host locations, not ambient `PATH`.
+- `git-permissions` now silences trusted `git` stderr/stdout on status-only probes, so failed
+  fallback checks no longer leak raw git diagnostics back to the parent process output.
 - `git-permissions` now clears inherited `GIT_*` state and disables external diff helpers before
   invoking `git`, so fallback write authorization no longer trusts caller-controlled git-side
   process hooks.

@@ -11,6 +11,8 @@
 - `read`、`write`、`edit`、`patch`、`delete`、`list_dir`、`glob`、`grep`、`stat`、`mkdir`、`copy`、`move`。
 - policy I/O、CLI 和相关集成测试。
 - 输出 redaction 与 secret deny 逻辑。
+- `git-permissions` fallback 的授权探测和状态检查；这些 probe 只允许使用受信任的 `git`
+  路径和清洗后的环境，失败时也不能把原始 git stderr/stdout 泄漏回父进程输出。
 - 对会创建或替换路径的写操作，重校验父目录/源对象身份；无法可靠验证时 fail-closed，而不是降级成 best-effort 成功。
 - policy I/O 读取也保持 ancestor-safe no-follow 边界：既拒绝最终叶子是 symlink/reparse，也拒绝父目录链通过 symlink/reparse 重定向。
 

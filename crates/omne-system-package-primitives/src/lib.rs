@@ -263,20 +263,12 @@ impl SystemPackageManager {
 
     pub fn install_recipe(self, package: &SystemPackageName) -> SystemPackageInstallRecipe {
         match self {
-            Self::AptGet => SystemPackageInstallRecipe::new("apt-get", &["install", "-y"], package),
-            Self::Dnf => SystemPackageInstallRecipe::new("dnf", &["install", "-y"], package),
-            Self::Yum => SystemPackageInstallRecipe::new("yum", &["install", "-y"], package),
-            Self::Apk => SystemPackageInstallRecipe::new("apk", &["add", "--no-cache"], package),
-            Self::Pacman => SystemPackageInstallRecipe::new(
-                "pacman",
-                &["-S", "--needed", "--noconfirm"],
-                package,
-            ),
-            Self::Zypper => SystemPackageInstallRecipe::new(
-                "zypper",
-                &["--non-interactive", "install"],
-                package,
-            ),
+            Self::AptGet => SystemPackageInstallRecipe::new("apt-get", &["install"], package),
+            Self::Dnf => SystemPackageInstallRecipe::new("dnf", &["install"], package),
+            Self::Yum => SystemPackageInstallRecipe::new("yum", &["install"], package),
+            Self::Apk => SystemPackageInstallRecipe::new("apk", &["add"], package),
+            Self::Pacman => SystemPackageInstallRecipe::new("pacman", &["-S"], package),
+            Self::Zypper => SystemPackageInstallRecipe::new("zypper", &["install"], package),
             Self::Brew => SystemPackageInstallRecipe::new("brew", &["install"], package),
         }
     }
@@ -381,32 +373,54 @@ mod tests {
             SystemPackageManager::AptGet.install_recipe(&package),
             SystemPackageInstallRecipe {
                 program: "apt-get",
-                args: vec![
-                    "install".to_string(),
-                    "-y".to_string(),
-                    "--".to_string(),
-                    "git".to_string(),
-                ],
+                args: vec!["install".to_string(), "--".to_string(), "git".to_string(),],
             }
         );
     }
 
     #[test]
-    fn pacman_recipe_avoids_sync_only_install() {
+    fn pacman_recipe_keeps_only_canonical_install_shape() {
         let package = SystemPackageName::new("git").expect("valid package name");
         assert_eq!(
             SystemPackageManager::Pacman.install_recipe(&package),
             SystemPackageInstallRecipe {
                 program: "pacman",
-                args: vec![
-                    "-S".to_string(),
-                    "--needed".to_string(),
-                    "--noconfirm".to_string(),
-                    "--".to_string(),
-                    "git".to_string(),
-                ],
+                args: vec!["-S".to_string(), "--".to_string(), "git".to_string(),],
             }
         );
+    }
+
+    #[test]
+    fn install_recipes_leave_confirmation_and_cache_policy_to_callers() {
+        let package = SystemPackageName::new("git").expect("valid package name");
+        let policy_flags = [
+            "-y",
+            "--noconfirm",
+            "--non-interactive",
+            "--no-cache",
+            "--needed",
+        ];
+
+        for manager in [
+            SystemPackageManager::AptGet,
+            SystemPackageManager::Dnf,
+            SystemPackageManager::Yum,
+            SystemPackageManager::Apk,
+            SystemPackageManager::Pacman,
+            SystemPackageManager::Zypper,
+            SystemPackageManager::Brew,
+        ] {
+            let recipe = manager.install_recipe(&package);
+            assert!(
+                recipe
+                    .args
+                    .iter()
+                    .all(|arg| !policy_flags.contains(&arg.as_str())),
+                "manager {:?} leaked high-level policy flags into the primitive recipe: {:?}",
+                manager,
+                recipe.args
+            );
+        }
     }
 
     #[test]

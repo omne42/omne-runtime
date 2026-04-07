@@ -24,6 +24,9 @@ Reusable artifact download and install primitives shared by higher-level callers
 - direct binary artifact atomic installation, serialized for the full per-destination install attempt so a second installer cannot race ahead to download/commit the same target
 - binary-from-archive installation with the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget and the same full per-destination install lock
 - archive-tree installation via `omne-fs-primitives` staged directory replacement plus exported extracted-byte and entry-count budgets
+- archive-tree installation now reuses `omne-archive-primitives` for archive traversal, path
+  sanitization, link validation, and extraction-budget accounting instead of carrying a duplicate
+  archive reader stack locally
 - archive-tree link extraction that fails closed if the staged destination root or any staged parent directory chain component is a symlink ancestor
 - archive-tree regular-file, symlink, and hard-link materialization through `omne-fs-primitives` capability directories so staged extraction never trusts ambient leaf paths
 - archive-tree staging now clones the bound staged directory handle directly into extraction, so parent-path swaps after staging cannot retarget unzip/untar writes or the final replace step
