@@ -842,7 +842,9 @@ mod recursive_delete_commit_tests {
             std::fs::canonicalize(&target).unwrap_or_else(|_| target.to_path_buf());
         install_recursive_delete_hook(Box::new(move |path| {
             let hook_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-            if hook_path == target_for_hook && !inserted_bg.swap(true, Ordering::SeqCst) {
+            if crate::path_utils::paths_equal_case_insensitive(&hook_path, &target_for_hook)
+                && !inserted_bg.swap(true, Ordering::SeqCst)
+            {
                 std::fs::create_dir_all(path.join("secrets")).expect("mkdir secrets");
                 std::fs::write(path.join("secrets").join("token.txt"), "secret")
                     .expect("write secret");
