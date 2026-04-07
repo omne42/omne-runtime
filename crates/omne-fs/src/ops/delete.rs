@@ -869,11 +869,19 @@ mod recursive_delete_commit_tests {
                     path == PathBuf::from("sub").join("secrets")
                         || path == PathBuf::from("sub").join("secrets").join("token.txt")
                 );
+                assert!(
+                    inserted.load(Ordering::SeqCst),
+                    "deny path should only happen after the hook injects secret content"
+                );
             }
             crate::error::Error::InvalidPath(message) => {
                 assert!(
                     message.contains("cannot verify parent identity during delete"),
                     "unexpected invalid-path failure: {message}"
+                );
+                assert!(
+                    !inserted.load(Ordering::SeqCst),
+                    "fail-closed identity rejection should happen before the hook mutates the tree"
                 );
             }
             other => panic!("unexpected error: {other:?}"),
@@ -882,9 +890,11 @@ mod recursive_delete_commit_tests {
             target.exists(),
             "target directory must remain after deny failure"
         );
-        assert!(
-            target.join("secrets").join("token.txt").exists(),
-            "newly added denied content must not be deleted"
-        );
+        if inserted.load(Ordering::SeqCst) {
+            assert!(
+                target.join("secrets").join("token.txt").exists(),
+                "newly added denied content must not be deleted"
+            );
+        }
     }
 }
