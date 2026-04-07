@@ -94,6 +94,13 @@ pub struct HostCommandOutput {
     pub output: Output,
 }
 
+#[derive(Debug)]
+struct ResolvedExecutionPrograms {
+    launcher: PathBuf,
+    sudo_environment_cleaner: Option<PathBuf>,
+    sudo_target: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct HostRecipeRequest<'a> {
     pub program: &'a OsStr,
@@ -301,11 +308,15 @@ pub fn run_host_command_with_capture_options(
 ) -> Result<HostCommandOutput, HostCommandError> {
     validate_direct_request_program(request)?;
     let execution = select_execution_for_request(request)?;
-    if execution == HostCommandExecution::Sudo {
-        ensure_sudo_target_is_available(request)?;
-    }
-    let output = run_command_output(request, execution, options, capture_options)
-        .map_err(|source| map_command_output_error(request, execution, source))?;
+    let resolved_programs = resolve_execution_programs(request, execution)?;
+    let output = run_command_output(
+        request,
+        execution,
+        &resolved_programs,
+        options,
+        capture_options,
+    )
+    .map_err(|source| map_command_output_error(request, execution, source))?;
     Ok(HostCommandOutput { execution, output })
 }
 
@@ -402,23 +413,49 @@ pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoM
 }
 
 #[cfg(test)]
-fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecution) -> Command {
+fn build_command(
+    request: &HostCommandRequest<'_>,
+    execution: HostCommandExecution,
+) -> Result<Command, HostCommandError> {
     build_command_with_options(request, execution, HostCommandRunOptions::default())
 }
 
+#[cfg(test)]
 fn build_command_with_options(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
     options: HostCommandRunOptions<'_>,
+) -> Result<Command, HostCommandError> {
+    let resolved_programs = resolve_execution_programs(request, execution)?;
+    Ok(build_command_with_resolved_programs(
+        request,
+        execution,
+        &resolved_programs,
+        options,
+    ))
+}
+
+fn build_command_with_resolved_programs(
+    request: &HostCommandRequest<'_>,
+    execution: HostCommandExecution,
+    resolved_programs: &ResolvedExecutionPrograms,
+    options: HostCommandRunOptions<'_>,
 ) -> Command {
     let mut cmd = match execution {
-        HostCommandExecution::Direct => Command::new(resolve_program_for_direct_spawn(request)),
+        HostCommandExecution::Direct => Command::new(&resolved_programs.launcher),
         HostCommandExecution::Sudo => {
-            let mut cmd = Command::new(resolve_sudo_program());
+            let mut cmd = Command::new(&resolved_programs.launcher);
             cmd.arg("-n");
             append_sudo_target_command(
                 &mut cmd,
-                &resolve_program_for_sudo_target(request),
+                resolved_programs
+                    .sudo_environment_cleaner
+                    .as_deref()
+                    .expect("sudo execution must resolve an env cleaner path"),
+                resolved_programs
+                    .sudo_target
+                    .as_deref()
+                    .expect("sudo execution must resolve a target path"),
                 request,
             );
             cmd
@@ -444,10 +481,14 @@ fn build_command_with_options(
 
 fn append_sudo_target_command(
     command: &mut Command,
+    env_program: &Path,
     program: &Path,
     request: &HostCommandRequest<'_>,
 ) {
     let _ = request;
+    command.arg(env_program);
+    command.arg("-i");
+    command.arg("--");
     command.arg(program);
     for arg in request.args {
         command.arg(arg);
@@ -457,6 +498,7 @@ fn append_sudo_target_command(
 fn run_command_output(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
+    resolved_programs: &ResolvedExecutionPrograms,
     options: HostCommandRunOptions<'_>,
     capture_options: HostCommandCaptureOptions,
 ) -> Result<Output, CommandOutputError> {
@@ -466,7 +508,13 @@ fn run_command_output(
         const EXECUTABLE_BUSY_BACKOFF_MS: u64 = 10;
 
         for attempt in 0..=EXECUTABLE_BUSY_RETRIES {
-            match spawn_and_capture_output(request, execution, options, capture_options) {
+            match spawn_and_capture_output(
+                request,
+                execution,
+                resolved_programs,
+                options,
+                capture_options,
+            ) {
                 Ok(output) => return Ok(output),
                 Err(err) if err.is_executable_file_busy() && attempt < EXECUTABLE_BUSY_RETRIES => {
                     std::thread::sleep(std::time::Duration::from_millis(
@@ -482,13 +530,20 @@ fn run_command_output(
 
     #[cfg(not(unix))]
     {
-        spawn_and_capture_output(request, execution, options, capture_options)
+        spawn_and_capture_output(
+            request,
+            execution,
+            resolved_programs,
+            options,
+            capture_options,
+        )
     }
 }
 
 fn spawn_and_capture_output(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
+    resolved_programs: &ResolvedExecutionPrograms,
     options: HostCommandRunOptions<'_>,
     capture_options: HostCommandCaptureOptions,
 ) -> Result<Output, CommandOutputError> {
@@ -496,7 +551,8 @@ fn spawn_and_capture_output(
         create_output_capture_file().map_err(CommandOutputError::Spawn)?;
     let (stderr_capture, stderr_writer) =
         create_output_capture_file().map_err(CommandOutputError::Spawn)?;
-    let mut command = build_command_with_options(request, execution, options);
+    let mut command =
+        build_command_with_resolved_programs(request, execution, resolved_programs, options);
     command.stdout(Stdio::from(stdout_writer));
     command.stderr(Stdio::from(stderr_writer));
     let child = command.spawn().map_err(CommandOutputError::Spawn)?;
@@ -902,10 +958,6 @@ fn is_path_env_name(name: &OsStr) -> bool {
     name == OsStr::new("PATH")
 }
 
-fn resolve_sudo_program() -> PathBuf {
-    resolve_sudo_path().unwrap_or_else(|| PathBuf::from("sudo"))
-}
-
 fn sudo_available() -> bool {
     resolve_sudo_path().is_some()
 }
@@ -914,11 +966,49 @@ fn resolve_sudo_path() -> Option<PathBuf> {
     resolve_command_path_in_standard_locations_os(OsStr::new("sudo"))
 }
 
+fn resolve_sudo_environment_cleaner_path() -> Option<PathBuf> {
+    resolve_command_path_in_standard_locations_os(OsStr::new("env"))
+}
+
 fn effective_path_var(env: &[(OsString, OsString)]) -> Option<OsString> {
     env.iter()
         .rev()
         .find_map(|(name, value)| is_path_env_name(name).then(|| value.clone()))
         .or_else(|| std::env::var_os("PATH"))
+}
+
+fn resolve_execution_programs(
+    request: &HostCommandRequest<'_>,
+    execution: HostCommandExecution,
+) -> Result<ResolvedExecutionPrograms, HostCommandError> {
+    match execution {
+        HostCommandExecution::Direct => Ok(ResolvedExecutionPrograms {
+            launcher: resolve_program_for_direct_spawn(request)?,
+            sudo_environment_cleaner: None,
+            sudo_target: None,
+        }),
+        HostCommandExecution::Sudo => {
+            let launcher =
+                resolve_sudo_path().ok_or_else(|| sudo_unavailable_error(request.program))?;
+            let sudo_environment_cleaner = resolve_sudo_environment_cleaner_path().ok_or_else(|| {
+                HostCommandError::SpawnFailed {
+                    program: request.program.to_os_string(),
+                    execution: HostCommandExecution::Sudo,
+                    source: io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "sudo requires a trusted standard-location env binary to clear the elevated target environment",
+                    ),
+                }
+            })?;
+            let sudo_target = resolve_program_for_sudo_target(request)?;
+            ensure_resolved_sudo_target_is_available(request, &sudo_target)?;
+            Ok(ResolvedExecutionPrograms {
+                launcher,
+                sudo_environment_cleaner: Some(sudo_environment_cleaner),
+                sudo_target: Some(sudo_target),
+            })
+        }
+    }
 }
 
 fn resolve_program_for_direct_command(request: &HostCommandRequest<'_>) -> Option<PathBuf> {
@@ -937,8 +1027,21 @@ fn resolve_program_for_direct_command(request: &HostCommandRequest<'_>) -> Optio
     )
 }
 
-fn resolve_program_for_direct_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
-    resolve_program_for_direct_command(request).unwrap_or_else(|| PathBuf::from(request.program))
+fn resolve_program_for_direct_spawn(
+    request: &HostCommandRequest<'_>,
+) -> Result<PathBuf, HostCommandError> {
+    if is_explicit_command_path(request.program) {
+        return resolve_explicit_request_program(request);
+    }
+
+    resolve_command_path_os_with_path_var_and_base_dir(
+        request.program,
+        effective_path_var(request.env),
+        resolved_working_directory_for_request(request).as_deref(),
+    )
+    .ok_or_else(|| HostCommandError::CommandNotFound {
+        program: request.program.to_os_string(),
+    })
 }
 
 fn validate_direct_request_program(
@@ -964,6 +1067,27 @@ fn resolved_working_directory_for_request(request: &HostCommandRequest<'_>) -> O
         .map(resolve_working_directory_for_spawn)
 }
 
+fn resolve_explicit_request_program(
+    request: &HostCommandRequest<'_>,
+) -> Result<PathBuf, HostCommandError> {
+    let program = Path::new(request.program);
+    if program.is_absolute() {
+        return Ok(program.to_path_buf());
+    }
+
+    let working_directory = resolved_working_directory_for_request(request).ok_or_else(|| {
+        HostCommandError::SpawnFailed {
+            program: request.program.to_os_string(),
+            execution: HostCommandExecution::Direct,
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "explicit relative program paths require working_directory",
+            ),
+        }
+    })?;
+    Ok(working_directory.join(program))
+}
+
 fn resolve_working_directory_for_spawn(working_directory: &Path) -> PathBuf {
     if working_directory.is_absolute() {
         return working_directory.to_path_buf();
@@ -974,13 +1098,18 @@ fn resolve_working_directory_for_spawn(working_directory: &Path) -> PathBuf {
         .unwrap_or_else(|_| working_directory.to_path_buf())
 }
 
-fn resolve_program_for_sudo_target(request: &HostCommandRequest<'_>) -> PathBuf {
+fn resolve_program_for_sudo_target(
+    request: &HostCommandRequest<'_>,
+) -> Result<PathBuf, HostCommandError> {
     if is_explicit_command_path(request.program) {
-        return resolve_program_for_direct_spawn(request);
+        return resolve_explicit_request_program(request);
     }
 
-    resolve_host_system_package_manager_path(request.program)
-        .unwrap_or_else(|| PathBuf::from(request.program))
+    resolve_host_system_package_manager_path(request.program).ok_or_else(|| {
+        HostCommandError::CommandNotFound {
+            program: request.program.to_os_string(),
+        }
+    })
 }
 
 fn resolve_host_system_package_manager_path(program: &OsStr) -> Option<PathBuf> {
@@ -993,32 +1122,30 @@ fn resolve_host_system_package_manager_path(program: &OsStr) -> Option<PathBuf> 
         .flatten()
 }
 
+#[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg(test)]
 fn ensure_sudo_target_is_available(
     request: &HostCommandRequest<'_>,
 ) -> Result<(), HostCommandError> {
-    if is_explicit_command_path(request.program) {
-        return ensure_explicit_sudo_target_is_available(request);
-    }
+    let target = resolve_program_for_sudo_target(request)?;
+    ensure_resolved_sudo_target_is_available(request, &target)
+}
 
-    if resolve_host_system_package_manager_path(request.program).is_some() {
+fn ensure_resolved_sudo_target_is_available(
+    request: &HostCommandRequest<'_>,
+    target: &Path,
+) -> Result<(), HostCommandError> {
+    if !is_explicit_command_path(request.program) {
         return Ok(());
     }
 
-    Err(HostCommandError::CommandNotFound {
-        program: request.program.to_os_string(),
-    })
-}
-
-fn ensure_explicit_sudo_target_is_available(
-    request: &HostCommandRequest<'_>,
-) -> Result<(), HostCommandError> {
-    let target = resolve_program_for_sudo_target(request);
     if !target.exists() {
         return Err(HostCommandError::CommandNotFound {
             program: request.program.to_os_string(),
         });
     }
-    if !is_spawnable_command_path(&target) {
+    if !is_spawnable_command_path(target) {
         return Err(HostCommandError::SpawnFailed {
             program: request.program.to_os_string(),
             execution: HostCommandExecution::Sudo,
@@ -1028,7 +1155,7 @@ fn ensure_explicit_sudo_target_is_available(
             ),
         });
     }
-    if !explicit_system_package_manager_path(&target) {
+    if !explicit_system_package_manager_path(target) {
         return Err(HostCommandError::SpawnFailed {
             program: request.program.to_os_string(),
             execution: HostCommandExecution::Sudo,
@@ -1040,6 +1167,27 @@ fn ensure_explicit_sudo_target_is_available(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg(test)]
+fn ensure_sudo_environment_cleaner_is_available_with_resolved(
+    program: &OsStr,
+    resolved_path: Option<PathBuf>,
+) -> Result<(), HostCommandError> {
+    if resolved_path.is_some() {
+        return Ok(());
+    }
+
+    Err(HostCommandError::SpawnFailed {
+        program: program.to_os_string(),
+        execution: HostCommandExecution::Sudo,
+        source: io::Error::new(
+            io::ErrorKind::NotFound,
+            "sudo requires a trusted standard-location env binary to clear the elevated target environment",
+        ),
+    })
 }
 
 fn is_explicit_command_path(command: &OsStr) -> bool {
@@ -1151,6 +1299,8 @@ mod tests {
     use super::command_available_os;
     use super::command_exists_os;
     #[cfg(unix)]
+    use super::ensure_sudo_environment_cleaner_is_available_with_resolved;
+    #[cfg(unix)]
     use super::ensure_sudo_target_is_available;
     #[cfg(unix)]
     use super::explicit_system_package_manager_path_with_resolved;
@@ -1159,6 +1309,8 @@ mod tests {
     use super::resolve_command_path_in_standard_locations_os;
     #[cfg(unix)]
     use super::resolve_host_system_package_manager_path;
+    #[cfg(unix)]
+    use super::resolve_sudo_environment_cleaner_path;
     #[cfg(unix)]
     use super::resolve_sudo_path;
     use super::run_host_command_with_capture_options;
@@ -1174,7 +1326,18 @@ mod tests {
         select_execution_for_request_with_status, should_try_sudo_with_status,
     };
     #[cfg(unix)]
+    use super::{ResolvedExecutionPrograms, build_command_with_resolved_programs};
+    #[cfg(unix)]
     use super::{run_host_command_with_options, run_host_recipe_with_options};
+
+    #[cfg(unix)]
+    fn sample_resolved_sudo_programs(target: PathBuf) -> ResolvedExecutionPrograms {
+        ResolvedExecutionPrograms {
+            launcher: PathBuf::from("/trusted/bin/sudo"),
+            sudo_environment_cleaner: Some(PathBuf::from("/trusted/bin/env")),
+            sudo_target: Some(target),
+        }
+    }
 
     #[test]
     fn command_probe_reports_missing_command_as_absent() {
@@ -1284,6 +1447,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn sudo_detection_ignores_request_path_override() {
+        let Some(_sudo_path) = resolve_sudo_path() else {
+            return;
+        };
         let temp = tempfile::tempdir().expect("tempdir");
         let sudo_path = write_test_command(temp.path(), "sudo");
         let env = vec![(
@@ -1298,8 +1464,11 @@ mod tests {
             sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
         };
 
-        let command = build_command(&request, HostCommandExecution::Sudo);
-        assert_ne!(Path::new(command.get_program()), sudo_path.as_path());
+        assert_eq!(
+            resolve_sudo_path(),
+            resolve_command_path_in_standard_locations_os(OsStr::new("sudo"))
+        );
+        assert_ne!(resolve_sudo_path().as_deref(), Some(sudo_path.as_path()));
         assert!(should_try_sudo_for_request_with_status(&request, true) == super::sudo_available());
     }
 
@@ -1313,6 +1482,17 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn resolve_sudo_environment_cleaner_path_uses_trusted_standard_location() {
+        let resolved = resolve_sudo_environment_cleaner_path();
+        assert_eq!(
+            resolved,
+            resolve_command_path_in_standard_locations_os(OsStr::new("env"))
+        );
+    }
+
+    #[cfg(unix)]
     #[test]
     fn sudo_command_drops_request_environment_at_privilege_boundary() {
         let explicit_program = std::env::current_exe().expect("current exe");
@@ -1333,15 +1513,30 @@ mod tests {
             sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
         };
 
-        let command = build_command(&request, HostCommandExecution::Sudo);
+        let resolved_programs = sample_resolved_sudo_programs(explicit_program.clone());
+        let command = build_command_with_resolved_programs(
+            &request,
+            HostCommandExecution::Sudo,
+            &resolved_programs,
+            HostCommandRunOptions::default(),
+        );
         let collected_args = command
             .get_args()
             .map(|arg: &OsStr| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert_eq!(collected_args[0], "-n");
-        assert_eq!(Path::new(&collected_args[1]), explicit_program.as_path());
-        assert_eq!(collected_args[2], "-c");
-        assert_eq!(collected_args[3], "exit 0");
+        assert_eq!(
+            Path::new(&collected_args[1]),
+            resolved_programs
+                .sudo_environment_cleaner
+                .as_deref()
+                .expect("sudo env path"),
+        );
+        assert_eq!(collected_args[2], "-i");
+        assert_eq!(collected_args[3], "--");
+        assert_eq!(Path::new(&collected_args[4]), explicit_program.as_path());
+        assert_eq!(collected_args[5], "-c");
+        assert_eq!(collected_args[6], "exit 0");
         assert!(
             collected_args.iter().all(|arg| !arg.contains('=')),
             "sudo target must not receive request env assignments: {collected_args:?}"
@@ -1388,14 +1583,72 @@ mod tests {
             sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
         };
 
-        let command = build_command(&request, HostCommandExecution::Sudo);
+        let resolved_programs = sample_resolved_sudo_programs(resolved_path.clone());
+        let command = build_command_with_resolved_programs(
+            &request,
+            HostCommandExecution::Sudo,
+            &resolved_programs,
+            HostCommandRunOptions::default(),
+        );
         let target = command
             .get_args()
             .last()
             .expect("sudo target should be present");
 
+        assert_eq!(
+            command
+                .get_args()
+                .nth(1)
+                .map(PathBuf::from)
+                .expect("env program should be present"),
+            resolved_programs
+                .sudo_environment_cleaner
+                .clone()
+                .expect("trusted env program should be present")
+        );
         assert_ne!(Path::new(target), shadowed_program.as_path());
         assert_eq!(Path::new(target), resolved_path.as_path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sudo_command_uses_trusted_env_path_instead_of_request_path_shadow() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let shadowed_env = write_test_command(temp.path(), "env");
+        let env = vec![(
+            OsString::from("PATH"),
+            temp.path().as_os_str().to_os_string(),
+        )];
+        let request = HostCommandRequest {
+            program: OsStr::new("apt-get"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let resolved_programs =
+            sample_resolved_sudo_programs(PathBuf::from("/trusted/bin/apt-get"));
+        let command = build_command_with_resolved_programs(
+            &request,
+            HostCommandExecution::Sudo,
+            &resolved_programs,
+            HostCommandRunOptions::default(),
+        );
+        let actual_env = command
+            .get_args()
+            .nth(1)
+            .map(PathBuf::from)
+            .expect("sudo env should be present");
+
+        assert_ne!(actual_env, shadowed_env);
+        assert_eq!(
+            actual_env,
+            resolved_programs
+                .sudo_environment_cleaner
+                .clone()
+                .expect("trusted env path")
+        );
     }
 
     #[cfg(unix)]
@@ -1427,7 +1680,7 @@ mod tests {
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let command = build_command(&request, HostCommandExecution::Direct);
+        let command = build_command(&request, HostCommandExecution::Direct).expect("build command");
         let collected_env = command
             .get_envs()
             .map(|(name, value): (&OsStr, Option<&OsStr>)| {
@@ -1461,7 +1714,8 @@ mod tests {
             &request,
             HostCommandExecution::Direct,
             HostCommandRunOptions::new().with_env_remove(&removed),
-        );
+        )
+        .expect("build command");
         let collected_env = command
             .get_envs()
             .map(|(name, value): (&OsStr, Option<&OsStr>)| {
@@ -1864,7 +2118,7 @@ mod tests {
 
         assert!(!command_exists_os(relative_program.as_os_str()));
         assert_eq!(
-            resolve_program_for_direct_spawn(&request),
+            resolve_program_for_direct_spawn(&request).expect("resolve direct spawn"),
             working_directory.path().join(&relative_program)
         );
 
@@ -1908,6 +2162,7 @@ mod tests {
             assert!(command_available_for_request(&request));
             assert_eq!(
                 resolve_program_for_direct_spawn(&request)
+                    .expect("resolve direct spawn")
                     .canonicalize()
                     .expect("canonicalize resolved program"),
                 expected_program
@@ -1942,7 +2197,7 @@ mod tests {
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let command = build_command(&request, HostCommandExecution::Direct);
+        let command = build_command(&request, HostCommandExecution::Direct).expect("build command");
         assert_eq!(Path::new(command.get_program()), command_path.as_path());
         assert_eq!(
             command.get_envs().find_map(|(name, value)| {
@@ -1974,7 +2229,7 @@ mod tests {
         assert!(command_exists_for_request(&request));
         assert!(command_available_for_request(&request));
         assert_eq!(
-            resolve_program_for_direct_spawn(&request),
+            resolve_program_for_direct_spawn(&request).expect("resolve direct spawn"),
             working_directory.path().join(&relative_program)
         );
     }
@@ -1997,7 +2252,10 @@ mod tests {
         assert!(!command_exists_os(request.program));
         assert!(command_exists_for_request(&request));
         assert!(command_available_for_request(&request));
-        assert_eq!(resolve_program_for_direct_spawn(&request), command_path);
+        assert_eq!(
+            resolve_program_for_direct_spawn(&request).expect("resolve direct spawn"),
+            command_path
+        );
     }
 
     #[test]
@@ -2043,6 +2301,53 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn run_host_command_rejects_relative_request_path_entry_without_working_directory() {
+        struct CurrentDirGuard(PathBuf);
+
+        impl Drop for CurrentDirGuard {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+
+        let _lock = current_dir_lock().lock().expect("lock current_dir");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let original_cwd = std::env::current_dir().expect("current_dir");
+        let _restore_current_dir = CurrentDirGuard(original_cwd);
+        std::env::set_current_dir(temp.path()).expect("set current_dir");
+
+        let relative_bin = temp.path().join("bin");
+        std::fs::create_dir_all(&relative_bin).expect("create relative PATH dir");
+        let count_file = temp.path().join("count.txt");
+        write_count_command(&relative_bin, "count");
+        let env = vec![
+            (OsString::from("PATH"), OsString::from("bin")),
+            (
+                OsString::from("OMNE_COUNT_FILE"),
+                count_file.as_os_str().to_os_string(),
+            ),
+        ];
+        let request = HostCommandRequest {
+            program: OsStr::new("count"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        assert!(!command_exists_for_request(&request));
+        assert!(!command_available_for_request(&request));
+
+        let err = run_host_command(&request)
+            .expect_err("relative request PATH without working_directory must fail closed");
+        assert!(matches!(err, HostCommandError::CommandNotFound { .. }));
+        assert!(
+            !count_file.exists(),
+            "missing working_directory must not let the child execute through implicit PATH search"
+        );
     }
 
     #[test]
@@ -2259,7 +2564,7 @@ mod tests {
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let command = build_command(&request, HostCommandExecution::Direct);
+        let command = build_command(&request, HostCommandExecution::Direct).expect("build command");
         let collected_args = command
             .get_args()
             .map(|arg| arg.to_os_string())
@@ -2280,7 +2585,7 @@ mod tests {
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let command = build_command(&request, HostCommandExecution::Direct);
+        let command = build_command(&request, HostCommandExecution::Direct).expect("build command");
         let collected_env = command
             .get_envs()
             .map(|(name, value)| {
@@ -2313,15 +2618,31 @@ mod tests {
             sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
         };
 
-        let command = build_command(&request, HostCommandExecution::Sudo);
+        let resolved_programs = sample_resolved_sudo_programs(explicit_program.clone());
+        let command = build_command_with_resolved_programs(
+            &request,
+            HostCommandExecution::Sudo,
+            &resolved_programs,
+            HostCommandRunOptions::default(),
+        );
         let collected_args = command
             .get_args()
             .map(OsStr::to_os_string)
             .collect::<Vec<_>>();
 
         assert_eq!(collected_args[0], OsString::from("-n"));
-        assert_eq!(collected_args[1], explicit_program.into_os_string());
-        assert_eq!(collected_args.len(), 2);
+        assert_eq!(
+            collected_args[1],
+            resolved_programs
+                .sudo_environment_cleaner
+                .as_deref()
+                .expect("trusted env path")
+                .as_os_str(),
+        );
+        assert_eq!(collected_args[2], OsString::from("-i"));
+        assert_eq!(collected_args[3], OsString::from("--"));
+        assert_eq!(collected_args[4], explicit_program.into_os_string());
+        assert_eq!(collected_args.len(), 5);
     }
 
     #[cfg(unix)]
@@ -2391,7 +2712,10 @@ mod tests {
         };
 
         assert!(command_available_for_request(&request));
-        assert_eq!(resolve_program_for_direct_spawn(&request), command_path);
+        assert_eq!(
+            resolve_program_for_direct_spawn(&request).expect("resolve direct spawn"),
+            command_path
+        );
 
         let error = run_host_command(&request).expect_err("missing interpreter should fail spawn");
         match error {
@@ -2609,6 +2933,26 @@ mod tests {
                         .to_string()
                         .contains("trusted system package manager path")
                 );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_trusted_env_fails_closed_before_sudo_spawn() {
+        match ensure_sudo_environment_cleaner_is_available_with_resolved(
+            OsStr::new("apt-get"),
+            None,
+        )
+        .expect_err("missing trusted env must fail closed")
+        {
+            HostCommandError::SpawnFailed {
+                execution, source, ..
+            } => {
+                assert_eq!(execution, HostCommandExecution::Sudo);
+                assert_eq!(source.kind(), io::ErrorKind::NotFound);
+                assert!(source.to_string().contains("trusted standard-location env"));
             }
             other => panic!("unexpected error: {other}"),
         }

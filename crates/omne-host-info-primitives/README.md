@@ -13,10 +13,11 @@ Low-level host platform and target-triple primitives shared across callers.
 
 - host OS and architecture detection
 - canonical target-triple mapping, including Linux `gnu` vs `musl` detection from current-process
-  loader/libc mappings with fail-closed filesystem-marker fallback only when direct runtime
-  evidence is unavailable; current-process evidence stays authoritative even if unrelated musl
-  loader files exist on disk, and conflicting runtime or filesystem marker evidence still fails
-  closed instead of letting distro markers override a visible glibc loader
+  loader/libc mappings with fail-closed loader-marker fallback only when direct runtime evidence
+  is unavailable; current-process evidence stays authoritative even if unrelated musl loader files
+  exist on disk, and coarse distro markers such as `/etc/alpine-release` are no longer treated as
+  sufficient libc evidence; when Linux libc still cannot be determined, host detection returns no
+  platform/triple instead of guessing `*-unknown-linux-gnu`
 - validated target override normalization for the crate's supported canonical triples, with checked
   APIs that return structured errors and compatibility helpers that fail closed
 - home-directory resolution
