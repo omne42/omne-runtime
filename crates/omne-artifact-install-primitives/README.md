@@ -17,6 +17,7 @@ Reusable artifact download and install primitives shared by higher-level callers
 - public download/install entrypoints that depend on the crate-local `ArtifactDownloader` boundary
   instead of hard-coding a concrete HTTP client type; `reqwest::Client` remains supported via the
   built-in adapter impl
+- regression coverage that keeps both the free-form `source_label` surface and the generic `ArtifactDownloader` boundary stable, so future refactors cannot silently collapse provenance into fixed enums or leak a concrete HTTP client type into callers
 - optional SHA-256 verification for downloaded artifacts, with digest mismatches reported as install-phase failures once bytes have been fetched successfully
 - structured install errors that preserve candidate-level failures and key archive extraction
   details such as `ArchiveBinaryNotFound`, so callers do not have to branch on display strings

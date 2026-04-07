@@ -432,6 +432,36 @@ mod tests {
     }
 
     #[test]
+    fn failed_candidates_preserve_caller_defined_source_labels() {
+        let mirror = ArtifactDownloadCandidate {
+            url: "https://mirror.example.invalid/demo.zip".to_string(),
+            source_label: "regional-mirror".to_string(),
+        };
+        let gateway = ArtifactDownloadCandidate {
+            url: "https://gateway.example.invalid/demo.zip".to_string(),
+            source_label: "signed gateway".to_string(),
+        };
+
+        let err = failed_candidates_error(
+            "https://example.invalid/demo.zip",
+            vec![
+                candidate_failure_message(&mirror, &ArtifactInstallError::download("HTTP 404")),
+                candidate_failure_message(
+                    &gateway,
+                    &ArtifactInstallError::install("archive extraction failed"),
+                ),
+            ],
+        );
+
+        let failures = err.candidate_failures();
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].source_label(), "regional-mirror");
+        assert_eq!(failures[1].source_label(), "signed gateway");
+        assert!(failures[0].message().starts_with("regional-mirror:"));
+        assert!(failures[1].message().starts_with("signed gateway:"));
+    }
+
+    #[test]
     fn failed_candidates_error_reports_install_when_any_candidate_reached_install_phase() {
         let candidate = ArtifactDownloadCandidate {
             url: "https://example.invalid/demo.zip".to_string(),

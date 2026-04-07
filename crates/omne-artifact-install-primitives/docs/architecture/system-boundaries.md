@@ -10,6 +10,7 @@
 - 把下载候选的来源说明保持为调用方提供的窄标签，只用于错误聚合和 explain surface，不把 `gateway|canonical|mirror` 这类产品来源分类硬编码进 primitive API。
 - 对公开 download/install 入口要求候选列表非空；空列表被视为调用方输入错误，直接返回明确错误，而不是伪装成“所有候选都失败”。
 - 对外通过 crate-local `ArtifactDownloader` 边界接收下载能力，而不是把具体 HTTP client 类型固定进 public API。
+- 上面这两条 public boundary 会由回归测试继续钉住：来源说明保持 caller-defined `source_label`，下载适配保持在 `ArtifactDownloader` 抽象层，避免未来重构重新把产品来源枚举或具体 HTTP client 类型渗回 primitive contract。
 - 以受限响应体流式下载 artifact。
 - 对下载结果执行可选的 SHA-256 校验；如果字节已成功下载但摘要不匹配，按 install-phase failure 返回，避免把完整性失败伪装成纯下载失败。
 - 对关键安装失败保留结构化错误细节和 candidate-level failure 列表，例如 archive binary 未找到时可通过 `ArtifactInstallErrorDetail::ArchiveBinaryNotFound` 分流，而不是只能解析字符串。
