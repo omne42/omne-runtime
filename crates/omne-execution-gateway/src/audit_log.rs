@@ -116,94 +116,11 @@ impl AuditLogger {
 }
 
 fn validate_appendable_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    reject_unsafe_audit_log_existing_ancestors(path)?;
     validate_appendable_regular_file_in_ambient_root(path, "audit log").map_err(|err| err.into())
 }
 
 fn open_appendable_regular_file_nofollow(path: &Path) -> Result<std::fs::File, std::io::Error> {
-    reject_unsafe_audit_log_existing_ancestors(path)?;
     open_appendable_regular_file_in_ambient_root(path, "audit log").map(|file| file.into_std())
-}
-
-fn reject_unsafe_audit_log_existing_ancestors(path: &Path) -> std::io::Result<()> {
-    let absolute = absolute_path_lexical(path)?;
-    let Some(parent) = absolute.parent() else {
-        return Ok(());
-    };
-
-    let mut current = PathBuf::new();
-    for component in parent.components() {
-        match component {
-            std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
-            std::path::Component::RootDir => current.push(component.as_os_str()),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "audit log must be a normalized absolute path without parent traversal: {}",
-                        path.display()
-                    ),
-                ));
-            }
-            std::path::Component::Normal(segment) => {
-                current.push(segment);
-                match std::fs::symlink_metadata(&current) {
-                    Ok(metadata) if metadata.file_type().is_symlink() => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            format!(
-                                "audit log must not traverse symlink ancestors: {}",
-                                current.display()
-                            ),
-                        ));
-                    }
-                    Ok(metadata) if !metadata.is_dir() => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            format!(
-                                "audit log ancestor must be a directory: {}",
-                                current.display()
-                            ),
-                        ));
-                    }
-                    Ok(_) => {}
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
-                    Err(err) => return Err(err),
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn absolute_path_lexical(path: &Path) -> std::io::Result<PathBuf> {
-    let mut absolute = if path.is_absolute() {
-        PathBuf::new()
-    } else {
-        std::env::current_dir()?
-    };
-
-    for component in path.components() {
-        match component {
-            std::path::Component::Prefix(prefix) => absolute.push(prefix.as_os_str()),
-            std::path::Component::RootDir => absolute.push(component.as_os_str()),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "audit log must be a normalized absolute path without parent traversal: {}",
-                        path.display()
-                    ),
-                ));
-            }
-            std::path::Component::Normal(segment) => absolute.push(segment),
-        }
-    }
-
-    Ok(absolute)
 }
 
 impl PreparedAuditSink {
