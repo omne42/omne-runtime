@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- remove duplicated test-only `#[cfg(test)]` attributes in `host_command.rs`, so
+  `cargo clippy --workspace --all-targets -- -D warnings` stays green instead of failing on
+  `clippy::duplicated-attributes`
 - execute the full sudo wrapper chain via trusted absolute `sudo`, `env -i`, and target-command
   paths, so sudo `secure_path` or `PATH` shadowing cannot turn a validated command into a
   different elevated executable at runtime
