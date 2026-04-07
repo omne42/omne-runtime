@@ -395,6 +395,29 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn empty_path_entries_resolve_against_supplied_base_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let working_directory = temp.path().join("cwd");
+        std::fs::create_dir_all(&working_directory).expect("mkdir working directory");
+        let tool = working_directory.join("tool");
+        std::fs::write(&tool, "#!/bin/sh\nexit 0\n").expect("write tool");
+        let mut permissions = std::fs::metadata(&tool).expect("stat tool").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&tool, permissions).expect("chmod tool");
+
+        let resolved = super::resolve_command_path_os_with_path_var_and_base_dir(
+            OsStr::new("tool"),
+            Some(std::ffi::OsString::from("")),
+            Some(&working_directory),
+        );
+
+        assert_eq!(resolved, Some(tool));
+    }
+
+    #[cfg(unix)]
     fn test_shell_path() -> PathBuf {
         resolve_command_path_or_standard_location("sh").expect("resolve test shell")
     }

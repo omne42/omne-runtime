@@ -70,6 +70,12 @@
 - add regression coverage that keeps request-scoped `PATH` overrides on the direct bare-command
   path while separately pinning the trusted sudo/env/package-manager resolution path, so future
   refactors cannot merge those two trust boundaries back together
+- add regression coverage that keeps `IfNonRootSystemCommand` pinned to canonical system package
+  managers even when request-scoped `PATH` contains an arbitrary bare executable, so future
+  refactors cannot reintroduce implicit sudo for user-controlled tools
+- add regression coverage that resolves request-scoped empty `PATH` entries against the same
+  effective `working_directory` used for direct spawn, so probes and execution do not misclassify
+  runnable commands as `CommandNotFound`
 - make Windows large-output host-command test helpers switch to their own script directory before
   launching PowerShell, so parallel tests changing the process cwd cannot trip CI with
   `The current directory is invalid.`

@@ -2202,6 +2202,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn request_scoped_empty_path_entry_follows_relative_working_directory() {
+        struct CurrentDirGuard(PathBuf);
+
+        impl Drop for CurrentDirGuard {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+
+        let _lock = current_dir_lock().lock().expect("lock current_dir");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let original_cwd = std::env::current_dir().expect("current_dir");
+        let _restore_current_dir = CurrentDirGuard(original_cwd);
+        std::env::set_current_dir(temp.path()).expect("set current_dir");
+
+        let working_directory = PathBuf::from("cwd");
+        let command_root = temp.path().join("cwd");
+        std::fs::create_dir_all(&command_root).expect("create working directory");
+        let expected_program = write_test_command(&command_root, "echoenv");
+        let env = vec![
+            (OsString::from("PATH"), OsString::from("")),
+            (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
+        ];
+        let request = HostCommandRequest {
+            program: OsStr::new("echoenv"),
+            args: &[],
+            env: &env,
+            working_directory: Some(&working_directory),
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        assert!(command_exists_for_request(&request));
+        assert!(command_available_for_request(&request));
+        assert_eq!(
+            resolve_program_for_direct_spawn(&request)
+                .expect("resolve direct spawn")
+                .canonicalize()
+                .expect("canonicalize resolved program"),
+            expected_program
+                .canonicalize()
+                .expect("canonicalize expected program")
+        );
+
+        let output = run_host_command(&request).expect("run request-scoped PATH command");
+        assert!(output.output.status.success());
+        let stdout = String::from_utf8_lossy(&output.output.stdout);
+        assert!(stdout.contains("env=world"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn direct_command_resolves_bare_request_path_before_spawn() {
@@ -2230,6 +2280,33 @@ mod tests {
                     .then(|| value.expect("PATH value should exist").to_os_string())
             }),
             Some(temp.path().as_os_str().to_os_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn if_non_root_system_command_does_not_sudo_arbitrary_bare_request_path_tools() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _shadowed_tool = write_test_command(temp.path(), "custom-tool");
+        let env = vec![(
+            OsString::from("PATH"),
+            temp.path().as_os_str().to_os_string(),
+        )];
+        let request = HostCommandRequest {
+            program: OsStr::new("custom-tool"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let execution = select_execution_for_request_with_status(&request, true, true)
+            .expect("non-package bare command should still execute directly");
+
+        assert_eq!(execution, HostCommandExecution::Direct);
+        assert_eq!(
+            resolve_program_for_direct_spawn(&request).expect("resolve direct spawn"),
+            temp.path().join("custom-tool")
         );
     }
 

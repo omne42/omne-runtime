@@ -16,7 +16,7 @@
 - 把“命令根本没能启动”与“命令已执行但输出采集失败”区分成不同错误面，避免把 capture-limit/读取失败错误错误归类成 `SpawnFailed`。
 - 把“命令超时被终止”与“命令启动失败/输出采集失败”继续分开建模，避免调用方只能从字符串猜测 timeout。
 - 对显式相对程序路径要求调用方显式提供 `working_directory` 作为解析基准；如果 request 没给这个基准，本 crate 会 fail closed，而不是偷偷退回调用方进程的 ambient cwd。
-- `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，而 direct bare command 的真正 spawn 也会先绑定到同一条解析出的可执行路径；如果 request 的 `PATH` 里包含相对目录，这些目录会继续按 request 的 `working_directory` 解释，而不是退回宿主进程的 ambient cwd。对显式相对程序路径也与执行共享同一个 `working_directory` 解析语义，并在缺少它时返回 false。
+- `command_exists_for_request` / `command_available_for_request` 在 bare command 上会沿用 request 显式覆盖的 `PATH`，而 direct bare command 的真正 spawn 也会先绑定到同一条解析出的可执行路径；如果 request 的 `PATH` 里包含相对目录或空目录项（表示当前目录），这些目录项都会继续按 request 的 `working_directory` 解释，而不是退回宿主进程的 ambient cwd。对显式相对程序路径也与执行共享同一个 `working_directory` 解析语义，并在缺少它时返回 false。
 - direct bare command 一旦无法按上述规则解析到 concrete executable path，就会在 spawn 前
   fail closed 返回 `CommandNotFound`；本 crate 不会在最后一步退回给子进程 loader /
   `execvp` / `CreateProcess` 自己做隐式 `PATH` 搜索，避免出现“probe/检查的是 A，实际执行的是
