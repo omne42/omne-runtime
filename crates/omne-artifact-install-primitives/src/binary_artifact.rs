@@ -78,31 +78,6 @@ impl<'a> BinaryArchiveInstallRequest<'a> {
             ..self
         }
     }
-
-    #[deprecated(
-        note = "tool_name is ignored; use BinaryArchiveInstallRequest::new(...).with_archive_binary_hint(...) instead"
-    )]
-    #[allow(clippy::too_many_arguments)]
-    pub const fn from_legacy_parts(
-        canonical_url: &'a str,
-        destination: &'a Path,
-        asset_name: &'a str,
-        binary_name: &'a str,
-        _tool_name: &'a str,
-        archive_binary_hint: Option<&'a str>,
-        expected_sha256: Option<&'a Sha256Digest>,
-        max_download_bytes: Option<u64>,
-    ) -> Self {
-        Self {
-            canonical_url,
-            destination,
-            asset_name,
-            binary_name,
-            archive_binary_hint,
-            expected_sha256,
-            max_download_bytes,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1235,8 +1210,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_binary_download_accepts_legacy_tool_name_constructor()
-    -> Result<(), Box<dyn Error>> {
+    async fn archive_binary_download_supports_hint_builder() -> Result<(), Box<dyn Error>> {
         let asset_name = "demo.zip";
         let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
         let archive_path = format!("demo/bin/{binary_name}");
@@ -1247,17 +1221,13 @@ mod tests {
         let downloader = StubDownloader {
             routes: HashMap::from([(canonical_url.clone(), archive)]),
         };
-        #[allow(deprecated)]
-        let request = BinaryArchiveInstallRequest::from_legacy_parts(
+        let request = BinaryArchiveInstallRequest::new(
             &canonical_url,
             &destination,
             asset_name,
             &binary_name,
-            "demo",
-            Some(&archive_path),
-            None,
-            None,
-        );
+        )
+        .with_archive_binary_hint(Some(&archive_path));
 
         let installed = download_and_install_binary_from_archive(
             &downloader,

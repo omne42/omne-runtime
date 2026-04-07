@@ -21,9 +21,8 @@ Low-level archive/compression primitives shared across callers.
 If a caller needs to target a layout such as `PortableGit/cmd/git.exe`, it must pass that exact
 archive-relative path through `archive_binary_hint`.
 
-`BinaryArchiveRequest::new(binary_name)` is the narrow construction path. A deprecated
-`from_legacy_parts(..., tool_name, ...)` helper remains only to ease migration and ignores
-`tool_name`.
+`BinaryArchiveRequest::new(binary_name)` plus `with_archive_binary_hint(...)` is the full public
+construction path.
 
 ## Non-Goals
 

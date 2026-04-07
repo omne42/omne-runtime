@@ -28,9 +28,8 @@ Reusable artifact download and install primitives shared by higher-level callers
 - archive-tree staging now clones the bound staged directory handle directly into extraction, so parent-path swaps after staging cannot retarget unzip/untar writes or the final replace step
 - Unix zip symlink materialization and tar forward hard-link resolution inside the staged tree
 
-`BinaryArchiveInstallRequest::new(...)` is the narrow construction path for archive-backed installs.
-A deprecated `from_legacy_parts(..., tool_name, ...)` helper remains only to ease migration and
-ignores `tool_name`.
+`BinaryArchiveInstallRequest::new(...)` plus `with_archive_binary_hint(...)` is the full public
+construction path for archive-backed installs.
 
 ## Non-Goals
 

@@ -42,5 +42,5 @@
 
 - 调用方负责构造候选列表和决定重试顺序。
 - 调用方负责解释成功来源并映射到自己的结果 contract。
-- 调用方若使用 archive-backed install，需要通过精确的 `archive_binary_hint` 指定非常规 archive 布局；迁移期保留的 legacy `tool_name` helper 只忽略该值，不再承载布局语义。
+- 调用方若使用 archive-backed install，需要通过精确的 `archive_binary_hint` 指定非常规 archive 布局。
 - 调用方负责产品级自定义后处理，例如写 launcher、更新元数据或附加权限策略。
