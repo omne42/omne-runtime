@@ -64,20 +64,6 @@ impl<'a> BinaryArchiveRequest<'a> {
             archive_binary_hint,
         }
     }
-
-    #[deprecated(
-        note = "tool_name is ignored; use BinaryArchiveRequest::new(binary_name).with_archive_binary_hint(...) instead"
-    )]
-    pub const fn from_legacy_parts(
-        binary_name: &'a str,
-        _tool_name: &'a str,
-        archive_binary_hint: Option<&'a str>,
-    ) -> Self {
-        Self {
-            binary_name,
-            archive_binary_hint,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1010,14 +996,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_tool_name_constructor_is_retained_but_ignored() {
+    fn builder_path_reaches_exact_hint_selection() {
         let archive = make_zip_archive(&[("PortableGit/cmd/git.exe", b"MZ".as_slice(), 0o755)]);
-        #[allow(deprecated)]
-        let request = BinaryArchiveRequest::from_legacy_parts(
-            "git.exe",
-            "git",
-            Some("PortableGit/cmd/git.exe"),
-        );
+        let request = BinaryArchiveRequest::new("git.exe")
+            .with_archive_binary_hint(Some("PortableGit/cmd/git.exe"));
         let extracted = extract_binary_from_archive("MinGit-1.2.3-64-bit.zip", &archive, &request)
             .expect("explicit hint should remain the only selector");
 

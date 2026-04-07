@@ -29,5 +29,5 @@
 ## 调用方边界
 
 - 上层调用方负责把 archive 字节提供给这里。
-- 上层调用方负责在非常规 archive 布局下提供精确的 `archive_binary_hint`；这里不会从其他字段推导产品特例路径。迁移期保留的 legacy `tool_name` helper 也只会忽略该值，不再承载语义。
+- 上层调用方负责在非常规 archive 布局下提供精确的 `archive_binary_hint`；这里不会从其他字段推导产品特例路径。
 - 上层调用方负责决定提取后的字节或 tree entry 该如何落盘、校验或绑定到 staging 目录。
