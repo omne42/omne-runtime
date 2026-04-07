@@ -1122,7 +1122,6 @@ fn resolve_host_system_package_manager_path(program: &OsStr) -> Option<PathBuf> 
         .flatten()
 }
 
-#[cfg(test)]
 #[cfg_attr(not(unix), allow(dead_code))]
 #[cfg(test)]
 fn ensure_sudo_target_is_available(
@@ -1169,7 +1168,6 @@ fn ensure_resolved_sudo_target_is_available(
     Ok(())
 }
 
-#[cfg(test)]
 #[cfg_attr(not(unix), allow(dead_code))]
 #[cfg(test)]
 fn ensure_sudo_environment_cleaner_is_available_with_resolved(
