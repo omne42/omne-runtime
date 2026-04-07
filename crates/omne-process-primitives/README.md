@@ -19,6 +19,9 @@ Low-level host-command and process-tree primitives shared across callers.
 - bare direct commands that resolve `PATH` exactly once before spawn and fail closed with
   `CommandNotFound` when that resolution does not yield a concrete executable, instead of
   falling back to the child-process loader's implicit `PATH` search
+- request-scoped relative and empty `PATH` entries that resolve against the same effective
+  `working_directory` used for spawn, so probes, missing-program classification, and execution do
+  not drift back to the caller's ambient cwd
 - `command_available*` probes that keep the same spawnable contract as execution and do not report non-executable files as available
 - host command execution with captured output that returns after the direct child exits even if daemonized descendants keep inherited stdout/stderr open
 - host command capture-limit enforcement that best-effort terminates an overproducing direct child
