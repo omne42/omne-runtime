@@ -9,10 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Added regression coverage pinning the `git-permissions` fallback to explicit trusted `git`
+  program paths and sanitized subprocess environment, so future refactors cannot regress back to
+  ambient `PATH` lookup or inherited `GIT_*` hook/process state.
 - `policy_io` now reports leaf symlink/reparse policy paths with a stable fail-closed diagnostic and inherits non-blocking regular-file opens from `omne-fs-primitives`, so FIFO/special-file policy inputs reject immediately instead of hanging the loader.
 - `policy_io` now opens policy files through `omne-fs-primitives` capability roots plus
   no-follow regular-file handles, so parent-directory symlink/reparse ancestors can no longer
   redirect policy loads outside the caller's intended path.
+- Added regression coverage proving `git-permissions` fallback ignores poisoned ambient `PATH`,
+  `GIT_DIR`, and `GIT_WORK_TREE`, so trusted `git` resolution stays detached from caller-
+  controlled lookup state.
 - `Context::glob_paths` and `Context::grep` now stay compiled when the `glob` or `grep`
   cargo feature is disabled, so the public API once again matches the documented contract:
   callers get deterministic `Error::NotPermitted` instead of an external compile failure.

@@ -2,9 +2,15 @@
 
 ## [Unreleased]
 
+- add regression coverage proving rejected audit-log ancestor symlinks stay side-effect free
+  during `preflight()`, so validation cannot recreate directories behind an unsafe path before
+  failing closed
 - bind every prepared executable to both file identity and a preflight content fingerprint, so
   even non-allowlisted requests fail closed if the same inode is rewritten between preflight and
   final spawn
+- add regression coverage proving `prepare_command()` also keeps writing through the prepared
+  audit sink after the on-disk audit path is rebound mid-execution, so the terminal record cannot
+  be redirected or lost after preflight succeeds
 - derive `omne-execution` CLI `request_resolution` from the same authoritative execution/preflight
   event snapshot returned for `event` and `result`, so the JSON output cannot mix a stale
   `resolve_request()` view with a later execution outcome
