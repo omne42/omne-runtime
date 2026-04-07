@@ -20,3 +20,6 @@
 - route archive-tree regular-file, symlink, and hard-link writes through `omne-fs-primitives` capability directories so staged extraction no longer does leaf `remove_file`/`create`/`hard_link` by ambient paths
 - keep archive-tree extraction and final directory replace bound to the validated staged directory / parent directory handles so parent-path swaps after staging fail closed instead of drifting into symlink targets
 - keep archive-tree staged-root traversal fail-closed while still allowing pre-existing ambient symlink ancestors such as macOS `/var -> /private/var`
+- add regression coverage that preserves caller-defined candidate `source_label` values in
+  aggregated failure surfaces, so the primitive boundary cannot silently regress back to a fixed
+  source enum

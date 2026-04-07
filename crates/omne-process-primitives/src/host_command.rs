@@ -1472,6 +1472,33 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn direct_bare_command_uses_request_path_override() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_test_command(temp.path(), "shadowed-tool");
+        let env = vec![(
+            OsString::from("PATH"),
+            temp.path().as_os_str().to_os_string(),
+        )];
+        let request = HostCommandRequest {
+            program: OsStr::new("shadowed-tool"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let resolved = resolve_program_for_direct_spawn(&request)
+            .expect("request PATH override should resolve the direct bare command");
+        assert_eq!(resolved, command_path);
+        assert!(command_available_for_request(&request));
+
+        let output = run_host_command(&request).expect("run direct command from request PATH");
+        assert_eq!(output.execution, HostCommandExecution::Direct);
+        assert!(output.output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn resolve_sudo_path_uses_trusted_standard_location() {
         let resolved = resolve_sudo_path();
         assert_eq!(

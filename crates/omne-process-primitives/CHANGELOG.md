@@ -67,3 +67,6 @@
   back to loader-controlled implicit `PATH` search and accidentally run a different binary
 - make non-Linux Unix process-group cleanup fail closed by skipping `killpg` when the crate
   cannot revalidate the original leader lifetime with Linux-style evidence
+- add regression coverage that keeps request-scoped `PATH` overrides on the direct bare-command
+  path while separately pinning the trusted sudo/env/package-manager resolution path, so future
+  refactors cannot merge those two trust boundaries back together
