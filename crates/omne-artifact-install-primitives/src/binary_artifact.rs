@@ -1,5 +1,8 @@
-use std::io::{Cursor, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Component, Path, PathBuf};
 
 use omne_archive_primitives::{
     ArchiveBinaryMatch, BinaryArchiveRequest, extract_binary_from_archive_reader_to_writer,
@@ -37,6 +40,71 @@ pub struct BinaryArchiveInstallRequest<'a> {
     pub max_download_bytes: Option<u64>,
 }
 
+impl<'a> BinaryArchiveInstallRequest<'a> {
+    pub const fn new(
+        canonical_url: &'a str,
+        destination: &'a Path,
+        asset_name: &'a str,
+        binary_name: &'a str,
+    ) -> Self {
+        Self {
+            canonical_url,
+            destination,
+            asset_name,
+            binary_name,
+            archive_binary_hint: None,
+            expected_sha256: None,
+            max_download_bytes: None,
+        }
+    }
+
+    pub const fn with_archive_binary_hint(self, archive_binary_hint: Option<&'a str>) -> Self {
+        Self {
+            archive_binary_hint,
+            ..self
+        }
+    }
+
+    pub const fn with_expected_sha256(self, expected_sha256: Option<&'a Sha256Digest>) -> Self {
+        Self {
+            expected_sha256,
+            ..self
+        }
+    }
+
+    pub const fn with_max_download_bytes(self, max_download_bytes: Option<u64>) -> Self {
+        Self {
+            max_download_bytes,
+            ..self
+        }
+    }
+
+    #[deprecated(
+        note = "tool_name is ignored; use BinaryArchiveInstallRequest::new(...).with_archive_binary_hint(...) instead"
+    )]
+    #[allow(clippy::too_many_arguments)]
+    pub const fn from_legacy_parts(
+        canonical_url: &'a str,
+        destination: &'a Path,
+        asset_name: &'a str,
+        binary_name: &'a str,
+        _tool_name: &'a str,
+        archive_binary_hint: Option<&'a str>,
+        expected_sha256: Option<&'a Sha256Digest>,
+        max_download_bytes: Option<u64>,
+    ) -> Self {
+        Self {
+            canonical_url,
+            destination,
+            asset_name,
+            binary_name,
+            archive_binary_hint,
+            expected_sha256,
+            max_download_bytes,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledArchiveBinary {
     pub source: ArtifactDownloadCandidate,
@@ -50,8 +118,9 @@ pub fn install_binary_from_archive(
     destination: &Path,
     archive_binary_hint: Option<&str>,
 ) -> Result<ArchiveBinaryMatch, ArtifactInstallError> {
+    let _install_lock = lock_binary_destination(destination)?;
     let mut reader = Cursor::new(content);
-    install_binary_from_archive_reader(
+    install_binary_from_archive_reader_without_lock(
         asset_name,
         &mut reader,
         binary_name,
@@ -69,11 +138,13 @@ where
     D: ArtifactDownloader + ?Sized,
 {
     require_download_candidates(candidates, request.canonical_url)?;
+    let lock_destination = request.destination.to_path_buf();
+    let _install_lock =
+        run_blocking_install(move || lock_binary_destination(&lock_destination)).await?;
 
     let mut errors = Vec::new();
     for candidate in candidates {
         let expected_sha256 = request.expected_sha256.cloned();
-        let destination = request.destination.to_path_buf();
         let mut staged = stage_file_atomically_with_name(
             request.destination,
             &binary_write_options(),
@@ -95,7 +166,7 @@ where
 
         let install_result = run_blocking_install(move || {
             verify_downloaded_candidate(staged.file_mut(), expected_sha256.as_ref())
-                .and_then(|_| commit_binary_stage_with_lock(staged, &destination))
+                .and_then(|_| commit_binary_stage(staged))
         })
         .await;
         if let Err(err) = install_result {
@@ -117,6 +188,9 @@ where
     D: ArtifactDownloader + ?Sized,
 {
     require_download_candidates(candidates, request.canonical_url)?;
+    let lock_destination = request.destination.to_path_buf();
+    let _install_lock =
+        run_blocking_install(move || lock_binary_destination(&lock_destination)).await?;
 
     let mut errors = Vec::new();
     for candidate in candidates {
@@ -153,7 +227,7 @@ where
                         .map_err(|err| ArtifactInstallError::install(err.to_string()))
                 })
                 .and_then(|_| {
-                    install_binary_from_archive_reader(
+                    install_binary_from_archive_reader_without_lock(
                         &asset_name,
                         staged.file_mut(),
                         &binary_name,
@@ -179,7 +253,7 @@ where
     Err(failed_candidates_error(request.canonical_url, errors))
 }
 
-fn install_binary_from_archive_reader<R>(
+fn install_binary_from_archive_reader_without_lock<R>(
     asset_name: &str,
     reader: &mut R,
     binary_name: &str,
@@ -189,7 +263,6 @@ fn install_binary_from_archive_reader<R>(
 where
     R: Read + Seek + ?Sized,
 {
-    let _install_lock = lock_binary_destination(destination)?;
     let mut staged = stage_file_atomically(destination, &binary_write_options())
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     let matched = extract_binary_from_archive_reader_to_writer(
@@ -216,11 +289,9 @@ fn map_extract_binary_error(
     ArtifactInstallError::install_with_detail(message, detail)
 }
 
-fn commit_binary_stage_with_lock(
+fn commit_binary_stage(
     staged: omne_fs_primitives::StagedAtomicFile,
-    destination: &Path,
 ) -> Result<(), ArtifactInstallError> {
-    let _install_lock = lock_binary_destination(destination)?;
     staged
         .commit()
         .map_err(|err| ArtifactInstallError::install(err.to_string()))
@@ -289,8 +360,13 @@ fn binary_install_lock_file_name(destination: &Path) -> PathBuf {
         .map(|name| sanitize_lock_component(&name.to_string_lossy()))
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "binary".to_string());
+    let lock_identity = binary_install_lock_identity(destination);
+    let lock_hash =
+        omne_integrity_primitives::hash_sha256(&binary_lock_identity_bytes(&lock_identity))
+            .to_string();
     PathBuf::from(format!(
-        "{BINARY_INSTALL_LOCK_PREFIX}{label}{BINARY_INSTALL_LOCK_SUFFIX}"
+        "{BINARY_INSTALL_LOCK_PREFIX}{label}-{hash}{BINARY_INSTALL_LOCK_SUFFIX}",
+        hash = &lock_hash[..16]
     ))
 }
 
@@ -304,18 +380,108 @@ fn sanitize_lock_component(value: &str) -> String {
         .collect()
 }
 
+fn binary_install_lock_identity(destination: &Path) -> PathBuf {
+    let absolute = absolute_lexically_normalized_path(destination);
+    normalize_existing_lock_identity_path(&absolute).unwrap_or(absolute)
+}
+
+fn absolute_lexically_normalized_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    lexically_normalize_path(&absolute)
+}
+
+fn lexically_normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+        }
+    }
+    normalized
+}
+
+fn normalize_existing_lock_identity_path(path: &Path) -> io::Result<PathBuf> {
+    let mut visited = PathBuf::new();
+    let mut normalized = PathBuf::new();
+    let mut components = path.components().peekable();
+
+    while let Some(component) = components.next() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {
+                visited.push(component.as_os_str());
+                normalized.push(component.as_os_str());
+            }
+            Component::Normal(part) => {
+                visited.push(part);
+                match fs::symlink_metadata(&visited) {
+                    Ok(_) => normalized = fs::canonicalize(&visited)?,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        normalized.push(part);
+                        for remainder in components {
+                            normalized.push(remainder.as_os_str());
+                        }
+                        return Ok(normalized);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Component::CurDir | Component::ParentDir => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+
+    Ok(normalized)
+}
+
+#[cfg(unix)]
+fn binary_lock_identity_bytes(path: &Path) -> Vec<u8> {
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(windows)]
+fn binary_lock_identity_bytes(path: &Path) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+
+    path.as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn binary_lock_identity_bytes(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::error::Error;
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
 
     use omne_fs_primitives::lock_advisory_file_in_ambient_root;
     use omne_integrity_primitives::hash_sha256;
+    use tokio::sync::Notify;
     use tokio::time::timeout;
 
     use crate::artifact_download::{
@@ -409,6 +575,32 @@ mod tests {
             }
             writer
                 .write_all(body)
+                .map_err(|err| ArtifactInstallError::install(err.to_string()))
+        }
+    }
+
+    struct BlockingDownloader {
+        body: Vec<u8>,
+        download_entries: AtomicUsize,
+        release_first_download: Notify,
+    }
+
+    impl ArtifactDownloader for BlockingDownloader {
+        async fn download_to_writer<W>(
+            &self,
+            _url: &str,
+            writer: &mut W,
+            _max_bytes: Option<u64>,
+        ) -> Result<(), ArtifactInstallError>
+        where
+            W: Write + ?Sized,
+        {
+            let entry = self.download_entries.fetch_add(1, Ordering::SeqCst);
+            if entry == 0 {
+                self.release_first_download.notified().await;
+            }
+            writer
+                .write_all(&self.body)
                 .map_err(|err| ArtifactInstallError::install(err.to_string()))
         }
     }
@@ -760,6 +952,105 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_binary_install_blocks_second_download_until_first_finishes()
+    -> Result<(), Box<dyn Error>> {
+        let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let binary = b"good-binary".to_vec();
+        let expected_sha256 = hash_sha256(&binary);
+        let canonical_url = format!("https://example.invalid/{asset_name}");
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join(&asset_name);
+        let downloader = Arc::new(BlockingDownloader {
+            body: binary.clone(),
+            download_entries: AtomicUsize::new(0),
+            release_first_download: Notify::new(),
+        });
+        let first_expected_sha256 = expected_sha256.clone();
+        let second_expected_sha256 = expected_sha256.clone();
+
+        let first = tokio::spawn({
+            let downloader = Arc::clone(&downloader);
+            let canonical_url = canonical_url.clone();
+            let destination = destination.clone();
+            let asset_name = asset_name.clone();
+            async move {
+                download_binary_to_destination(
+                    downloader.as_ref(),
+                    &[ArtifactDownloadCandidate {
+                        url: canonical_url.clone(),
+                        source_label: "primary".to_string(),
+                    }],
+                    &DownloadBinaryRequest {
+                        canonical_url: &canonical_url,
+                        destination: &destination,
+                        asset_name: &asset_name,
+                        expected_sha256: Some(&first_expected_sha256),
+                        max_download_bytes: None,
+                    },
+                )
+                .await
+            }
+        });
+
+        for _ in 0..50 {
+            if downloader.download_entries.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            downloader.download_entries.load(Ordering::SeqCst),
+            1,
+            "first direct install should start downloading before the second install is spawned"
+        );
+
+        let mut second = tokio::spawn({
+            let downloader = Arc::clone(&downloader);
+            let canonical_url = canonical_url.clone();
+            let destination = destination.clone();
+            let asset_name = asset_name.clone();
+            async move {
+                download_binary_to_destination(
+                    downloader.as_ref(),
+                    &[ArtifactDownloadCandidate {
+                        url: canonical_url.clone(),
+                        source_label: "secondary".to_string(),
+                    }],
+                    &DownloadBinaryRequest {
+                        canonical_url: &canonical_url,
+                        destination: &destination,
+                        asset_name: &asset_name,
+                        expected_sha256: Some(&second_expected_sha256),
+                        max_download_bytes: None,
+                    },
+                )
+                .await
+            }
+        });
+
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            downloader.download_entries.load(Ordering::SeqCst),
+            1,
+            "second direct install should wait on the destination lock before starting a download"
+        );
+        assert!(
+            timeout(Duration::from_millis(100), &mut second)
+                .await
+                .is_err(),
+            "second direct install should still be blocked while the first holds the destination lock"
+        );
+
+        downloader.release_first_download.notify_one();
+
+        first.await.expect("first direct install join")?;
+        second.await.expect("second direct install join")?;
+        assert_eq!(downloader.download_entries.load(Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read(&destination)?, binary);
+        Ok(())
+    }
+
     #[test]
     fn install_binary_from_archive_serializes_same_destination() -> Result<(), Box<dyn Error>> {
         let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
@@ -802,6 +1093,184 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(2))
             .expect("install should complete after lock release")?;
         handle.join().expect("install thread join");
+        assert_eq!(std::fs::read(&destination)?, b"good-binary");
+        Ok(())
+    }
+
+    #[test]
+    fn binary_install_lock_name_collapses_lexically_equivalent_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().canonicalize().expect("canonicalize tempdir");
+        let canonical = base.join("nested").join("tool");
+        let equivalent = base
+            .join("nested")
+            .join(".")
+            .join("bin")
+            .join("..")
+            .join("tool");
+
+        assert_eq!(
+            binary_install_lock_file_name(&canonical),
+            binary_install_lock_file_name(&equivalent)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_install_lock_name_collapses_existing_alias_prefix() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let real_root = temp.path().join("real-root");
+        std::fs::create_dir_all(&real_root).expect("mkdir real root");
+        let alias_root = temp.path().join("alias-root");
+        symlink(&real_root, &alias_root).expect("create alias root");
+
+        assert_eq!(
+            binary_install_lock_file_name(&real_root.join("tool")),
+            binary_install_lock_file_name(&alias_root.join("tool"))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn archive_binary_install_blocks_second_download_until_first_finishes()
+    -> Result<(), Box<dyn Error>> {
+        let asset_name = "demo.zip";
+        let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let archive_path = format!("demo/bin/{binary_name}");
+        let archive = make_zip_archive(&[(archive_path.as_str(), b"good-binary", 0o755)])?;
+        let canonical_url = format!("https://example.invalid/{asset_name}");
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join(&binary_name);
+        let downloader = Arc::new(BlockingDownloader {
+            body: archive,
+            download_entries: AtomicUsize::new(0),
+            release_first_download: Notify::new(),
+        });
+
+        let first = tokio::spawn({
+            let downloader = Arc::clone(&downloader);
+            let canonical_url = canonical_url.clone();
+            let destination = destination.clone();
+            let binary_name = binary_name.clone();
+            async move {
+                download_and_install_binary_from_archive(
+                    downloader.as_ref(),
+                    &[ArtifactDownloadCandidate {
+                        url: canonical_url.clone(),
+                        source_label: "primary".to_string(),
+                    }],
+                    &BinaryArchiveInstallRequest {
+                        canonical_url: &canonical_url,
+                        destination: &destination,
+                        asset_name,
+                        binary_name: &binary_name,
+                        archive_binary_hint: None,
+                        expected_sha256: None,
+                        max_download_bytes: None,
+                    },
+                )
+                .await
+            }
+        });
+
+        for _ in 0..50 {
+            if downloader.download_entries.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            downloader.download_entries.load(Ordering::SeqCst),
+            1,
+            "first archive install should start downloading before the second install is spawned"
+        );
+
+        let mut second = tokio::spawn({
+            let downloader = Arc::clone(&downloader);
+            let canonical_url = canonical_url.clone();
+            let destination = destination.clone();
+            let binary_name = binary_name.clone();
+            async move {
+                download_and_install_binary_from_archive(
+                    downloader.as_ref(),
+                    &[ArtifactDownloadCandidate {
+                        url: canonical_url.clone(),
+                        source_label: "secondary".to_string(),
+                    }],
+                    &BinaryArchiveInstallRequest {
+                        canonical_url: &canonical_url,
+                        destination: &destination,
+                        asset_name,
+                        binary_name: &binary_name,
+                        archive_binary_hint: None,
+                        expected_sha256: None,
+                        max_download_bytes: None,
+                    },
+                )
+                .await
+            }
+        });
+
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            downloader.download_entries.load(Ordering::SeqCst),
+            1,
+            "second archive install should wait on the destination lock before starting a download"
+        );
+        assert!(
+            timeout(Duration::from_millis(100), &mut second)
+                .await
+                .is_err(),
+            "second archive install should still be blocked while the first holds the destination lock"
+        );
+
+        downloader.release_first_download.notify_one();
+
+        first.await.expect("first archive install join")?;
+        second.await.expect("second archive install join")?;
+        assert_eq!(downloader.download_entries.load(Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read(&destination)?, b"good-binary");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn archive_binary_download_accepts_legacy_tool_name_constructor()
+    -> Result<(), Box<dyn Error>> {
+        let asset_name = "demo.zip";
+        let binary_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let archive_path = format!("demo/bin/{binary_name}");
+        let archive = make_zip_archive(&[(archive_path.as_str(), b"good-binary", 0o755)])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join(&binary_name);
+        let canonical_url = format!("https://example.invalid/{asset_name}");
+        let downloader = StubDownloader {
+            routes: HashMap::from([(canonical_url.clone(), archive)]),
+        };
+        #[allow(deprecated)]
+        let request = BinaryArchiveInstallRequest::from_legacy_parts(
+            &canonical_url,
+            &destination,
+            asset_name,
+            &binary_name,
+            "demo",
+            Some(&archive_path),
+            None,
+            None,
+        );
+
+        let installed = download_and_install_binary_from_archive(
+            &downloader,
+            &[ArtifactDownloadCandidate {
+                url: canonical_url.clone(),
+                source_label: "primary".to_string(),
+            }],
+            &request,
+        )
+        .await?;
+
+        assert_eq!(installed.source.source_label, "primary");
+        assert_eq!(installed.archive_match.archive_path, archive_path);
         assert_eq!(std::fs::read(&destination)?, b"good-binary");
         Ok(())
     }

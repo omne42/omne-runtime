@@ -50,6 +50,36 @@ pub struct BinaryArchiveRequest<'a> {
     pub archive_binary_hint: Option<&'a str>,
 }
 
+impl<'a> BinaryArchiveRequest<'a> {
+    pub const fn new(binary_name: &'a str) -> Self {
+        Self {
+            binary_name,
+            archive_binary_hint: None,
+        }
+    }
+
+    pub const fn with_archive_binary_hint(self, archive_binary_hint: Option<&'a str>) -> Self {
+        Self {
+            binary_name: self.binary_name,
+            archive_binary_hint,
+        }
+    }
+
+    #[deprecated(
+        note = "tool_name is ignored; use BinaryArchiveRequest::new(binary_name).with_archive_binary_hint(...) instead"
+    )]
+    pub const fn from_legacy_parts(
+        binary_name: &'a str,
+        _tool_name: &'a str,
+        archive_binary_hint: Option<&'a str>,
+    ) -> Self {
+        Self {
+            binary_name,
+            archive_binary_hint,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedArchiveBinary {
     pub archive_path: String,
@@ -974,6 +1004,22 @@ mod tests {
             },
         )
         .expect("explicit hint should select product-specific layout");
+
+        assert_eq!(extracted.archive_path, "PortableGit/cmd/git.exe");
+        assert_eq!(extracted.bytes, b"MZ");
+    }
+
+    #[test]
+    fn legacy_tool_name_constructor_is_retained_but_ignored() {
+        let archive = make_zip_archive(&[("PortableGit/cmd/git.exe", b"MZ".as_slice(), 0o755)]);
+        #[allow(deprecated)]
+        let request = BinaryArchiveRequest::from_legacy_parts(
+            "git.exe",
+            "git",
+            Some("PortableGit/cmd/git.exe"),
+        );
+        let extracted = extract_binary_from_archive("MinGit-1.2.3-64-bit.zip", &archive, &request)
+            .expect("explicit hint should remain the only selector");
 
         assert_eq!(extracted.archive_path, "PortableGit/cmd/git.exe");
         assert_eq!(extracted.bytes, b"MZ");

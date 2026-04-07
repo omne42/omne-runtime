@@ -13,8 +13,8 @@
 - 以受限响应体流式下载 artifact。
 - 对下载结果执行可选的 SHA-256 校验；如果字节已成功下载但摘要不匹配，按 install-phase failure 返回，避免把完整性失败伪装成纯下载失败。
 - 对关键安装失败保留结构化错误细节和 candidate-level failure 列表，例如 archive binary 未找到时可通过 `ArtifactInstallErrorDetail::ArchiveBinaryNotFound` 分流，而不是只能解析字符串。
-- 把直接二进制资产原子安装到目标路径，并对同一 binary 目标的 install phase 做 advisory lock 串行化，避免并发 commit 互相踩坏最终落点。
-- 从受支持的 archive 中提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束；同一 binary 目标的 install phase 同样按 destination 做 advisory lock 串行化。
+- 把直接二进制资产原子安装到目标路径，并对同一 binary 目标的整个 install attempt 做 advisory lock 串行化；锁名基于归一化后的 destination identity 派生，避免 root alias 或词法等价路径让并发请求重新退化成 nondeterministic last-writer-wins。
+- 从受支持的 archive 中提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束；同一 binary 目标的整个 install attempt 同样按归一化后的 destination identity 做 advisory lock 串行化。
 - 把受支持的 archive 目录树解到 `omne-fs-primitives` 提供的 staged 目录，并在默认 extracted-byte / entry-count 预算内成功后替换目标目录。
 - 对同一个 archive tree 目标目录，安装阶段按目标做 advisory lock 串行化，锁名基于归一化后的 destination identity 派生，避免 root alias 或词法等价路径把同一个真实目录拆成多把锁。
 - 对 archive tree 中会物化目录项的条目，要求 staging 根及其内部落点父目录链必须是 staging 目录下的真实目录；命中这些受管组件里的 symlink 祖先时 fail-closed，不能借由已创建链接把后续 regular file 写出到 staging 目录之外。
@@ -42,4 +42,5 @@
 
 - 调用方负责构造候选列表和决定重试顺序。
 - 调用方负责解释成功来源并映射到自己的结果 contract。
+- 调用方若使用 archive-backed install，需要通过精确的 `archive_binary_hint` 指定非常规 archive 布局；迁移期保留的 legacy `tool_name` helper 只忽略该值，不再承载布局语义。
 - 调用方负责产品级自定义后处理，例如写 launcher、更新元数据或附加权限策略。
