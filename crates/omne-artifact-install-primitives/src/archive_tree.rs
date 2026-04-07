@@ -164,12 +164,12 @@ where
     let _install_lock = lock_archive_tree_destination(destination)?;
     let staged = stage_directory_atomically(destination, &archive_tree_stage_options())
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    let staged_root = staged
-        .try_clone_dir()
-        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    let extract_result = extract_archive_tree_into_root(asset_name, reader, &staged_root, limits);
-
-    extract_result?;
+    {
+        let staged_root = staged
+            .try_clone_dir()
+            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+        extract_archive_tree_into_root(asset_name, reader, &staged_root, limits)?;
+    }
     staged
         .commit()
         .map_err(|err| ArtifactInstallError::install(err.to_string()))
