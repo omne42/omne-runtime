@@ -70,3 +70,6 @@
 - add regression coverage that keeps request-scoped `PATH` overrides on the direct bare-command
   path while separately pinning the trusted sudo/env/package-manager resolution path, so future
   refactors cannot merge those two trust boundaries back together
+- make Windows large-output host-command test helpers switch to their own script directory before
+  launching PowerShell, so parallel tests changing the process cwd cannot trip CI with
+  `The current directory is invalid.`
