@@ -8,7 +8,7 @@
 
 - 识别受支持的 archive 资产格式。
 - 遍历归档条目并归一化条目路径。
-- 按精确的 `archive_binary` hint 或约定的 `bin/<binary>` 布局匹配目标条目。
+- 只按精确的 `archive_binary_hint` 或约定的 `bin/<binary>` 布局匹配目标条目；这里不再保留任何 `tool_name` 派生或产品特例推断语义。
 - 在读取内容前验证命中的目标条目确实是 regular file。
 - 在默认 extracted-byte 预算内读取并返回匹配条目的二进制字节；预算需要覆盖大型官方单文件 release。
 - 在默认 archive scan-entry 预算内查找目标条目，避免恶意 archive 通过海量小条目把目标成员拖到极后位置时放大线性扫描成本。
@@ -29,5 +29,5 @@
 ## 调用方边界
 
 - 上层调用方负责把 archive 字节提供给这里。
-- 上层调用方负责在非常规 archive 布局下提供精确的 `archive_binary_hint`；这里不会从其他字段推导产品特例路径。
+- 上层调用方负责在非常规 archive 布局下提供精确的 `archive_binary_hint`；这里不会从其他字段推导产品特例路径。迁移期保留的 legacy `tool_name` helper 也只会忽略该值，不再承载语义。
 - 上层调用方负责决定提取后的字节或 tree entry 该如何落盘、校验或绑定到 staging 目录。
