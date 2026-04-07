@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- stop routing `edit` / `delete` through the undocumented `git-permissions` runtime fallback, so
+  `omne-fs` no longer changes write authorization semantics through an optional Cargo feature or
+  carries VCS subprocess policy inside the generic filesystem boundary
 - Added regression coverage pinning the `git-permissions` fallback to explicit trusted `git`
   program paths and sanitized subprocess environment, so future refactors cannot regress back to
   ambient `PATH` lookup or inherited `GIT_*` hook/process state.

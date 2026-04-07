@@ -24,18 +24,9 @@ pub struct EditResponse {
 }
 
 pub fn edit_range(ctx: &Context, request: EditRequest) -> Result<EditResponse> {
-    let defer_permission_to_git_fallback =
-        !ctx.policy.permissions.edit && ctx.git_permission_fallback_enabled();
-    if defer_permission_to_git_fallback {
-        ctx.ensure_can_write(&request.root_id, "edit")?;
-    } else {
-        ctx.ensure_write_operation_allowed(&request.root_id, ctx.policy.permissions.edit, "edit")?;
-    }
+    ctx.ensure_write_operation_allowed(&request.root_id, ctx.policy.permissions.edit, "edit")?;
     let (path, relative, requested_path) =
         ctx.canonical_path_in_root(&request.root_id, &request.path)?;
-    if defer_permission_to_git_fallback {
-        ctx.ensure_git_revertible_write_allowed(&request.root_id, &relative, "edit", false)?;
-    }
 
     if request.start_line == 0 || request.end_line == 0 || request.start_line > request.end_line {
         return Err(invalid_edit_range(format!(

@@ -20,7 +20,6 @@ mod context;
 mod copy_file;
 mod delete;
 mod edit;
-mod git_permissions;
 mod glob;
 mod grep;
 mod io;
