@@ -5,6 +5,9 @@
 - bind every prepared executable to both file identity and a preflight content fingerprint, so
   even non-allowlisted requests fail closed if the same inode is rewritten between preflight and
   final spawn
+- derive `omne-execution` CLI `request_resolution` from the same authoritative execution/preflight
+  event snapshot returned for `event` and `result`, so the JSON output cannot mix a stale
+  `resolve_request()` view with a later execution outcome
 - classify copied or renamed opaque launchers against trusted launcher identity/content instead of
   basename text alone, so allowlisted aliases cannot smuggle `sh`/`python`/`env` behind a benign
   file name
