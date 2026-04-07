@@ -51,6 +51,7 @@ The field remains part of the event schema so future native backends can report 
 enforcement state without changing the audit contract.
 
 The audit sink itself is fail-closed: the gateway rejects symlinked audit files, special files,
-and paths that traverse existing symlinked parent directories.
+and paths that fail the shared descriptor-backed ambient-root no-follow checks, including
+symlinked parent directories.
 If the final audit write fails after a command has already failed for another reason, the surfaced
 audit error includes the original execution error summary so callers do not lose that context.
