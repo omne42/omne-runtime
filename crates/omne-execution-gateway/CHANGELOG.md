@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- bind every prepared executable to both file identity and a preflight content fingerprint, so
+  even non-allowlisted requests fail closed if the same inode is rewritten between preflight and
+  final spawn
+- classify copied or renamed opaque launchers against trusted launcher identity/content instead of
+  basename text alone, so allowlisted aliases cannot smuggle `sh`/`python`/`env` behind a benign
+  file name
 - make the `omne-execution` CLI load request JSON through `omne-fs-primitives`' shared
   descriptor-backed no-follow reader instead of maintaining a second local file-open path, so
   request input stays on the same filesystem boundary as policy and audit-log handling

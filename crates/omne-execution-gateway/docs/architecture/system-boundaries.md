@@ -9,9 +9,9 @@
 - `ExecRequest`、`ExecEvent`、`ExecGateway`、`GatewayPolicy` 和能力报告模型。
 - `cwd`、`workspace_root`、隔离级别和 `policy_default` 来源一致性校验。
 - 请求里的 `program` 只能是 bare command name 或绝对路径；像 `./tool`、`bin/tool`，以及 Windows `C:tool.exe` 这类 drive-relative 路径都会 fail-closed 拒绝，避免执行语义依赖 gateway 进程自身的工作目录或宿主 drive cwd。
-- 对显式绝对 `program` 路径做“必须是可 spawn 的可执行文件”校验、解析到 canonical real executable path、绑定 file identity，并在真正 spawn 前再次校验；bare command name 也会在 preflight 阶段解析成 canonical 绝对执行体并绑定 identity，如果无法稳定解析就 fail-closed 拒绝。mutating allowlist 仍按最终可执行文件 identity 匹配，而不是按 basename 或原始路径字面量放行，避免 preflight 通过后被换文件或通过稳定别名漂移到别的可执行文件；但在最终 revalidate 到内核 `spawn/exec` 之间仍存在无法完全消除的 OS 级 TOCTOU 窗口，这里只承诺尽量缩小而不是假装消灭它。
+- 对显式绝对 `program` 路径做“必须是可 spawn 的可执行文件”校验、解析到 canonical real executable path、绑定 file identity 与内容指纹，并在真正 spawn 前再次校验；bare command name 也会在 preflight 阶段解析成 canonical 绝对执行体并绑定同样的 identity + content 视图，如果无法稳定解析就 fail-closed 拒绝。allowlist 仍按最终可执行文件 identity 匹配，而不是按 basename 或原始路径字面量放行，避免 preflight 通过后被换文件、同 inode 原地改写或通过稳定别名漂移到别的可执行文件；但在最终 revalidate 到内核 `spawn/exec` 之间仍存在无法完全消除的 OS 级 TOCTOU 窗口，这里只承诺尽量缩小而不是假装消灭它。
 - 对 `cwd` / `workspace_root` 先做“不得穿过 symlink/reparse-point 祖先目录”的 fail-closed 校验，再做 canonical path + 目录 identity 绑定，并在真正 spawn 前重新校验；macOS 只对系统根别名 `/var`、`/tmp` 做最小例外，避免把平台自带 temp/workspace 路径误判成调用方可控别名。
-- 声明式变更命令门控，以及显式 mutation declaration、`mutating_program_allowlist` / `non_mutating_program_allowlist` 和 opaque launcher 之间的一致性校验；其中 opaque launcher/interpreter 会按最终绑定到的 real executable identity 做判断，所以就算 allowlisted 显式路径经过稳定 symlink/alias 最终落到 `sh`、`python`、`env` 之类 launcher，也会直接 fail-closed，不能靠别名名字绕过授权边界。
+- 声明式变更命令门控，以及显式 mutation declaration、`mutating_program_allowlist` / `non_mutating_program_allowlist` 和 opaque launcher 之间的一致性校验；其中 opaque launcher/interpreter 会按最终绑定到的 trusted launcher identity / content 做判断，所以就算 allowlisted 显式路径经过稳定 symlink、硬链接、复制重命名等 alias 最终落到 `sh`、`python`、`env` 之类 launcher，也会直接 fail-closed，不能靠别名名字绕过授权边界。
 - gateway 自己管理的 spawn 路径会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端。
 - 平台 sandbox 编排与 runtime 观测。
 - 结构化审计事件和日志输出，包括可读的 lossy `program` / `args` / `env` 字段，以及面向机器恢复的 exact OS-string 编码字段。allowlist 和 opaque launcher 门控本身继续保持在原生 `OsStr` / `Path` 边界，不先把请求收窄成 lossy UTF-8；Unix 非 UTF-8 可执行路径不会因为 replacement character 文本而和 UTF-8 allowlist 项发生碰撞授权。
@@ -41,7 +41,7 @@
 - `ExecRequest` 的显式环境变量现在属于 request/audit 契约的一部分；`execute()` 和 `prepare_command()` 在 spawn 前都会清空继承环境，只注入 request 声明过的 env，避免调用方用未审计的 `PATH`、`LD_PRELOAD`、`PYTHONPATH` 等变量偷偷改变执行语义。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，allowlisted execution 还会额外拒绝 startup-sensitive env 覆盖，例如 `PATH`、`LD_*`、`DYLD_*`、`BASH_ENV`、`PYTHONPATH`、`RUBYOPT` 和 `NODE_OPTIONS`；这些变量会改变 loader、解释器或子命令解析语义，因此不能在“已绑定执行体身份”的边界外重新放宽。
 - 配置了 `audit_log_path` 时，`evaluate()` / `resolve_request()` / `preflight()` 保持纯评估，不提前创建日志目录或文件；真正的 audit sink 准备只在 `execute()` / `prepare_command()` 前发生，并直接复用 `omne-fs-primitives` 的 descriptor-backed ambient-root no-follow helper 处理 appendable file 打开/校验，避免 gateway 自己再维护一套更弱的祖先遍历逻辑。最终 JSONL 记录会继续写入这次准备阶段已打开的 appendable file handle，而不是在命令执行后重新按路径 reopen，减少 post-preflight path swap 的竞态窗口。
-- mutating allowlist 对显式程序路径除了 file identity 绑定外，还会在 preflight 记录内容指纹，并在真正 spawn 前再次校验，防止同 inode 的原地改写绕过 allowlist。
+- 所有请求的可执行文件都会在 preflight 记录内容指纹，并在真正 spawn 前再次校验，防止同 inode 的原地改写绕过 request identity；mutating / non-mutating allowlist 只是附加授权层，不再是内容绑定生效的唯一前提。
 - 如果 preflight 之后的最终审计写入失败，gateway 会把结果显式返回给调用方，而不是只在 stderr 打印失败后继续返回成功。
 - 如果 preflight 已通过，但真正 spawn 前的最终路径/identity 重校验失败，authoritative
   `ExecEvent` 会在写 audit 和返回结果前改写成 `decision=Deny` 并附带对应 reason，避免

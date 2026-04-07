@@ -38,7 +38,7 @@ struct PreparedExecRequest {
 struct BoundProgram {
     path: PathBuf,
     identity: SameFileHandle,
-    content_fingerprint: Option<[u8; 32]>,
+    content_fingerprint: [u8; 32],
 }
 
 #[derive(Debug)]
@@ -442,7 +442,6 @@ impl ExecGateway {
             ));
         }
 
-        let mut must_bind_program_contents = false;
         if self.policy.enforce_allowlisted_program_for_mutation {
             if !request.declared_mutation_is_explicit() {
                 return Err(self.deny_preflight(
@@ -460,7 +459,7 @@ impl ExecGateway {
                     )),
                 ));
             }
-            let opaque_launcher = match request_uses_opaque_command_launcher(request) {
+            let opaque_launcher = match request_uses_opaque_command_launcher(&request.program) {
                 Ok(opaque_launcher) => opaque_launcher,
                 Err(err @ ExecError::RelativeProgramPath { .. }) => {
                     return Err(self.deny_preflight(event, "relative_program_path_forbidden", err));
@@ -501,7 +500,6 @@ impl ExecGateway {
                         ),
                     ));
                 }
-                must_bind_program_contents = true;
             } else {
                 if mutating_allowlisted {
                     return Err(self.deny_preflight(
@@ -522,7 +520,6 @@ impl ExecGateway {
                         ),
                     ));
                 }
-                must_bind_program_contents = true;
             }
         }
 
@@ -544,35 +541,33 @@ impl ExecGateway {
         }
 
         match resolve_request_paths(&request.cwd, &request.workspace_root) {
-            Ok(resolved_paths) => {
-                match bind_program_path(&request.program, must_bind_program_contents) {
-                    Ok(bound_program) => {
-                        event.cwd = resolved_paths.cwd.path.clone();
-                        event.workspace_root = resolved_paths.workspace_root.path.clone();
-                        event.program = bound_program.path.clone().into();
-                        Ok(PreparedExecRequest {
-                            event,
-                            required_isolation: request.required_isolation(),
-                            bound_program,
-                            resolved_paths,
-                        })
-                    }
-                    Err(err @ ExecError::RelativeProgramPath { .. }) => {
-                        Err(self.deny_preflight(event, "relative_program_path_forbidden", err))
-                    }
-                    Err(
-                        err @ ExecError::ProgramPathInvalid { .. }
-                        | err @ ExecError::ProgramLookupFailed { .. },
-                    ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
-                    Err(
-                        err @ ExecError::PathIdentityUnavailable { .. }
-                        | err @ ExecError::RequestPathChanged { .. },
-                    ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
-                    Err(err) => {
-                        unreachable!("bind_explicit_program_path returned unexpected error: {err}")
-                    }
+            Ok(resolved_paths) => match bind_program_path(&request.program) {
+                Ok(bound_program) => {
+                    event.cwd = resolved_paths.cwd.path.clone();
+                    event.workspace_root = resolved_paths.workspace_root.path.clone();
+                    event.program = bound_program.path.clone().into();
+                    Ok(PreparedExecRequest {
+                        event,
+                        required_isolation: request.required_isolation(),
+                        bound_program,
+                        resolved_paths,
+                    })
                 }
-            }
+                Err(err @ ExecError::RelativeProgramPath { .. }) => {
+                    Err(self.deny_preflight(event, "relative_program_path_forbidden", err))
+                }
+                Err(
+                    err @ ExecError::ProgramPathInvalid { .. }
+                    | err @ ExecError::ProgramLookupFailed { .. },
+                ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
+                Err(
+                    err @ ExecError::PathIdentityUnavailable { .. }
+                    | err @ ExecError::RequestPathChanged { .. },
+                ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
+                Err(err) => {
+                    unreachable!("bind_explicit_program_path returned unexpected error: {err}")
+                }
+            },
             Err(err @ ExecError::WorkspaceRootInvalid { .. }) => {
                 Err(self.deny_preflight(event, "workspace_root_invalid", err))
             }
@@ -663,18 +658,19 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
     })
 }
 
-fn request_uses_opaque_command_launcher(request: &ExecRequest) -> ExecResult<bool> {
-    if !is_explicit_program_path(&request.program) {
-        return Ok(uses_opaque_command_launcher(&request.program));
+fn request_uses_opaque_command_launcher(program: &OsStr) -> ExecResult<bool> {
+    if !is_explicit_program_path(program) {
+        return Ok(uses_opaque_command_launcher(program));
     }
 
-    if !Path::new(&request.program).is_absolute() {
-        return Ok(uses_opaque_command_launcher(&request.program));
+    if !Path::new(program).is_absolute() {
+        return Ok(uses_opaque_command_launcher(program));
     }
 
-    bind_program_path(&request.program, false).map(|bound| {
-        uses_opaque_command_launcher(&request.program)
+    bind_program_path(program).map(|bound| {
+        uses_opaque_command_launcher(program)
             || uses_opaque_command_launcher(bound.path.as_os_str())
+            || bound_program_matches_trusted_opaque_launcher(&bound)
     })
 }
 
@@ -974,15 +970,15 @@ fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<Boun
     Ok(BoundDirectory { path, identity })
 }
 
-fn bind_program_path(program: &OsStr, bind_contents: bool) -> ExecResult<BoundProgram> {
+fn bind_program_path(program: &OsStr) -> ExecResult<BoundProgram> {
     if is_explicit_program_path(program) {
-        bind_explicit_program_path(program, bind_contents)
+        bind_explicit_program_path(program)
     } else {
-        bind_bare_program_path(program, bind_contents)
+        bind_bare_program_path(program)
     }
 }
 
-fn bind_explicit_program_path(program: &OsStr, bind_contents: bool) -> ExecResult<BoundProgram> {
+fn bind_explicit_program_path(program: &OsStr) -> ExecResult<BoundProgram> {
     let requested_path = Path::new(program);
     if !requested_path.is_absolute() {
         return Err(ExecError::RelativeProgramPath {
@@ -990,23 +986,20 @@ fn bind_explicit_program_path(program: &OsStr, bind_contents: bool) -> ExecResul
         });
     }
 
-    bind_absolute_program_path(requested_path, bind_contents)
+    bind_absolute_program_path(requested_path)
 }
 
-fn bind_bare_program_path(program: &OsStr, bind_contents: bool) -> ExecResult<BoundProgram> {
+fn bind_bare_program_path(program: &OsStr) -> ExecResult<BoundProgram> {
     let resolved_path =
         resolve_bare_program_path(program).ok_or_else(|| ExecError::ProgramLookupFailed {
             program: program.to_string_lossy().into_owned(),
             detail: "program not found in PATH or standard locations".to_string(),
         })?;
 
-    bind_absolute_program_path(&resolved_path, bind_contents)
+    bind_absolute_program_path(&resolved_path)
 }
 
-fn bind_absolute_program_path(
-    requested_path: &Path,
-    bind_contents: bool,
-) -> ExecResult<BoundProgram> {
+fn bind_absolute_program_path(requested_path: &Path) -> ExecResult<BoundProgram> {
     let canonical_path =
         requested_path
             .canonicalize()
@@ -1041,9 +1034,7 @@ fn bind_absolute_program_path(
     Ok(BoundProgram {
         path: canonical_path.clone(),
         identity,
-        content_fingerprint: bind_contents
-            .then(|| fingerprint_program_contents(&canonical_path))
-            .transpose()?,
+        content_fingerprint: fingerprint_program_contents(&canonical_path)?,
     })
 }
 
@@ -1093,15 +1084,13 @@ fn revalidate_bound_program(program: &BoundProgram) -> ExecResult<()> {
             detail: "file identity changed".to_string(),
         });
     }
-    if let Some(expected_fingerprint) = program.content_fingerprint {
-        let current_fingerprint = fingerprint_program_contents(&program.path)?;
-        if current_fingerprint != expected_fingerprint {
-            return Err(ExecError::RequestPathChanged {
-                kind: "program",
-                path: program.path.clone(),
-                detail: "file contents changed".to_string(),
-            });
-        }
+    let current_fingerprint = fingerprint_program_contents(&program.path)?;
+    if current_fingerprint != program.content_fingerprint {
+        return Err(ExecError::RequestPathChanged {
+            kind: "program",
+            path: program.path.clone(),
+            detail: "file contents changed".to_string(),
+        });
     }
 
     Ok(())
@@ -1481,6 +1470,59 @@ fn strip_windows_exe_suffix(value: &str) -> &str {
 
 fn explicit_program_paths_match(actual: &Path, requested: &Path) -> bool {
     same_file::is_same_file(actual, requested).unwrap_or(false) || path_equals(actual, requested)
+}
+
+fn bound_program_matches_trusted_opaque_launcher(program: &BoundProgram) -> bool {
+    trusted_opaque_launcher_paths()
+        .into_iter()
+        .any(|trusted_path| {
+            explicit_program_paths_match(&program.path, &trusted_path)
+                || trusted_opaque_launcher_fingerprint_matches(program, &trusted_path)
+        })
+}
+
+fn trusted_opaque_launcher_fingerprint_matches(
+    program: &BoundProgram,
+    trusted_path: &Path,
+) -> bool {
+    fingerprint_program_contents(trusted_path)
+        .map(|trusted_fingerprint| trusted_fingerprint == program.content_fingerprint)
+        .unwrap_or(false)
+}
+
+fn trusted_opaque_launcher_paths() -> Vec<PathBuf> {
+    [
+        "sh",
+        "bash",
+        "dash",
+        "zsh",
+        "fish",
+        "ksh",
+        "cmd",
+        "powershell",
+        "pwsh",
+        "python",
+        "python2",
+        "python3",
+        "node",
+        "deno",
+        "bun",
+        "ruby",
+        "perl",
+        "php",
+        "lua",
+    ]
+    .into_iter()
+    .filter_map(|program| resolve_bare_program_path_from_standard_locations(OsStr::new(program)))
+    .fold(Vec::<PathBuf>::new(), |mut paths, path| {
+        if !paths
+            .iter()
+            .any(|known| explicit_program_paths_match(known, &path))
+        {
+            paths.push(path);
+        }
+        paths
+    })
 }
 
 fn combine_result_with_audit_write<T>(
@@ -2517,6 +2559,86 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn prepared_program_rejects_in_place_content_change_even_without_allowlist_enforcement() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("rewritable.sh");
+        write_unix_shell_executable(&program, "exit 0\n");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        );
+        let command = Command::new(&program);
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let prepared = result.expect("prepare command");
+
+        write_unix_shell_executable(&program, "exit 1\n");
+
+        let err = prepared
+            .spawn()
+            .expect_err("content drift should be rejected before spawn");
+        assert!(matches!(
+            err,
+            ExecError::RequestPathChanged {
+                kind: "program",
+                ref detail,
+                ..
+            } if detail == "file contents changed"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_unrestricted_program_rejects_in_place_content_change() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("unrestricted.sh");
+        write_unix_shell_executable(&program, "exit 0\n");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        );
+        let command = Command::new(&program);
+        let (_event, result) = gateway.prepare_command(&request, command);
+        let prepared = result.expect("prepare command");
+
+        write_unix_shell_executable(&program, "exit 1\n");
+
+        let err = prepared
+            .spawn()
+            .expect_err("content drift should be rejected before spawn");
+        assert!(matches!(
+            err,
+            ExecError::RequestPathChanged {
+                kind: "program",
+                ref detail,
+                ..
+            } if detail == "file contents changed"
+        ));
+    }
+
     #[test]
     fn denies_mutation_for_bare_program_even_when_same_name_is_allowlisted() {
         let policy = GatewayPolicy {
@@ -2820,6 +2942,77 @@ mod tests {
 
         let policy = GatewayPolicy {
             non_mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &alias,
+            vec![dummy_shell_flag(), "echo hello"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn denies_opaque_command_launcher_hard_link_when_alias_is_allowlisted_for_non_mutation() {
+        use std::fs::hard_link;
+
+        let workspace = tempdir().expect("create temp workspace");
+        let program = dummy_program_absolute_path();
+        let alias = workspace.path().join("trusted-tool");
+        match hard_link(&program, &alias) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => return,
+            Err(error) => panic!("create program hard-link alias: {error}"),
+        }
+
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec![alias.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &alias,
+            vec![dummy_shell_flag(), "echo hello"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn denies_copied_opaque_command_launcher_alias_when_copy_is_allowlisted_for_non_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempdir().expect("create temp workspace");
+        let program = dummy_program_absolute_path();
+        let alias = workspace.path().join("trusted-tool");
+        fs::copy(&program, &alias).expect("copy program alias");
+        let mut permissions = fs::metadata(&alias).expect("alias metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&alias, permissions).expect("chmod alias");
+
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec![alias.display().to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
