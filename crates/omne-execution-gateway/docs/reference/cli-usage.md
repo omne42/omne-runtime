@@ -130,9 +130,10 @@ Example output fragment:
 }
 ```
 
-`request_resolution` is the gateway-generated canonical pre-execution request view. It makes
-defaulted isolation decisions explicit through `input_required_isolation`,
-`requested_isolation_source`, and `policy_default_isolation`.
+`request_resolution` is the gateway-generated canonical pre-execution request view, derived from
+the same authoritative execution/preflight event snapshot emitted in `event`. It makes defaulted
+isolation decisions explicit through `input_required_isolation`, `requested_isolation_source`, and
+`policy_default_isolation`.
 `event` is the canonical execution/audit shape and includes canonicalized `cwd`,
 canonicalized `workspace_root`, declared mutation intent, and the authoritative argv seen by the
 gateway. When the request used a bare command name, `program` reflects the resolved absolute
