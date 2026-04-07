@@ -2966,15 +2966,19 @@ mod tests {
     #[test]
     fn denies_opaque_command_launcher_hard_link_when_alias_is_allowlisted_for_non_mutation() {
         use std::fs::hard_link;
+        use std::os::unix::fs::PermissionsExt;
 
         let workspace = tempdir().expect("create temp workspace");
         let program = dummy_program_absolute_path();
+        let copied = workspace.path().join("shell-copy");
         let alias = workspace.path().join("trusted-tool");
-        match hard_link(&program, &alias) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => return,
-            Err(error) => panic!("create program hard-link alias: {error}"),
-        }
+        fs::copy(&program, &copied).expect("copy opaque launcher into workspace");
+        let mut permissions = fs::metadata(&copied)
+            .expect("copied launcher metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&copied, permissions).expect("chmod copied launcher");
+        hard_link(&copied, &alias).expect("create program hard-link alias");
 
         let policy = GatewayPolicy {
             non_mutating_program_allowlist: vec![alias.display().to_string()],
@@ -4186,7 +4190,7 @@ mod tests {
     }
 
     fn non_mutating_program() -> &'static str {
-        "whoami"
+        "uname"
     }
 
     fn resolved_non_mutating_program_path() -> PathBuf {
