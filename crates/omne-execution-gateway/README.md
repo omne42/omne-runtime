@@ -15,11 +15,11 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed if requested isolation exceeds host support
 - fail-closed if a request marked as `policy_default` no longer matches the gateway's current policy default
 - fail-closed if `program` is neither a bare command name nor an absolute path
-- explicit absolute `program` paths must already resolve to spawnable executables, are normalized to the canonical real executable path, and are revalidated immediately before spawn; this removes caller-controlled alias paths from the final `spawn` call and narrows the remaining OS-level race to the last check versus `exec`
+- explicit absolute `program` paths must already resolve to spawnable executables, are normalized to the canonical real executable path, and are revalidated immediately before spawn against both file identity and executable-content fingerprint; this removes caller-controlled alias paths from the final `spawn` call, rejects same-inode rewrites that keep the path stable, and narrows the remaining OS-level race to the last check versus `exec`
 - bare command names are resolved to a canonical absolute executable path during preflight, rebound as an executable identity, and rejected fail-closed if lookup cannot be bound
 - workspace boundary enforcement (`cwd` must stay inside `workspace_root`; `cwd` / `workspace_root` reject symlink or reparse-point ancestors before canonical binding, except for macOS root aliases such as `/var` and `/tmp`, and execution revalidates the bound directory identities before spawn)
 - explicit mutation declaration for every request when mutation enforcement is enabled
-- fail-closed denial for shell-like or interpreter launchers such as `sh`, `cmd`, `pwsh`, `python`, and `node`; policy allowlists cannot authorize them because the gateway cannot bind arbitrary script or subcommand semantics to a stable executable identity
+- fail-closed denial for shell-like or interpreter launchers such as `sh`, `cmd`, `pwsh`, `python`, and `node`; policy allowlists cannot authorize them because the gateway cannot bind arbitrary script or subcommand semantics to a stable executable identity, and explicit-path aliases are checked against the final bound executable identity instead of only the caller-visible basename
 - gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
 - structured decision events for audit/logging, including lossy display fields plus exact JSON encodings for `program` / `args` / explicit environment entries when OS strings are not valid UTF-8
 - mutating and non-mutating allowlists plus opaque-launcher gates evaluate native `OsStr` / `Path` inputs directly instead of relying on lossy UTF-8 coercion; Unix non-UTF-8 executable paths therefore cannot collide with UTF-8 allowlist entries through replacement-character text
@@ -64,7 +64,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
   authoritative event is rewritten to `Deny` before audit/error reporting, so final fail-closed
   results do not leave behind `decision=Run` audit records with a contradictory
   `RequestPathChanged`-style error.
-- allowlisted mutating and non-mutating programs bind both file identity and a preflight content fingerprint, and spawn revalidation rejects in-place executable rewrites before launch.
+- every bound executable, including bare-command resolutions and requests evaluated with mutation enforcement disabled, binds both file identity and a preflight content fingerprint, and spawn revalidation rejects in-place executable rewrites before launch.
 - if audit append succeeds during preflight but the final record write later fails, the execution result is surfaced as an explicit audit-log write failure instead of silently degrading to stderr-only reporting. When the command had already failed for another reason, the returned audit error now also includes that original execution error summary.
 - `prepare_command` returns a spawn-only `PreparedCommand` wrapper instead of handing a mutable validated `Command` back to callers.
 - `PreparedCommand::spawn()` returns a `PreparedChild` that carries the post-spawn sandbox observation and the controlled child lifecycle surface, so prepared spawns do not silently drop runtime sandbox metadata after preflight.
