@@ -7,6 +7,12 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
+use omne_archive_primitives::{
+    ArchiveTreeExtractionLimits as ArchiveExtractionLimits, ArchiveTreeVisitor,
+    WalkArchiveTreeError, walk_archive_tree,
+};
+#[cfg(all(test, unix))]
+use omne_archive_primitives::{walk_tar_archive_tree, walk_zip_archive_tree};
 use omne_fs_primitives::{
     AtomicDirectoryOptions, AtomicWriteOptions, Dir, create_directory_component,
     create_regular_file_at, lock_advisory_file_in_ambient_root, open_directory_component,
@@ -15,12 +21,6 @@ use omne_fs_primitives::{
 #[cfg(all(test, unix))]
 use omne_fs_primitives::{MissingRootPolicy, open_ambient_root};
 use omne_integrity_primitives::{Sha256Digest, hash_sha256, verify_sha256_reader};
-use omne_archive_primitives::{
-    ArchiveTreeExtractionLimits as ArchiveExtractionLimits, ArchiveTreeVisitor,
-    WalkArchiveTreeError, walk_archive_tree,
-};
-#[cfg(all(test, unix))]
-use omne_archive_primitives::{walk_tar_archive_tree, walk_zip_archive_tree};
 
 use crate::artifact_download::{
     ArtifactDownloadCandidate, ArtifactDownloader, ArtifactInstallError, candidate_failure_message,
@@ -185,11 +185,14 @@ where
     R: Read + Seek,
 {
     let mut installer = ArchiveTreeInstaller::new(destination_root)?;
-    walk_archive_tree(asset_name, reader, limits, &mut installer).map_err(map_archive_walk_error)?;
+    walk_archive_tree(asset_name, reader, limits, &mut installer)
+        .map_err(map_archive_walk_error)?;
     installer.finish()
 }
 
-fn map_archive_walk_error(error: WalkArchiveTreeError<ArtifactInstallError>) -> ArtifactInstallError {
+fn map_archive_walk_error(
+    error: WalkArchiveTreeError<ArtifactInstallError>,
+) -> ArtifactInstallError {
     match error {
         WalkArchiveTreeError::Visitor(error) => error,
         other => ArtifactInstallError::install(other.to_string()),
