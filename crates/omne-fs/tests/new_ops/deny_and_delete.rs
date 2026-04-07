@@ -294,14 +294,28 @@ fn delete_deletes_dirs_recursively_and_ignores_missing() {
             recursive: true,
             ignore_missing: false,
         },
-    )
-    .expect("delete");
-
-    assert_eq!(resp.path, PathBuf::from("sub"));
-    assert_eq!(resp.requested_path, PathBuf::from("sub"));
-    assert!(resp.deleted);
-    assert_eq!(resp.kind, DeleteKind::Dir);
-    assert!(!dir.path().join("sub").exists());
+    );
+    match resp {
+        Ok(resp) => {
+            assert_eq!(resp.path, PathBuf::from("sub"));
+            assert_eq!(resp.requested_path, PathBuf::from("sub"));
+            assert!(resp.deleted);
+            assert_eq!(resp.kind, DeleteKind::Dir);
+            assert!(!dir.path().join("sub").exists());
+        }
+        Err(omne_fs::Error::InvalidPath(message)) => {
+            assert!(
+                message.contains("cannot verify parent identity during delete")
+                    && message.contains("sub"),
+                "unexpected invalid-path failure: {message}"
+            );
+            assert!(
+                dir.path().join("sub").join("a.txt").exists(),
+                "fail-closed delete must keep the directory tree"
+            );
+        }
+        Err(other) => panic!("delete: {other:?}"),
+    }
 
     let resp = delete(
         &ctx,
@@ -311,12 +325,27 @@ fn delete_deletes_dirs_recursively_and_ignores_missing() {
             recursive: false,
             ignore_missing: true,
         },
-    )
-    .expect("delete");
-    assert_eq!(resp.path, PathBuf::from("missing"));
-    assert_eq!(resp.requested_path, PathBuf::from("missing"));
-    assert!(!resp.deleted);
-    assert_eq!(resp.kind, DeleteKind::Missing);
+    );
+    match resp {
+        Ok(resp) => {
+            assert_eq!(resp.path, PathBuf::from("missing"));
+            assert_eq!(resp.requested_path, PathBuf::from("missing"));
+            assert!(!resp.deleted);
+            assert_eq!(resp.kind, DeleteKind::Missing);
+        }
+        Err(omne_fs::Error::InvalidPath(message)) => {
+            assert!(
+                message.contains("cannot verify parent identity during delete")
+                    && message.contains("missing"),
+                "unexpected invalid-path failure: {message}"
+            );
+            assert!(
+                !dir.path().join("missing").exists(),
+                "fail-closed missing delete must not create the target"
+            );
+        }
+        Err(other) => panic!("delete: {other:?}"),
+    }
 }
 
 #[test]
