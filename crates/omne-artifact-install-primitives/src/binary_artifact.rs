@@ -896,8 +896,6 @@ mod tests {
                     .and_then(|name| name.to_str())
                     .expect("binary name")
                     .to_string(),
-                first_archive_path: "demo-linux-x64/bin/demo".to_string(),
-                second_archive_path: "demo-linux-arm64/bin/demo".to_string(),
             })
         );
         Ok(())

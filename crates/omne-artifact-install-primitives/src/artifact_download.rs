@@ -34,8 +34,6 @@ pub enum ArtifactInstallErrorDetail {
     ArchiveBinaryAmbiguous {
         archive_format: BinaryArchiveFormat,
         binary_name: String,
-        first_archive_path: String,
-        second_archive_path: String,
     },
     ArchiveMatchedEntryNotRegularFile {
         archive_format: BinaryArchiveFormat,
@@ -77,13 +75,10 @@ impl ArtifactInstallErrorDetail {
             ExtractBinaryFromArchiveError::AmbiguousBinaryMatches {
                 archive_format,
                 binary_name,
-                first_archive_path,
-                second_archive_path,
+                ..
             } => Self::ArchiveBinaryAmbiguous {
                 archive_format,
                 binary_name,
-                first_archive_path,
-                second_archive_path,
             },
             ExtractBinaryFromArchiveError::MatchedEntryNotRegularFile {
                 archive_format,
@@ -648,8 +643,6 @@ mod tests {
             ArtifactInstallErrorDetail::ArchiveBinaryAmbiguous {
                 archive_format: omne_archive_primitives::BinaryArchiveFormat::Zip,
                 binary_name: "demo".to_string(),
-                first_archive_path: "demo-linux-x64/bin/demo".to_string(),
-                second_archive_path: "demo-linux-arm64/bin/demo".to_string(),
             }
         );
     }
