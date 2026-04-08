@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- make host-recipe regression tests pass an explicit `working_directory`, so concurrent tests that
+  temporarily switch the process cwd cannot inject ambient `getcwd()` noise into stderr
+  assertions
 - drop the built-in Unix `ExecutableFileBusy` retry loop from `run_host_command*`, so
   `omne-process-primitives` stops owning retry policy and surfaces the original spawn failure to
   callers
