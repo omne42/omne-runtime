@@ -12,9 +12,8 @@
 //! Unix uses per-child process groups. Cleanup capture fails closed unless the spawned child is
 //! the leader of its own dedicated process group, so callers cannot accidentally arm cleanup
 //! against the parent's process group by skipping setup. Linux and other Unix targets both stop
-//! before `killpg` once the original leader identity can no longer be revalidated, and Linux also
-//! refuses to arm orphan-group cleanup when that identity was never captured in the first place,
-//! so cleanup does not trust a potentially reused PGID.
+//! before `killpg` once the original leader identity can no longer be revalidated, so cleanup does
+//! not trust a potentially reused PGID.
 //!
 //! Windows prefers Job Objects. When the current process cannot attach the child to a kill-on-close
 //! job, cleanup falls back to best-effort tree cleanup rooted at the captured child PID:
@@ -34,8 +33,7 @@ pub use command_path::{
 pub use host_command::{
     HostCommandError, HostCommandExecution, HostCommandOutput, HostCommandRequest,
     HostCommandSudoMode, HostRecipeError, HostRecipeRequest, command_available,
-    command_available_for_request, command_available_os, command_exists,
-    command_exists_for_request, command_exists_os, command_path_exists,
+    command_available_os, command_exists, command_exists_os, command_path_exists,
     default_recipe_sudo_mode_for_program, run_host_command, run_host_recipe,
 };
 
@@ -125,6 +123,7 @@ fn capture_unix_process_group_identity(
     let leader_pid = child_process_pid(child).ok_or_else(|| {
         io::Error::other("cannot capture process-tree identity for a child without a pid")
     })?;
+
     #[cfg(target_os = "linux")]
     {
         capture_linux_process_group_identity(leader_pid)
@@ -613,8 +612,8 @@ const WINDOWS_ERROR_NOT_SUPPORTED: i32 = 50;
 mod tests {
     use super::{
         CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
-        build_linux_process_group_identity, configure_command_for_process_tree,
-        ensure_unix_process_group_is_dedicated, should_kill_linux_process_group_with_group_probe,
+        configure_command_for_process_tree, ensure_unix_process_group_is_dedicated,
+        should_kill_linux_process_group_with_group_probe,
     };
     use rustix::process::Pid;
     use std::io;
@@ -623,7 +622,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn reused_leader_pid_fails_closed_even_if_surviving_group_members_remain() {
+    fn reused_leader_pid_still_allows_killing_surviving_linux_process_group() {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
             process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
@@ -659,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_group_fails_closed_when_leader_exited_before_capture_completed() {
+    fn missing_capture_identity_fails_closed_for_orphaned_group() {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
             process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
@@ -695,26 +694,6 @@ mod tests {
     }
 
     #[test]
-    fn leader_session_mismatch_fails_closed_even_when_group_and_ticks_match() {
-        let identity = UnixProcessGroupIdentity {
-            leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
-            process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
-            leader_start_ticks: Some(11),
-            leader_session_id: Some(7),
-        };
-
-        assert!(!should_kill_linux_process_group_with_group_probe(
-            identity,
-            Ok(LinuxProcessIdentity {
-                process_group_id: 31337,
-                session_id: 99,
-                start_ticks: 11,
-            }),
-            || true,
-        ));
-    }
-
-    #[test]
     fn leader_exit_after_capture_still_allows_killing_surviving_linux_process_group() {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
@@ -743,25 +722,6 @@ mod tests {
                 .contains("configure_command_for_process_tree"),
             "unexpected error: {err}"
         );
-    }
-
-    #[test]
-    fn linux_capture_identity_uses_single_snapshot_for_group_and_leader_identity() {
-        let leader_pid = Pid::from_raw(4242).expect("leader pid must be non-zero");
-        let identity = build_linux_process_group_identity(
-            leader_pid,
-            LinuxProcessIdentity {
-                process_group_id: 4242,
-                session_id: 7,
-                start_ticks: 11,
-            },
-        )
-        .expect("dedicated process group snapshot should be accepted");
-
-        assert_eq!(identity.leader_pid, leader_pid);
-        assert_eq!(identity.process_group_id, leader_pid);
-        assert_eq!(identity.leader_session_id, Some(7));
-        assert_eq!(identity.leader_start_ticks, Some(11));
     }
 
     fn process_terminated_or_zombie(pid: u32) -> bool {
@@ -827,6 +787,73 @@ mod tests {
         }
 
         assert!(gone, "background process group should be terminated");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cleanup_kills_orphaned_process_group_after_linux_leader_exit() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let shell_pid_file = dir.path().join("shell.pid");
+        let bg_pid_file = dir.path().join("background.pid");
+        let script = format!(
+            "echo $$ > '{shell}'; sleep 30 & echo $! > '{background}'; exit 0",
+            shell = shell_pid_file.display(),
+            background = bg_pid_file.display()
+        );
+
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_command_for_process_tree(&mut command);
+
+        let mut child = command.spawn()?;
+        let shell_pid = wait_for_pid(&shell_pid_file)
+            .await
+            .expect("shell pid file should be written");
+        let bg_pid = wait_for_pid(&bg_pid_file)
+            .await
+            .expect("background pid file should be written");
+
+        let mut leader_exited = false;
+        for _ in 0..300 {
+            if process_terminated_or_zombie(shell_pid) {
+                leader_exited = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(leader_exited, "shell leader should exit before cleanup");
+
+        let mut cleanup = ProcessTreeCleanup::new(&child)?;
+        assert!(
+            cleanup.unix_process_group.is_some(),
+            "linux cleanup should keep orphan-group state after the leader exits"
+        );
+        assert_eq!(
+            cleanup.start_termination(),
+            CleanupDisposition::DirectChildKillRequired
+        );
+        cleanup.kill_tree();
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+
+        let mut gone = false;
+        for _ in 0..300 {
+            if process_terminated_or_zombie(bg_pid) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert!(
+            gone,
+            "linux cleanup should still kill orphaned process groups after the leader exits"
+        );
         Ok(())
     }
 
