@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- reject relative / drive-relative and other invalid executable paths before mutation allowlist
+  classification, so default fail-closed policy no longer misreports `./tool`-style requests as
+  allowlist denials instead of `relative_program_path_forbidden` / `program_path_invalid`
 - add regression coverage proving rejected audit-log ancestor symlinks stay side-effect free
   during `preflight()`, so validation cannot recreate directories behind an unsafe path before
   failing closed

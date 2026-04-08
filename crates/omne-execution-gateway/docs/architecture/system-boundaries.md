@@ -24,6 +24,7 @@
 - Linux 原生 sandbox 暂时下线，直到能在不依赖 post-`fork` unsafe Rust 执行的前提下重新引入。
 - 当请求的隔离级别高于宿主报告能力时，gateway 必须 fail-closed 拒绝，而不是回退到未隔离执行。
 - mutating allowlist 只授权显式程序路径；bare program name 因为无法绑定稳定可执行文件而 fail-closed 拒绝。
+- relative / drive-relative `program` 会在 allowlist/mutation 分类前先被识别并以 `relative_program_path_forbidden` 拒绝，避免审计原因被错误折叠成 allowlist denial。
 - 对 bare command 的普通执行路径，audit / `request_resolution` / `ExecEvent` 记录的是 gateway 解析并绑定后的绝对执行体路径，而不是原始 bare token。
 - `prepare_command()` 只接受与 gateway 已解析执行体一致的 `Command` 程序路径；如果调用方仍传 bare command name，会以 `prepared_command_mismatch` fail-closed 拒绝。
 - `prepare_command()` 会把调用方传入的 `Command` 当作 request identity 校验输入：至少 `program + args` 必须一致，调用方若显式预置了 env 或 `current_dir`，它们也必须与 audited request 匹配；真正返回给调用方的是 gateway 重新构造的干净 spawn 命令，因此预置的 `pre_exec`/`before_exec`、额外 stdio、环境或其他隐藏状态都不会越过执行边界。
