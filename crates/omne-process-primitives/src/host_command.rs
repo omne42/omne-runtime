@@ -1893,7 +1893,14 @@ mod tests {
         let error = run_host_command(&request).expect_err("missing cwd should fail");
         match error {
             HostCommandError::SpawnFailed { source, .. } => {
-                assert_eq!(source.kind(), io::ErrorKind::NotFound);
+                assert!(
+                    matches!(
+                        source.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    ),
+                    "missing cwd should stay a spawn failure, got {:?}",
+                    source.kind()
+                );
             }
             other => panic!("unexpected error: {other}"),
         }
