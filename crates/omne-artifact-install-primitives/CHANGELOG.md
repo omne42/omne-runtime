@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- drop direct archive/compression crate dependencies from the runtime dependency graph now that
+  archive parsing and extraction stay behind `omne-archive-primitives`; only test fixtures keep
+  `tar`/`zip`
 - redact download-layer URLs before they reach public artifact-install errors, and add regression
   coverage so credentials, query parameters, and fragments cannot leak back through reqwest or
   aggregated candidate failure messages
