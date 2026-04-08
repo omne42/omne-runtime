@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- always release the prepared audit sink lock even when a write fails, so one failed prepare or
+  execution record cannot leave the bound audit handle locked and cascade into later audit write
+  failures
 - make `prepare_command()` request-only, so the prepared spawn is derived entirely from the
   audited `ExecRequest` instead of accepting a caller-supplied `Command` with hidden process state
 - reject relative / drive-relative and other invalid executable paths before mutation allowlist
