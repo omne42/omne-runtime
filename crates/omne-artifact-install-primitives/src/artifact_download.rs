@@ -31,6 +31,10 @@ pub enum ArtifactInstallErrorDetail {
         archive_format: BinaryArchiveFormat,
         binary_name: String,
     },
+    ArchiveBinaryAmbiguous {
+        archive_format: BinaryArchiveFormat,
+        binary_name: String,
+    },
     ArchiveMatchedEntryNotRegularFile {
         archive_format: BinaryArchiveFormat,
         archive_path: String,
@@ -65,6 +69,14 @@ impl ArtifactInstallErrorDetail {
                 archive_format,
                 binary_name,
             } => Self::ArchiveBinaryNotFound {
+                archive_format,
+                binary_name,
+            },
+            ExtractBinaryFromArchiveError::AmbiguousBinaryMatches {
+                archive_format,
+                binary_name,
+                ..
+            } => Self::ArchiveBinaryAmbiguous {
                 archive_format,
                 binary_name,
             },
@@ -369,6 +381,8 @@ mod tests {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
+    use omne_archive_primitives::ExtractBinaryFromArchiveError;
+
     use super::{
         ArtifactCandidateFailure, ArtifactDownloadCandidate, ArtifactDownloader,
         ArtifactInstallError, ArtifactInstallErrorDetail, ArtifactInstallErrorKind,
@@ -611,6 +625,26 @@ mod tests {
             })
         );
         assert_eq!(error.candidate_failures().len(), 1);
+    }
+
+    #[test]
+    fn from_extract_binary_error_preserves_ambiguous_archive_detail() {
+        let detail = ArtifactInstallErrorDetail::from_extract_binary_error(
+            ExtractBinaryFromArchiveError::AmbiguousBinaryMatches {
+                archive_format: omne_archive_primitives::BinaryArchiveFormat::Zip,
+                binary_name: "demo".to_string(),
+                first_archive_path: "demo-linux-x64/bin/demo".to_string(),
+                second_archive_path: "demo-linux-arm64/bin/demo".to_string(),
+            },
+        );
+
+        assert_eq!(
+            detail,
+            ArtifactInstallErrorDetail::ArchiveBinaryAmbiguous {
+                archive_format: omne_archive_primitives::BinaryArchiveFormat::Zip,
+                binary_name: "demo".to_string(),
+            }
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

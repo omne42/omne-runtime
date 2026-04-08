@@ -13,7 +13,7 @@ Low-level archive/compression primitives shared across callers.
 
 - archive format detection for binary delivery assets
 - archive entry traversal for `.tar.gz`, `.tar.xz`, and `.zip`
-- target binary matching only by exact `archive_binary_hint` or conventional `bin/<binary>` layout; there is no remaining tool-name-based layout inference
+- target binary matching only by exact `archive_binary_hint` or conventional `bin/<binary>` layout, with fail-closed ambiguity rejection when multiple candidates exist and no remaining tool-name-based layout inference
 - extraction of the matched binary bytes from the archive, limited by the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget sized for large official single-binary releases
 - matched target validation that only accepts regular-file archive entries before reading content
 - archive-tree walking with shared entry-count / extracted-byte budgets and normalized path or link targets, so higher layers do not need to duplicate tar/zip traversal hardening

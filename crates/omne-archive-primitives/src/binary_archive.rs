@@ -92,6 +92,12 @@ pub enum ExtractBinaryFromArchiveError {
         archive_format: BinaryArchiveFormat,
         binary_name: String,
     },
+    AmbiguousBinaryMatches {
+        archive_format: BinaryArchiveFormat,
+        binary_name: String,
+        first_archive_path: String,
+        second_archive_path: String,
+    },
     MatchedEntryNotRegularFile {
         archive_format: BinaryArchiveFormat,
         archive_path: String,
@@ -141,6 +147,15 @@ impl fmt::Display for ExtractBinaryFromArchiveError {
             } => write!(
                 f,
                 "binary `{binary_name}` not found in {archive_format} archive"
+            ),
+            Self::AmbiguousBinaryMatches {
+                archive_format,
+                binary_name,
+                first_archive_path,
+                second_archive_path,
+            } => write!(
+                f,
+                "binary `{binary_name}` is ambiguous in {archive_format} archive: matched both `{first_archive_path}` and `{second_archive_path}`; provide an exact archive_binary_hint"
             ),
             Self::MatchedEntryNotRegularFile {
                 archive_format,
@@ -332,6 +347,7 @@ where
     let archive_format = BinaryArchiveFormat::TarGz;
     let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
+    let mut pending_match = None;
     let decoder = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive.entries().map_err(|err| {
@@ -370,13 +386,15 @@ where
         }
         if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
-            return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
+            record_buffered_match(
+                &mut pending_match,
+                read_matched_entry(archive_format, path, &mut entry, max_entry_bytes)?,
+                archive_format,
+                request.binary_name,
+            )?;
         }
     }
-    Err(ExtractBinaryFromArchiveError::BinaryNotFound {
-        archive_format,
-        binary_name: request.binary_name.to_string(),
-    })
+    finish_buffered_match(pending_match, archive_format, request.binary_name)
 }
 
 fn extract_from_tar_gz_to_writer<R, W>(
@@ -393,6 +411,7 @@ where
     let archive_format = BinaryArchiveFormat::TarGz;
     let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
+    let mut pending_match = None;
     let decoder = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive.entries().map_err(|err| {
@@ -437,13 +456,19 @@ where
         }
         if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
-            return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
+            record_buffered_match(
+                &mut pending_match,
+                read_matched_entry(archive_format, path, &mut entry, max_entry_bytes)?,
+                archive_format,
+                request.binary_name,
+            )?;
         }
     }
-    Err(ExtractBinaryFromArchiveError::BinaryNotFound {
+    write_buffered_match(
+        writer,
+        finish_buffered_match(pending_match, archive_format, request.binary_name)?,
         archive_format,
-        binary_name: request.binary_name.to_string(),
-    })
+    )
 }
 
 fn extract_from_tar_xz<R>(
@@ -458,6 +483,7 @@ where
     let archive_format = BinaryArchiveFormat::TarXz;
     let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
+    let mut pending_match = None;
     let decoder = xz2::read::XzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive.entries().map_err(|err| {
@@ -496,13 +522,15 @@ where
         }
         if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
-            return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
+            record_buffered_match(
+                &mut pending_match,
+                read_matched_entry(archive_format, path, &mut entry, max_entry_bytes)?,
+                archive_format,
+                request.binary_name,
+            )?;
         }
     }
-    Err(ExtractBinaryFromArchiveError::BinaryNotFound {
-        archive_format,
-        binary_name: request.binary_name.to_string(),
-    })
+    finish_buffered_match(pending_match, archive_format, request.binary_name)
 }
 
 fn extract_from_tar_xz_to_writer<R, W>(
@@ -519,6 +547,7 @@ where
     let archive_format = BinaryArchiveFormat::TarXz;
     let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
+    let mut pending_match = None;
     let decoder = xz2::read::XzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive.entries().map_err(|err| {
@@ -563,13 +592,19 @@ where
         }
         if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
-            return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
+            record_buffered_match(
+                &mut pending_match,
+                read_matched_entry(archive_format, path, &mut entry, max_entry_bytes)?,
+                archive_format,
+                request.binary_name,
+            )?;
         }
     }
-    Err(ExtractBinaryFromArchiveError::BinaryNotFound {
+    write_buffered_match(
+        writer,
+        finish_buffered_match(pending_match, archive_format, request.binary_name)?,
         archive_format,
-        binary_name: request.binary_name.to_string(),
-    })
+    )
 }
 
 fn extract_from_zip<R>(
@@ -584,6 +619,7 @@ where
     let archive_format = BinaryArchiveFormat::Zip;
     let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
+    let mut pending_match = None;
     let mut archive = zip::ZipArchive::new(reader).map_err(|err| {
         ExtractBinaryFromArchiveError::archive_read(archive_format, "open_archive", err.to_string())
     })?;
@@ -606,16 +642,18 @@ where
         }
         if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
-            return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
+            record_buffered_match(
+                &mut pending_match,
+                read_matched_entry(archive_format, path, &mut entry, max_entry_bytes)?,
+                archive_format,
+                request.binary_name,
+            )?;
         }
         if entry.is_dir() {
             continue;
         }
     }
-    Err(ExtractBinaryFromArchiveError::BinaryNotFound {
-        archive_format,
-        binary_name: request.binary_name.to_string(),
-    })
+    finish_buffered_match(pending_match, archive_format, request.binary_name)
 }
 
 fn extract_from_zip_to_writer<R, W>(
@@ -632,6 +670,7 @@ where
     let archive_format = BinaryArchiveFormat::Zip;
     let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
+    let mut pending_match = None;
     let mut archive = zip::ZipArchive::new(reader).map_err(|err| {
         ExtractBinaryFromArchiveError::archive_read(archive_format, "open_archive", err.to_string())
     })?;
@@ -660,16 +699,22 @@ where
         }
         if is_binary_entry_match_without_hint(&path, request.binary_name) {
             ensure_zip_entry_is_regular_file(archive_format, &path, &entry)?;
-            return write_matched_entry(archive_format, path, &mut entry, writer, max_entry_bytes);
+            record_buffered_match(
+                &mut pending_match,
+                read_matched_entry(archive_format, path, &mut entry, max_entry_bytes)?,
+                archive_format,
+                request.binary_name,
+            )?;
         }
         if entry.is_dir() {
             continue;
         }
     }
-    Err(ExtractBinaryFromArchiveError::BinaryNotFound {
+    write_buffered_match(
+        writer,
+        finish_buffered_match(pending_match, archive_format, request.binary_name)?,
         archive_format,
-        binary_name: request.binary_name.to_string(),
-    })
+    )
 }
 
 fn read_matched_entry<R>(
@@ -716,6 +761,57 @@ where
     Ok(ArchiveBinaryMatch {
         archive_format,
         archive_path,
+    })
+}
+
+fn record_buffered_match(
+    pending_match: &mut Option<ExtractedArchiveBinary>,
+    candidate: ExtractedArchiveBinary,
+    archive_format: BinaryArchiveFormat,
+    binary_name: &str,
+) -> Result<(), ExtractBinaryFromArchiveError> {
+    if let Some(first_match) = pending_match {
+        return Err(ExtractBinaryFromArchiveError::AmbiguousBinaryMatches {
+            archive_format,
+            binary_name: binary_name.to_string(),
+            first_archive_path: first_match.archive_path.clone(),
+            second_archive_path: candidate.archive_path,
+        });
+    }
+
+    *pending_match = Some(candidate);
+    Ok(())
+}
+
+fn finish_buffered_match(
+    pending_match: Option<ExtractedArchiveBinary>,
+    archive_format: BinaryArchiveFormat,
+    binary_name: &str,
+) -> Result<ExtractedArchiveBinary, ExtractBinaryFromArchiveError> {
+    pending_match.ok_or_else(|| ExtractBinaryFromArchiveError::BinaryNotFound {
+        archive_format,
+        binary_name: binary_name.to_string(),
+    })
+}
+
+fn write_buffered_match<W>(
+    writer: &mut W,
+    buffered_match: ExtractedArchiveBinary,
+    archive_format: BinaryArchiveFormat,
+) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
+where
+    W: Write + ?Sized,
+{
+    writer.write_all(&buffered_match.bytes).map_err(|err| {
+        ExtractBinaryFromArchiveError::archive_read(
+            archive_format,
+            "write_entry_content",
+            format!("{}: {err}", buffered_match.archive_path),
+        )
+    })?;
+    Ok(ArchiveBinaryMatch {
+        archive_format,
+        archive_path: buffered_match.archive_path,
     })
 }
 
@@ -954,6 +1050,69 @@ mod tests {
 
         assert_eq!(err.archive_path, "node-v1.0.0-linux-arm64/bin/node");
         assert_eq!(err.bytes, b"second");
+    }
+
+    #[test]
+    fn ambiguous_tar_gz_binary_without_hint_fails_closed() {
+        let archive = make_tar_gz_archive(&[
+            ("demo-linux-x64/bin/demo", b"first".as_slice(), 0o755),
+            ("demo-linux-arm64/bin/demo", b"second".as_slice(), 0o755),
+        ]);
+
+        let err = extract_binary_from_archive(
+            "demo.tar.gz",
+            &archive,
+            &BinaryArchiveRequest {
+                binary_name: "demo",
+                archive_binary_hint: None,
+            },
+        )
+        .expect_err("ambiguous match should fail closed");
+
+        assert_ambiguous_binary_error(err, BinaryArchiveFormat::TarGz, "demo");
+    }
+
+    #[test]
+    fn ambiguous_tar_xz_binary_without_hint_fails_closed() {
+        let archive = make_tar_xz_archive(&[
+            ("demo-linux-x64/bin/demo", b"first".as_slice(), 0o755),
+            ("demo-linux-arm64/bin/demo", b"second".as_slice(), 0o755),
+        ]);
+
+        let err = extract_binary_from_archive(
+            "demo.tar.xz",
+            &archive,
+            &BinaryArchiveRequest {
+                binary_name: "demo",
+                archive_binary_hint: None,
+            },
+        )
+        .expect_err("ambiguous match should fail closed");
+
+        assert_ambiguous_binary_error(err, BinaryArchiveFormat::TarXz, "demo");
+    }
+
+    #[test]
+    fn ambiguous_zip_binary_without_hint_fails_closed_for_writer_path() {
+        let archive = make_zip_archive(&[
+            ("demo-linux-x64/bin/demo", b"first".as_slice(), 0o755),
+            ("demo-linux-arm64/bin/demo", b"second".as_slice(), 0o755),
+        ]);
+        let mut writer = Vec::new();
+
+        let err = extract_binary_from_archive_reader_to_writer(
+            "demo.zip",
+            Cursor::new(archive),
+            &BinaryArchiveRequest {
+                binary_name: "demo",
+                archive_binary_hint: None,
+            },
+            &mut writer,
+        )
+        .expect_err("ambiguous match should fail closed");
+
+        assert!(writer.is_empty());
+        assert_ambiguous_binary_error(err, BinaryArchiveFormat::Zip, "demo");
     }
 
     #[test]
@@ -1263,6 +1422,28 @@ mod tests {
 
         assert_eq!(matched.archive_path, "node-v22.14.0-win-x64/node.exe");
         assert_eq!(out.bytes_written, 80 * 1024 * 1024);
+    }
+
+    fn assert_ambiguous_binary_error(
+        err: ExtractBinaryFromArchiveError,
+        archive_format: BinaryArchiveFormat,
+        binary_name: &str,
+    ) {
+        match err {
+            ExtractBinaryFromArchiveError::AmbiguousBinaryMatches {
+                archive_format: actual_format,
+                binary_name: actual_binary_name,
+                first_archive_path,
+                second_archive_path,
+            } => {
+                assert_eq!(actual_format, archive_format);
+                assert_eq!(actual_binary_name, binary_name);
+                assert_ne!(first_archive_path, second_archive_path);
+                assert!(first_archive_path.ends_with(&format!("/bin/{binary_name}")));
+                assert!(second_archive_path.ends_with(&format!("/bin/{binary_name}")));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     fn make_tar_gz_archive(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {

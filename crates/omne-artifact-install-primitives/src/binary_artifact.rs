@@ -864,6 +864,46 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn archive_binary_ambiguous_target_surfaces_structured_detail() -> Result<(), Box<dyn Error>> {
+        let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+        let archive = make_zip_archive(&[
+            (&format!("demo-linux-x64/bin/{asset_name}"), b"x64", 0o755),
+            (
+                &format!("demo-linux-arm64/bin/{asset_name}"),
+                b"arm64",
+                0o755,
+            ),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join(&asset_name);
+
+        let err = install_binary_from_archive(
+            "demo.zip",
+            &archive,
+            destination
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("binary name"),
+            &destination,
+            None,
+        )
+        .expect_err("ambiguous archive binary should fail");
+
+        assert_eq!(
+            err.detail(),
+            Some(&ArtifactInstallErrorDetail::ArchiveBinaryAmbiguous {
+                archive_format: omne_archive_primitives::BinaryArchiveFormat::Zip,
+                binary_name: destination
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("binary name")
+                    .to_string(),
+            })
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn direct_binary_install_serializes_same_destination() -> Result<(), Box<dyn Error>> {
         let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);

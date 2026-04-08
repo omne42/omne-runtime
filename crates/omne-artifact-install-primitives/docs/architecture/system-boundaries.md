@@ -13,7 +13,7 @@
 - 上面这两条 public boundary 会由回归测试继续钉住：来源说明保持 caller-defined `source_label`，下载适配保持在 `ArtifactDownloader` 抽象层，避免未来重构重新把产品来源枚举或具体 HTTP client 类型渗回 primitive contract。
 - 以受限响应体流式下载 artifact。
 - 对下载结果执行可选的 SHA-256 校验；如果字节已成功下载但摘要不匹配，按 install-phase failure 返回，避免把完整性失败伪装成纯下载失败。
-- 对关键安装失败保留结构化错误细节和 candidate-level failure 列表，例如 archive binary 未找到时可通过 `ArtifactInstallErrorDetail::ArchiveBinaryNotFound` 分流，而不是只能解析字符串。
+- 对关键安装失败保留结构化错误细节和 candidate-level failure 列表，例如 archive binary 未找到或命中多个候选时可通过 `ArtifactInstallErrorDetail::ArchiveBinaryNotFound` / `ArtifactInstallErrorDetail::ArchiveBinaryAmbiguous` 分流，而不是只能解析字符串。
 - 把直接二进制资产原子安装到目标路径，并对同一 binary 目标的整个 install attempt 做 advisory lock 串行化；锁名基于归一化后的 destination identity 派生，避免 root alias 或词法等价路径让并发请求重新退化成 nondeterministic last-writer-wins。
 - 从受支持的 archive 中提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束；同一 binary 目标的整个 install attempt 同样按归一化后的 destination identity 做 advisory lock 串行化。
 - 把受支持的 archive 目录树解到 `omne-fs-primitives` 提供的 staged 目录，并在默认 extracted-byte / entry-count 预算内成功后替换目标目录。
