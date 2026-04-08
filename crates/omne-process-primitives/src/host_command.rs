@@ -1320,7 +1320,6 @@ mod tests {
     use super::is_explicit_relative_program_without_working_directory;
     #[cfg(unix)]
     use super::resolve_command_path_in_standard_locations_os;
-    #[cfg(unix)]
     use super::resolve_host_system_package_manager_path;
     #[cfg(unix)]
     use super::resolve_sudo_environment_cleaner_path;
