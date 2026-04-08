@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::ExitStatus;
 
 use thiserror::Error;
 
@@ -72,6 +73,15 @@ pub enum ExecError {
 
     #[error("failed to write audit log at {path}: {detail}")]
     AuditLogWriteFailed { path: PathBuf, detail: String },
+
+    #[error(
+        "failed to write audit log at {path}: {detail} after the process already exited with {status}"
+    )]
+    AuditLogWriteFailedAfterExecutionSuccess {
+        path: PathBuf,
+        detail: String,
+        status: ExitStatus,
+    },
 
     #[error(
         "failed to write audit log at {path}: {detail} (original execution error: {execution_error})"

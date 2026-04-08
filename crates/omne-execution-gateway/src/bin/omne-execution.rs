@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus};
 
 use omne_execution_gateway::{
-    ExecEvent, ExecGateway, ExecRequest, ExecResult, ExecutionOutcome, GatewayPolicy,
+    ExecError, ExecEvent, ExecGateway, ExecRequest, ExecResult, ExecutionOutcome, GatewayPolicy,
     RequestResolution, RequestedIsolationSource, requested_policy_meta,
 };
 use omne_fs_primitives::{ReadUtf8Error, read_utf8_regular_file_in_ambient_root};
@@ -111,7 +111,7 @@ fn run() -> Result<ExitCode, String> {
     );
 
     Ok(match output.exit_code {
-        Some(0) if output.signal.is_none() => ExitCode::SUCCESS,
+        Some(0) if output.signal.is_none() && output.error.is_none() => ExitCode::SUCCESS,
         Some(_) | None => ExitCode::FAILURE,
     })
 }
@@ -183,6 +183,22 @@ fn exec_output_from_result(
             signal: exit_status_signal(&status),
             error: exit_status_signal(&status)
                 .map(|signal| format!("process terminated by signal {signal}")),
+        },
+        Err(ExecError::AuditLogWriteFailedAfterExecutionSuccess {
+            path,
+            detail,
+            status,
+        }) => ExecOutput {
+            request_resolution,
+            event,
+            exit_code: status.code(),
+            signal: exit_status_signal(&status),
+            error: Some(format!(
+                "failed to write audit log at {}: {} after the process already exited with {}",
+                path.display(),
+                detail,
+                status
+            )),
         },
         Err(err) => ExecOutput {
             request_resolution,

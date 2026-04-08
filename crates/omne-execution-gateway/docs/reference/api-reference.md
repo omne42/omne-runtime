@@ -125,6 +125,9 @@ record so prepared spawns no longer bypass final audit closure.
 `resolve_request()`, `evaluate()`, and `preflight()` stay side-effect free even when
 `audit_log_path` is configured; the path must be absolute, and audit-sink creation happens only on `execute()` /
 `prepare_command()`.
+If the command already exits but the terminal audit write fails, `execute()` returns
+`AuditLogWriteFailedAfterExecutionSuccess { status, ... }` so callers can retain the authoritative
+child status instead of collapsing the outcome into an undifferentiated audit-write failure.
 
 ## CapabilityReport
 
@@ -211,5 +214,6 @@ check for requests that declare `declared_mutation = false`.
 - `PolicyDenied(String)`
 - `AuditLogUnavailable { path, detail }`
 - `AuditLogWriteFailed { path, detail }`
+- `AuditLogWriteFailedAfterExecutionSuccess { path, detail, status }`
 - `AuditLogWriteFailedAfterExecutionError { path, detail, execution_error }`
 - `Spawn(io::Error)`
