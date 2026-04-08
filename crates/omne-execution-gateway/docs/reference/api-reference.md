@@ -45,6 +45,7 @@ Accessors / mutators:
 - `set_required_isolation(...)`
 - `with_required_isolation(...)`
 - `set_policy_default_isolation(...)`
+- `with_policy_default_isolation(...)` constructor
 - `with_declared_mutation(...)`
 - `set_declared_mutation(...)`
 - `with_env(...)`
@@ -135,12 +136,15 @@ child status instead of collapsing the outcome into an undifferentiated audit-wr
 - fields:
   - `supported_isolation`
   - `policy_default_isolation`
+  - `policy_default_isolation_permitted`
 
-`policy_default_isolation` reflects the gateway policy's configured default isolation. For
-`ExecGateway::new()` / `with_supported_isolation(...)` this is already host-compatible via
-`GatewayPolicy::default_for_supported_isolation(...)`; for caller-supplied policies it may still
-exceed `supported_isolation`, and the gateway will continue to fail closed on unsupported
-requests.
+`policy_default_isolation` reflects the gateway policy's configured default isolation.
+`policy_default_isolation_permitted` tells callers whether a `policy_default` request using that
+configured value would currently pass the gateway's isolation gates on this host/policy
+combination. For `ExecGateway::new()` / `with_supported_isolation(...)` this is already
+host-compatible via `GatewayPolicy::default_for_supported_isolation(...)`; caller-supplied
+policies may still report `policy_default_isolation_permitted = false`, and the gateway continues
+to fail closed on such requests.
 
 ## ExecEvent
 

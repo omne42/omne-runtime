@@ -65,6 +65,7 @@ pub struct ExecGateway {
 pub struct CapabilityReport {
     pub supported_isolation: ExecutionIsolation,
     pub policy_default_isolation: ExecutionIsolation,
+    pub policy_default_isolation_permitted: bool,
 }
 
 #[derive(Debug)]
@@ -254,6 +255,10 @@ impl ExecGateway {
         CapabilityReport {
             supported_isolation: self.supported_isolation,
             policy_default_isolation: self.policy.default_isolation,
+            policy_default_isolation_permitted: policy_default_isolation_permitted(
+                &self.policy,
+                self.supported_isolation,
+            ),
         }
     }
 
@@ -613,6 +618,18 @@ impl ExecGateway {
 
         Ok(None)
     }
+}
+
+fn policy_default_isolation_permitted(
+    policy: &GatewayPolicy,
+    supported_isolation: ExecutionIsolation,
+) -> bool {
+    if matches!(policy.default_isolation, ExecutionIsolation::None) && !policy.allow_isolation_none
+    {
+        return false;
+    }
+
+    policy.default_isolation <= supported_isolation
 }
 
 fn uses_opaque_command_launcher(program: &OsStr) -> bool {
@@ -2249,6 +2266,7 @@ mod tests {
             report.policy_default_isolation,
             ExecutionIsolation::BestEffort
         );
+        assert!(report.policy_default_isolation_permitted);
     }
 
     #[test]
@@ -2257,6 +2275,43 @@ mod tests {
         let report = gateway.capability_report();
         assert_eq!(report.supported_isolation, ExecutionIsolation::None);
         assert_eq!(report.policy_default_isolation, ExecutionIsolation::None);
+        assert!(report.policy_default_isolation_permitted);
+    }
+
+    #[test]
+    fn capability_report_marks_unsupported_policy_default_as_not_permitted() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: false,
+                enforce_allowlisted_program_for_mutation: false,
+                default_isolation: ExecutionIsolation::Strict,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+
+        let report = gateway.capability_report();
+        assert_eq!(report.supported_isolation, ExecutionIsolation::BestEffort);
+        assert_eq!(report.policy_default_isolation, ExecutionIsolation::Strict);
+        assert!(!report.policy_default_isolation_permitted);
+    }
+
+    #[test]
+    fn capability_report_marks_forbidden_none_policy_default_as_not_permitted() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: false,
+                enforce_allowlisted_program_for_mutation: false,
+                default_isolation: ExecutionIsolation::None,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+
+        let report = gateway.capability_report();
+        assert_eq!(report.supported_isolation, ExecutionIsolation::None);
+        assert_eq!(report.policy_default_isolation, ExecutionIsolation::None);
+        assert!(!report.policy_default_isolation_permitted);
     }
 
     #[test]

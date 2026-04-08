@@ -58,14 +58,15 @@ JSON mode example:
 ```json
 {
   "supported_isolation": "none",
-  "policy_default_isolation": "none"
+  "policy_default_isolation": "none",
+  "policy_default_isolation_permitted": true
 }
 ```
 
 If you pass `--policy ./policy.json`, `policy_default_isolation` reflects that file instead of the
-default in-memory policy. It reports the configured policy default, not a host-compatible fallback,
-so compare it with `supported_isolation` before constructing `policy_default` requests; unsupported
-defaults still fail closed at execution time.
+default in-memory policy. `policy_default_isolation_permitted` tells you whether that configured
+default is currently usable on this host/policy combination; unsupported defaults still fail closed
+at execution time.
 
 ## 4. Optional CLI Mode
 
