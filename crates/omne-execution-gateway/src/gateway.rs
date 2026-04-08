@@ -440,6 +440,19 @@ impl ExecGateway {
             ));
         }
 
+        if let Some(audit_path) = self.policy.audit_log_path.as_ref()
+            && !audit_path.is_absolute()
+        {
+            return Err(self.deny_preflight(
+                event,
+                "audit_log_path_invalid",
+                ExecError::AuditLogPathInvalid {
+                    path: audit_path.clone(),
+                    detail: "audit_log_path must be absolute".to_string(),
+                },
+            ));
+        }
+
         if let Some(audit) = &self.audit
             && let Err(err) = audit.validate_ready_without_side_effects()
         {
@@ -1873,6 +1886,39 @@ mod tests {
         assert_eq!(event.reason.as_deref(), Some("audit_log_unavailable"));
         match err {
             ExecError::AuditLogUnavailable { .. } => {}
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn preflight_rejects_relative_audit_log_path() {
+        let workspace = tempdir().expect("create temp workspace");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                audit_log_path: Some(PathBuf::from("audit.jsonl")),
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        );
+
+        let err = gateway
+            .preflight(&request)
+            .expect_err("relative audit log path must be rejected");
+        let (event, err) = err.into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("audit_log_path_invalid"));
+        match err {
+            ExecError::AuditLogPathInvalid { path, .. } => {
+                assert_eq!(path, PathBuf::from("audit.jsonl"));
+            }
             other => panic!("unexpected error: {other}"),
         }
     }

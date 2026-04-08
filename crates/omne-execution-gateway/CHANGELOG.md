@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- reject relative `audit_log_path` values during preflight and appendable-sink validation, so
+  audit logging cannot drift with caller-relative working directories or reopen a different sink
+  after request evaluation
 - always release the prepared audit sink lock even when a write fails, so one failed prepare or
   execution record cannot leave the bound audit handle locked and cascade into later audit write
   failures

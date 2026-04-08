@@ -123,7 +123,7 @@ they are intentionally non-interactive and do not surface child output.
 `PreparedChild::try_wait()` / `PreparedChild` drop finalization append the authoritative execution
 record so prepared spawns no longer bypass final audit closure.
 `resolve_request()`, `evaluate()`, and `preflight()` stay side-effect free even when
-`audit_log_path` is configured; audit-sink creation happens only on `execute()` /
+`audit_log_path` is configured; the path must be absolute, and audit-sink creation happens only on `execute()` /
 `prepare_command()`.
 
 ## CapabilityReport

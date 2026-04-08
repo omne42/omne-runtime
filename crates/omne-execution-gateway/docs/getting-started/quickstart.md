@@ -74,6 +74,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 `omne-execution` prints one JSON result object with canonical nested `request_resolution` and `event`
 objects and the exit outcome.
 The request adapter rejects unknown JSON fields and requires an explicit `declared_mutation` field.
+When policy enables `audit_log_path`, that path must be absolute.
 
 Example fragment:
 

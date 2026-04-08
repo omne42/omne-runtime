@@ -116,11 +116,22 @@ impl AuditLogger {
 }
 
 fn validate_appendable_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    validate_absolute_audit_log_path(path)?;
     validate_appendable_regular_file_in_ambient_root(path, "audit log").map_err(|err| err.into())
 }
 
 fn open_appendable_regular_file_nofollow(path: &Path) -> Result<std::fs::File, std::io::Error> {
+    validate_absolute_audit_log_path(path)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
     open_appendable_regular_file_in_ambient_root(path, "audit log").map(|file| file.into_std())
+}
+
+fn validate_absolute_audit_log_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if path.is_absolute() {
+        return Ok(());
+    }
+
+    Err(format!("audit log path must be absolute: {}", path.display()).into())
 }
 
 impl PreparedAuditSink {
@@ -503,6 +514,23 @@ mod tests {
             !path.parent().expect("audit parent").exists(),
             "validation must not create parent directories"
         );
+    }
+
+    #[test]
+    fn validate_ready_without_side_effects_rejects_relative_audit_path() {
+        let logger = AuditLogger::new(PathBuf::from("audit.jsonl"));
+
+        let err = logger
+            .validate_ready_without_side_effects()
+            .expect_err("relative audit path must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, detail } => {
+                assert_eq!(path, PathBuf::from("audit.jsonl"));
+                assert!(detail.contains("must be absolute"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]
