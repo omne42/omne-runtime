@@ -235,7 +235,7 @@ pub fn read_utf8_regular_file_in_ambient_root(
     label: &str,
     max_bytes: usize,
 ) -> Result<String, ReadUtf8Error> {
-    let (root, leaf, _) = open_parent_root_for_regular_file(path, label, MissingRootPolicy::Error)
+    let (root, leaf, _) = open_parent_root_for_leaf_path(path, label, MissingRootPolicy::Error)
         .map_err(ReadUtf8Error::Io)?
         .ok_or_else(|| {
             ReadUtf8Error::Io(io::Error::new(
@@ -249,15 +249,13 @@ pub fn read_utf8_regular_file_in_ambient_root(
 }
 
 pub fn open_appendable_regular_file_in_ambient_root(path: &Path, label: &str) -> io::Result<File> {
-    let (root, leaf, _) =
-        open_parent_root_for_regular_file(path, label, MissingRootPolicy::Create)?.ok_or_else(
-            || {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("{label} parent directory not found: {}", path.display()),
-                )
-            },
-        )?;
+    let (root, leaf, _) = open_parent_root_for_leaf_path(path, label, MissingRootPolicy::Create)?
+        .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{label} parent directory not found: {}", path.display()),
+        )
+    })?;
     let root = root.into_dir();
     open_appendable_regular_file_at(&root, Path::new(&leaf))
 }
@@ -267,7 +265,7 @@ pub fn validate_appendable_regular_file_in_ambient_root(
     label: &str,
 ) -> io::Result<()> {
     let Some((root, leaf, _)) =
-        open_parent_root_for_regular_file(path, label, MissingRootPolicy::ReturnNone)?
+        open_parent_root_for_leaf_path(path, label, MissingRootPolicy::ReturnNone)?
     else {
         return Ok(());
     };
@@ -309,7 +307,7 @@ fn validate_appendable_regular_file_at(directory: &Dir, component: &Path) -> io:
     }
 }
 
-fn open_parent_root_for_regular_file(
+pub(crate) fn open_parent_root_for_leaf_path(
     path: &Path,
     label: &str,
     missing_root_policy: MissingRootPolicy,
