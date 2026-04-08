@@ -94,6 +94,18 @@ pub struct HostCommandOutput {
     pub output: Output,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CapturedOutputSnapshot {
+    stdout_len: u64,
+    stderr_len: u64,
+}
+
+#[derive(Debug)]
+struct WaitForChildOutput {
+    status: std::process::ExitStatus,
+    captured_output_snapshot: CapturedOutputSnapshot,
+}
+
 #[derive(Debug)]
 struct ResolvedExecutionPrograms {
     launcher: PathBuf,
@@ -405,11 +417,11 @@ pub fn command_available_for_request(request: &HostCommandRequest<'_>) -> bool {
 }
 
 pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoMode {
-    sudo_mode_system_package_manager(program)
-        .filter(|manager| manager_requires_privileged_install(*manager))
-        .map_or(HostCommandSudoMode::Never, |_| {
-            HostCommandSudoMode::IfNonRootSystemCommand
-        })
+    if sudo_eligible_program(program) {
+        HostCommandSudoMode::IfNonRootSystemCommand
+    } else {
+        HostCommandSudoMode::Never
+    }
 }
 
 #[cfg(test)]
@@ -527,53 +539,61 @@ fn spawn_and_capture_output(
     command.stdout(Stdio::from(stdout_writer));
     command.stderr(Stdio::from(stderr_writer));
     let child = command.spawn().map_err(CommandOutputError::Spawn)?;
-    let status = match wait_for_child(
+    let wait_output = match wait_for_child(
         child,
         options.timeout,
         capture_options.max_captured_output_bytes_per_stream,
         &stdout_capture,
         &stderr_capture,
     ) {
-        Ok(status) => status,
-        Err(CommandOutputError::TimedOut {
+        Ok(wait_output) => wait_output,
+        Err(WaitForChildError::Spawn(source)) => return Err(CommandOutputError::Spawn(source)),
+        Err(WaitForChildError::Capture(source)) => {
+            return Err(CommandOutputError::Capture(source));
+        }
+        Err(WaitForChildError::TimedOut {
             timeout,
-            output: timed_out_output,
+            status,
+            captured_output_snapshot,
         }) => {
             let stdout = read_captured_output(
                 stdout_capture,
                 "stdout",
                 capture_options.max_captured_output_bytes_per_stream,
+                captured_output_snapshot.stdout_len,
             )
             .map_err(CommandOutputError::Capture)?;
             let stderr = read_captured_output(
                 stderr_capture,
                 "stderr",
                 capture_options.max_captured_output_bytes_per_stream,
+                captured_output_snapshot.stderr_len,
             )
             .map_err(CommandOutputError::Capture)?;
             return Err(CommandOutputError::TimedOut {
                 timeout,
                 output: Output {
-                    status: timed_out_output.status,
+                    status,
                     stdout,
                     stderr,
                 },
             });
         }
-        Err(err) => return Err(err),
     };
     Ok(Output {
-        status,
+        status: wait_output.status,
         stdout: read_captured_output(
             stdout_capture,
             "stdout",
             capture_options.max_captured_output_bytes_per_stream,
+            wait_output.captured_output_snapshot.stdout_len,
         )
         .map_err(CommandOutputError::Capture)?,
         stderr: read_captured_output(
             stderr_capture,
             "stderr",
             capture_options.max_captured_output_bytes_per_stream,
+            wait_output.captured_output_snapshot.stderr_len,
         )
         .map_err(CommandOutputError::Capture)?,
     })
@@ -591,15 +611,23 @@ fn wait_for_child(
     capture_limit_bytes_per_stream: Option<usize>,
     stdout_capture: &File,
     stderr_capture: &File,
-) -> Result<std::process::ExitStatus, CommandOutputError> {
+) -> Result<WaitForChildOutput, WaitForChildError> {
     const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
+            Ok(Some(status)) => {
+                let captured_output_snapshot =
+                    capture_output_snapshot(stdout_capture, stderr_capture)
+                        .map_err(WaitForChildError::Spawn)?;
+                return Ok(WaitForChildOutput {
+                    status,
+                    captured_output_snapshot,
+                });
+            }
             Ok(None) => {}
-            Err(source) => return Err(CommandOutputError::Spawn(source)),
+            Err(source) => return Err(WaitForChildError::Spawn(source)),
         }
 
         if let Some(stream_name) = capture_limit_exceeded(
@@ -607,14 +635,11 @@ fn wait_for_child(
             stderr_capture,
             capture_limit_bytes_per_stream,
         )
-        .map_err(CommandOutputError::Spawn)?
+        .map_err(WaitForChildError::Spawn)?
         {
-            terminate_child_after_capture_limit(
-                child,
-                stream_name,
-                capture_limit_bytes_per_stream,
-            )?;
-            return Err(CommandOutputError::Capture(capture_limit_error(
+            terminate_child_after_capture_limit(child, stream_name, capture_limit_bytes_per_stream)
+                .map_err(WaitForChildError::Spawn)?;
+            return Err(WaitForChildError::Capture(capture_limit_error(
                 stream_name,
                 capture_limit_bytes_per_stream,
             )));
@@ -624,22 +649,35 @@ fn wait_for_child(
             let timeout = timeout.expect("deadline implies timeout");
             let _ = child.kill();
             let status = child.wait().map_err(|source| {
-                CommandOutputError::Spawn(io::Error::other(format!(
+                WaitForChildError::Spawn(io::Error::other(format!(
                     "timed out after {timeout:?} and wait failed: {source}"
                 )))
             })?;
-            return Err(CommandOutputError::TimedOut {
+            let captured_output_snapshot = capture_output_snapshot(stdout_capture, stderr_capture)
+                .map_err(WaitForChildError::Spawn)?;
+            return Err(WaitForChildError::TimedOut {
                 timeout,
-                output: Output {
-                    status,
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                },
+                status,
+                captured_output_snapshot,
             });
         }
 
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+fn capture_output_snapshot(
+    stdout_capture: &File,
+    stderr_capture: &File,
+) -> io::Result<CapturedOutputSnapshot> {
+    Ok(CapturedOutputSnapshot {
+        stdout_len: capture_file_snapshot_len(stdout_capture)?,
+        stderr_len: capture_file_snapshot_len(stderr_capture)?,
+    })
+}
+
+fn capture_file_snapshot_len(capture: &File) -> io::Result<u64> {
+    Ok(capture.metadata()?.len())
 }
 
 fn capture_limit_exceeded(
@@ -667,21 +705,21 @@ fn terminate_child_after_capture_limit(
     mut child: std::process::Child,
     stream_name: &'static str,
     capture_limit_bytes_per_stream: Option<usize>,
-) -> Result<(), CommandOutputError> {
+) -> io::Result<()> {
     let _ = child.kill();
     match child.try_wait() {
         Ok(Some(_)) => {}
         Ok(None) => spawn_background_child_reaper(child).map_err(|source| {
-            CommandOutputError::Spawn(io::Error::other(format!(
+            io::Error::other(format!(
                 "{} and background reap setup failed: {source}",
                 capture_limit_message(stream_name, capture_limit_bytes_per_stream),
-            )))
+            ))
         })?,
         Err(source) => {
-            return Err(CommandOutputError::Spawn(io::Error::other(format!(
+            return Err(io::Error::other(format!(
                 "{} and try_wait failed: {source}",
                 capture_limit_message(stream_name, capture_limit_bytes_per_stream),
-            ))));
+            )));
         }
     }
     Ok(())
@@ -718,9 +756,14 @@ fn read_captured_output(
     mut capture: File,
     stream_name: &'static str,
     capture_limit_bytes_per_stream: Option<usize>,
+    snapshot_len: u64,
 ) -> io::Result<Vec<u8>> {
     capture.seek(SeekFrom::Start(0))?;
-    read_stream_limited(&mut capture, stream_name, capture_limit_bytes_per_stream)
+    read_stream_limited(
+        capture.take(snapshot_len),
+        stream_name,
+        capture_limit_bytes_per_stream,
+    )
 }
 
 fn read_stream_limited<R>(
@@ -859,7 +902,7 @@ fn sudo_eligible_program(program: &OsStr) -> bool {
         return false;
     }
     if !is_explicit_command_path(program) {
-        return true;
+        return resolve_host_system_package_manager_path(program).is_some();
     }
     explicit_system_package_manager_path(Path::new(program))
 }
@@ -1196,6 +1239,17 @@ enum CommandOutputError {
     TimedOut { timeout: Duration, output: Output },
 }
 
+#[derive(Debug)]
+enum WaitForChildError {
+    Spawn(io::Error),
+    Capture(io::Error),
+    TimedOut {
+        timeout: Duration,
+        status: std::process::ExitStatus,
+        captured_output_snapshot: CapturedOutputSnapshot,
+    },
+}
+
 fn map_command_output_error(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
@@ -1244,7 +1298,7 @@ fn spawn_error_is_missing_program(
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};
-    use std::io;
+    use std::io::{self, Write};
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
     #[cfg(unix)]
@@ -1266,7 +1320,6 @@ mod tests {
     use super::is_explicit_relative_program_without_working_directory;
     #[cfg(unix)]
     use super::resolve_command_path_in_standard_locations_os;
-    #[cfg(unix)]
     use super::resolve_host_system_package_manager_path;
     #[cfg(unix)]
     use super::resolve_sudo_environment_cleaner_path;
@@ -1286,6 +1339,7 @@ mod tests {
     };
     #[cfg(unix)]
     use super::{ResolvedExecutionPrograms, build_command_with_resolved_programs};
+    use super::{capture_file_snapshot_len, create_output_capture_file, read_captured_output};
     #[cfg(unix)]
     use super::{run_host_command_with_options, run_host_recipe_with_options};
 
@@ -1335,12 +1389,14 @@ mod tests {
 
     #[test]
     fn sudo_mode_only_applies_to_non_root_bare_commands() {
-        assert!(should_try_sudo_with_status(
-            OsStr::new("apt-get"),
-            HostCommandSudoMode::IfNonRootSystemCommand,
-            true,
-            true,
-        ));
+        if let Some(program_name) = available_privileged_package_manager_name() {
+            assert!(should_try_sudo_with_status(
+                OsStr::new(program_name),
+                HostCommandSudoMode::IfNonRootSystemCommand,
+                true,
+                true,
+            ));
+        }
         #[cfg(target_os = "linux")]
         assert!(should_try_sudo_with_status(
             OsStr::new("/usr/bin/apt-get"),
@@ -1382,8 +1438,11 @@ mod tests {
 
     #[test]
     fn missing_sudo_fails_closed_for_eligible_request() {
+        let Some(program_name) = available_privileged_package_manager_name() else {
+            return;
+        };
         let request = HostCommandRequest {
-            program: OsStr::new("apt-get"),
+            program: OsStr::new(program_name),
             args: &[],
             env: &[],
             working_directory: None,
@@ -1409,6 +1468,9 @@ mod tests {
         let Some(_sudo_path) = resolve_sudo_path() else {
             return;
         };
+        let Some(program_name) = available_privileged_package_manager_name() else {
+            return;
+        };
         let temp = tempfile::tempdir().expect("tempdir");
         let sudo_path = write_test_command(temp.path(), "sudo");
         let env = vec![(
@@ -1416,7 +1478,7 @@ mod tests {
             temp.path().as_os_str().to_os_string(),
         )];
         let request = HostCommandRequest {
-            program: OsStr::new("apt-get"),
+            program: OsStr::new(program_name),
             args: &[],
             env: &env,
             working_directory: None,
@@ -1742,17 +1804,15 @@ mod tests {
 
     #[test]
     fn default_recipe_sudo_mode_recognizes_common_package_managers() {
-        assert_eq!(
-            default_recipe_sudo_mode_for_program(OsStr::new("apt-get")),
-            HostCommandSudoMode::IfNonRootSystemCommand
-        );
+        if let Some(program_name) = available_privileged_package_manager_name() {
+            assert_eq!(
+                default_recipe_sudo_mode_for_program(OsStr::new(program_name)),
+                HostCommandSudoMode::IfNonRootSystemCommand
+            );
+        }
         #[cfg(target_os = "linux")]
         assert_eq!(
             default_recipe_sudo_mode_for_program(OsStr::new("/usr/bin/apt-get")),
-            HostCommandSudoMode::IfNonRootSystemCommand
-        );
-        assert_eq!(
-            default_recipe_sudo_mode_for_program(OsStr::new("dnf")),
             HostCommandSudoMode::IfNonRootSystemCommand
         );
         assert_eq!(
@@ -1767,6 +1827,12 @@ mod tests {
             default_recipe_sudo_mode_for_program(OsStr::new("./apt-get")),
             HostCommandSudoMode::Never
         );
+        if let Some(program_name) = unavailable_privileged_package_manager_name() {
+            assert_eq!(
+                default_recipe_sudo_mode_for_program(OsStr::new(program_name)),
+                HostCommandSudoMode::Never
+            );
+        }
     }
 
     #[test]
@@ -1946,6 +2012,23 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn read_captured_output_ignores_file_growth_after_snapshot() {
+        let (capture, mut writer) = create_output_capture_file().expect("create capture files");
+        writer
+            .write_all(b"parent-ready\n")
+            .expect("write initial capture");
+        let snapshot_len = capture_file_snapshot_len(&capture).expect("capture snapshot");
+        writer
+            .write_all(b"late-child\n")
+            .expect("write late capture");
+
+        let output =
+            read_captured_output(capture, "stdout", None, snapshot_len).expect("read snapshot");
+
+        assert_eq!(output, b"parent-ready\n");
     }
 
     #[test]
@@ -2622,6 +2705,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn request_path_shadow_of_absent_manager_does_not_trigger_auto_sudo() {
+        let Some(program_name) = unavailable_privileged_package_manager_name() else {
+            return;
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _shadowed_program = write_test_command(temp.path(), program_name);
+        let env = vec![(
+            OsString::from("PATH"),
+            temp.path().as_os_str().to_os_string(),
+        )];
+        let request = HostCommandRequest {
+            program: OsStr::new(program_name),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        assert!(
+            !should_try_sudo_for_request_with_status(&request, true),
+            "request PATH shadowing must not grant bare commands trusted system-manager identity"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn build_command_preserves_non_utf8_arguments() {
         let non_utf8_arg = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
         let args = vec![non_utf8_arg.clone()];
@@ -3127,11 +3236,16 @@ mod tests {
             .expect("resolve test shell")
     }
 
-    #[cfg(unix)]
     fn available_privileged_package_manager_name() -> Option<&'static str> {
         ["apt-get", "dnf", "yum", "apk", "pacman", "zypper"]
             .into_iter()
             .find(|name| resolve_host_system_package_manager_path(OsStr::new(name)).is_some())
+    }
+
+    fn unavailable_privileged_package_manager_name() -> Option<&'static str> {
+        ["apt-get", "dnf", "yum", "apk", "pacman", "zypper"]
+            .into_iter()
+            .find(|name| resolve_host_system_package_manager_path(OsStr::new(name)).is_none())
     }
 
     #[cfg(unix)]
