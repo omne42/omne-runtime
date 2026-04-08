@@ -442,87 +442,6 @@ impl ExecGateway {
             ));
         }
 
-        if self.policy.enforce_allowlisted_program_for_mutation {
-            if !request.declared_mutation_is_explicit() {
-                return Err(self.deny_preflight(
-                    event,
-                    "mutation_declaration_required",
-                    ExecError::MutationDeclarationRequired,
-                ));
-            }
-            if let Some(name) = first_startup_sensitive_env_name(&request.env) {
-                return Err(self.deny_preflight(
-                    event,
-                    "startup_sensitive_env_forbidden",
-                    ExecError::PolicyDenied(format!(
-                        "allowlisted execution forbids startup-sensitive environment variable `{name}`"
-                    )),
-                ));
-            }
-            let opaque_launcher = match request_uses_opaque_command_launcher(&request.program) {
-                Ok(opaque_launcher) => opaque_launcher,
-                Err(err @ ExecError::RelativeProgramPath { .. }) => {
-                    return Err(self.deny_preflight(event, "relative_program_path_forbidden", err));
-                }
-                Err(
-                    err @ ExecError::ProgramPathInvalid { .. }
-                    | err @ ExecError::ProgramLookupFailed { .. }
-                    | err @ ExecError::PathIdentityUnavailable { .. }
-                    | err @ ExecError::RequestPathChanged { .. },
-                ) => return Err(self.deny_preflight(event, "program_path_invalid", err)),
-                Err(err) => {
-                    unreachable!("opaque launcher policy binding returned unexpected error: {err}")
-                }
-            };
-            if opaque_launcher {
-                return Err(self.deny_preflight(
-                    event,
-                    "opaque_command_forbidden",
-                    ExecError::PolicyDenied(
-                        "opaque command launchers cannot be authorized by policy".to_string(),
-                    ),
-                ));
-            }
-            let mutating_allowlisted = self
-                .policy
-                .is_mutating_program_allowlisted_os(request.program.as_os_str());
-            let non_mutating_allowlisted = self
-                .policy
-                .is_non_mutating_program_allowlisted_os(request.program.as_os_str());
-
-            if request.declared_mutation() {
-                if !mutating_allowlisted {
-                    return Err(self.deny_preflight(
-                        event,
-                        "mutation_requires_allowlisted_program",
-                        ExecError::PolicyDenied(
-                            "declared mutating command must use an allowlisted program".to_string(),
-                        ),
-                    ));
-                }
-            } else {
-                if mutating_allowlisted {
-                    return Err(self.deny_preflight(
-                        event,
-                        "allowlisted_program_requires_declared_mutation",
-                        ExecError::PolicyDenied(
-                            "allowlisted mutating program must declare mutation".to_string(),
-                        ),
-                    ));
-                }
-                if !non_mutating_allowlisted {
-                    return Err(self.deny_preflight(
-                        event,
-                        "non_mutating_requires_allowlisted_program",
-                        ExecError::PolicyDenied(
-                            "declared non-mutating command must use an allowlisted program"
-                                .to_string(),
-                        ),
-                    ));
-                }
-            }
-        }
-
         if request.required_isolation() > self.supported_isolation {
             return Err(self.deny_preflight(
                 event,
@@ -546,6 +465,81 @@ impl ExecGateway {
                     event.cwd = resolved_paths.cwd.path.clone();
                     event.workspace_root = resolved_paths.workspace_root.path.clone();
                     event.program = bound_program.path.clone().into();
+
+                    if self.policy.enforce_allowlisted_program_for_mutation {
+                        if !request.declared_mutation_is_explicit() {
+                            return Err(self.deny_preflight(
+                                event,
+                                "mutation_declaration_required",
+                                ExecError::MutationDeclarationRequired,
+                            ));
+                        }
+                        if let Some(name) = first_startup_sensitive_env_name(&request.env) {
+                            return Err(self.deny_preflight(
+                                event,
+                                "startup_sensitive_env_forbidden",
+                                ExecError::PolicyDenied(format!(
+                                    "allowlisted execution forbids startup-sensitive environment variable `{name}`"
+                                )),
+                            ));
+                        }
+                        if request_uses_opaque_command_launcher(&request.program, &bound_program) {
+                            return Err(self.deny_preflight(
+                                event,
+                                "opaque_command_forbidden",
+                                ExecError::PolicyDenied(
+                                    "opaque command launchers cannot be authorized by policy"
+                                        .to_string(),
+                                ),
+                            ));
+                        }
+
+                        let request_program_is_explicit =
+                            is_explicit_program_path(request.program.as_os_str());
+                        let mutating_allowlisted = request_program_is_explicit
+                            && self
+                                .policy
+                                .is_mutating_program_allowlisted_path(&bound_program.path);
+                        let non_mutating_allowlisted = request_program_is_explicit
+                            && self
+                                .policy
+                                .is_non_mutating_program_allowlisted_path(&bound_program.path);
+
+                        if request.declared_mutation() {
+                            if !mutating_allowlisted {
+                                return Err(self.deny_preflight(
+                                    event,
+                                    "mutation_requires_allowlisted_program",
+                                    ExecError::PolicyDenied(
+                                        "declared mutating command must use an allowlisted program"
+                                            .to_string(),
+                                    ),
+                                ));
+                            }
+                        } else {
+                            if mutating_allowlisted {
+                                return Err(self.deny_preflight(
+                                    event,
+                                    "allowlisted_program_requires_declared_mutation",
+                                    ExecError::PolicyDenied(
+                                        "allowlisted mutating program must declare mutation"
+                                            .to_string(),
+                                    ),
+                                ));
+                            }
+                            if !non_mutating_allowlisted {
+                                return Err(self.deny_preflight(
+                                    event,
+                                    "non_mutating_requires_allowlisted_program",
+                                    ExecError::PolicyDenied(
+                                        "declared non-mutating command must use an allowlisted program"
+                                            .to_string(),
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+
                     Ok(PreparedExecRequest {
                         event,
                         required_isolation: request.required_isolation(),
@@ -558,15 +552,11 @@ impl ExecGateway {
                 }
                 Err(
                     err @ ExecError::ProgramPathInvalid { .. }
-                    | err @ ExecError::ProgramLookupFailed { .. },
-                ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
-                Err(
-                    err @ ExecError::PathIdentityUnavailable { .. }
+                    | err @ ExecError::ProgramLookupFailed { .. }
+                    | err @ ExecError::PathIdentityUnavailable { .. }
                     | err @ ExecError::RequestPathChanged { .. },
                 ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
-                Err(err) => {
-                    unreachable!("bind_explicit_program_path returned unexpected error: {err}")
-                }
+                Err(err) => unreachable!("bind_program_path returned unexpected error: {err}"),
             },
             Err(err @ ExecError::WorkspaceRootInvalid { .. }) => {
                 Err(self.deny_preflight(event, "workspace_root_invalid", err))
@@ -658,20 +648,14 @@ fn uses_opaque_command_launcher(program: &OsStr) -> bool {
     })
 }
 
-fn request_uses_opaque_command_launcher(program: &OsStr) -> ExecResult<bool> {
+fn request_uses_opaque_command_launcher(program: &OsStr, bound_program: &BoundProgram) -> bool {
     if !is_explicit_program_path(program) {
-        return Ok(uses_opaque_command_launcher(program));
+        return uses_opaque_command_launcher(program);
     }
 
-    if !Path::new(program).is_absolute() {
-        return Ok(uses_opaque_command_launcher(program));
-    }
-
-    bind_program_path(program).map(|bound| {
-        uses_opaque_command_launcher(program)
-            || uses_opaque_command_launcher(bound.path.as_os_str())
-            || bound_program_matches_trusted_opaque_launcher(&bound)
-    })
+    uses_opaque_command_launcher(program)
+        || uses_opaque_command_launcher(bound_program.path.as_os_str())
+        || bound_program_matches_trusted_opaque_launcher(bound_program)
 }
 
 fn program_basename_ascii(program: &OsStr) -> Option<String> {
@@ -1809,6 +1793,28 @@ mod tests {
         assert!(matches!(result, Err(ExecError::RelativeProgramPath { .. })));
     }
 
+    #[test]
+    fn rejects_relative_program_paths_before_mutation_policy_checks() {
+        let gateway = ExecGateway::with_supported_isolation(host_supported_test_isolation());
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "./tool",
+            Vec::<OsString>::new(),
+            workspace.path(),
+            host_supported_test_isolation(),
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("relative_program_path_forbidden")
+        );
+        assert!(matches!(result, Err(ExecError::RelativeProgramPath { .. })));
+    }
+
     #[cfg(windows)]
     #[test]
     fn rejects_drive_relative_program_paths() {
@@ -1829,6 +1835,29 @@ mod tests {
             host_supported_test_isolation(),
             workspace.path(),
         );
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("relative_program_path_forbidden")
+        );
+        assert!(matches!(result, Err(ExecError::RelativeProgramPath { .. })));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_drive_relative_program_paths_before_mutation_policy_checks() {
+        let gateway = ExecGateway::with_supported_isolation(host_supported_test_isolation());
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            "C:tool.exe",
+            Vec::<OsString>::new(),
+            workspace.path(),
+            host_supported_test_isolation(),
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
 
         let (event, result) = gateway.execute(&request).into_parts();
         assert_eq!(event.decision, ExecDecision::Deny);
@@ -2645,8 +2674,9 @@ mod tests {
 
     #[test]
     fn denies_mutation_for_bare_program_even_when_same_name_is_allowlisted() {
+        let resolved_program = resolved_non_mutating_program_path();
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec!["omne-fs".to_string()],
+            mutating_program_allowlist: vec![resolved_program.display().to_string()],
             ..GatewayPolicy::default()
         };
         let gateway = ExecGateway::with_policy_and_supported_isolation(
@@ -2655,7 +2685,7 @@ mod tests {
         );
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
-            "omne-fs",
+            non_mutating_program(),
             Vec::<OsString>::new(),
             workspace.path(),
             ExecutionIsolation::BestEffort,
@@ -2754,6 +2784,7 @@ mod tests {
         assert!(uses_opaque_command_launcher(OsStr::new("/usr/bin/env")));
     }
 
+    #[cfg(unix)]
     #[test]
     fn denies_env_launcher_without_allowlist() {
         let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
@@ -3482,6 +3513,38 @@ mod tests {
         assert!(matches!(
             error,
             ExecError::ProgramPathInvalid { ref detail, .. }
+                if detail == "program path must reference a spawnable executable"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutation_policy_does_not_mask_non_executable_explicit_program_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::None);
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("plain-tool");
+        fs::write(&program, "echo hi\n").expect("write plain program");
+        let mut permissions = fs::metadata(&program).expect("metadata").permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&program, permissions).expect("chmod plain program");
+
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("program_path_invalid"));
+        assert!(matches!(
+            result,
+            Err(ExecError::ProgramPathInvalid { ref detail, .. })
                 if detail == "program path must reference a spawnable executable"
         ));
     }
