@@ -6,6 +6,7 @@ publish = false
 description = "Low-level Omne process primitives."
 
 [dependencies]
+omne-system-package-primitives = { path = "../omne-system-package-primitives" }
 tokio = { version = "1", features = ["process"] }
 
 [target.'cfg(unix)'.dependencies]

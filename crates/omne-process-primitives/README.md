@@ -16,7 +16,8 @@ Low-level host-command and process-tree primitives shared across callers.
 - host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
 - non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
 - sudo-style escalation that applies explicit request env inside the elevated target command via `env -- KEY=VALUE ...`, instead of depending on host `sudoers` env propagation
-- fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved in the effective `PATH`
+- fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare system-package target cannot be resolved from trusted standard locations
+- `IfNonRootSystemCommand` escalation only applies to supported system package managers; arbitrary bare commands and request-scoped `PATH` shadowing do not expand the elevation boundary
 - default sudo-mode selection for common system-package commands
 - optional `sudo -n` probing on Unix
 - process-tree cleanup setup and best-effort termination

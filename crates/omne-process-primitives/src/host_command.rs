@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 
+use omne_system_package_primitives::SystemPackageManager;
+
 use crate::command_path::{
     is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
-    resolve_available_command_path_os, resolve_command_path_or_standard_location_os,
-    resolve_command_path_os, resolve_command_path_os_with_path_var,
+    resolve_available_command_path_os, resolve_command_path_in_standard_locations_os,
+    resolve_command_path_os,
 };
 
 const MAX_CAPTURED_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024 * 1024;
@@ -242,24 +244,23 @@ pub fn command_available_os(command: &OsStr) -> bool {
 }
 
 pub fn default_recipe_sudo_mode_for_program(program: &OsStr) -> HostCommandSudoMode {
-    let Some(program) = sudo_mode_program_name(program) else {
-        return HostCommandSudoMode::Never;
-    };
-    match program {
-        "brew" => HostCommandSudoMode::Never,
-        "apt-get" | "dnf" | "yum" | "apk" | "pacman" | "zypper" => {
+    sudo_mode_system_package_manager(program)
+        .filter(|manager| manager_requires_privileged_install(*manager))
+        .map_or(HostCommandSudoMode::Never, |_| {
             HostCommandSudoMode::IfNonRootSystemCommand
-        }
-        _ => HostCommandSudoMode::Never,
-    }
+        })
 }
 
 fn build_command(request: &HostCommandRequest<'_>, execution: HostCommandExecution) -> Command {
-    let program = resolve_program_for_spawn(request);
+    let program = match execution {
+        HostCommandExecution::Direct => resolve_program_for_spawn(request),
+        HostCommandExecution::Sudo => resolve_program_for_sudo_target(request)
+            .unwrap_or_else(|| resolve_program_for_spawn(request)),
+    };
     let mut cmd = match execution {
         HostCommandExecution::Direct => Command::new(&program),
         HostCommandExecution::Sudo => {
-            let mut cmd = Command::new(resolve_sudo_program(request.env));
+            let mut cmd = Command::new(resolve_sudo_program());
             cmd.arg("-n");
             append_sudo_target_command(&mut cmd, &program, request);
             cmd
@@ -412,7 +413,7 @@ fn should_try_sudo_for_request_with_status(
         request.program,
         request.sudo_mode,
         process_is_non_root,
-        sudo_available(request.env),
+        sudo_available(),
     )
 }
 
@@ -449,11 +450,17 @@ fn has_path_separator(command: &OsStr) -> bool {
 }
 
 fn sudo_eligible_program(program: &OsStr) -> bool {
+    let Some(manager) = sudo_mode_system_package_manager(program) else {
+        return false;
+    };
+    if !manager_requires_privileged_install(manager) {
+        return false;
+    }
     if !is_explicit_command_path(program) {
         return true;
     }
 
-    explicit_system_command_path(Path::new(program))
+    explicit_system_package_manager_path(Path::new(program))
 }
 
 fn sudo_mode_program_name(program: &OsStr) -> Option<&str> {
@@ -462,69 +469,80 @@ fn sudo_mode_program_name(program: &OsStr) -> Option<&str> {
     }
 
     let path = Path::new(program);
-    explicit_system_command_path(path)
+    explicit_system_package_manager_path(path)
         .then_some(path.file_name()?.to_str())
         .flatten()
 }
 
-fn explicit_system_command_path(path: &Path) -> bool {
+fn sudo_mode_system_package_manager(program: &OsStr) -> Option<SystemPackageManager> {
+    sudo_mode_program_name(program).and_then(SystemPackageManager::parse)
+}
+
+fn manager_requires_privileged_install(manager: SystemPackageManager) -> bool {
+    !matches!(manager, SystemPackageManager::Brew)
+}
+
+fn explicit_system_package_manager_path(path: &Path) -> bool {
     if !path.is_absolute() {
         return false;
     }
 
-    #[cfg(unix)]
-    {
-        [
-            "/usr/bin",
-            "/usr/sbin",
-            "/bin",
-            "/sbin",
-            "/usr/local/bin",
-            "/opt/homebrew/bin",
-            "/opt/local/bin",
-        ]
-        .iter()
-        .any(|prefix| path.starts_with(prefix))
+    if !is_spawnable_command_path(path) {
+        return false;
     }
 
-    #[cfg(not(unix))]
-    {
-        false
+    let Some(file_name) = path.file_name() else {
+        return false;
+    };
+    explicit_system_package_manager_path_with_resolved(
+        path,
+        resolve_host_system_package_manager_path(file_name),
+    )
+}
+
+fn explicit_system_package_manager_path_with_resolved(
+    path: &Path,
+    resolved_path: Option<PathBuf>,
+) -> bool {
+    let Some(host_path) = resolved_path else {
+        return false;
+    };
+
+    let Ok(path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let Ok(host_path) = std::fs::canonicalize(host_path) else {
+        return false;
+    };
+
+    path == host_path
+}
+
+fn resolve_host_system_package_manager_path(program: &OsStr) -> Option<PathBuf> {
+    if is_explicit_command_path(program) {
+        return None;
     }
+    let manager = SystemPackageManager::parse(program.to_str()?)?;
+    manager_requires_privileged_install(manager)
+        .then_some(resolve_command_path_in_standard_locations_os(program))
+        .flatten()
 }
 
-#[cfg(windows)]
-fn is_path_env_name(name: &OsStr) -> bool {
-    name.to_string_lossy().eq_ignore_ascii_case("PATH")
-}
-
-#[cfg(not(windows))]
-fn is_path_env_name(name: &OsStr) -> bool {
-    name == OsStr::new("PATH")
-}
-
-fn resolve_sudo_program(env: &[(OsString, OsString)]) -> PathBuf {
-    resolve_sudo_path(env).unwrap_or_else(|| PathBuf::from("sudo"))
+fn resolve_sudo_program() -> PathBuf {
+    resolve_sudo_path().unwrap_or_else(|| PathBuf::from("sudo"))
 }
 
 fn resolve_env_program() -> PathBuf {
-    resolve_command_path_or_standard_location_os(OsStr::new("env"))
+    resolve_command_path_in_standard_locations_os(OsStr::new("env"))
         .unwrap_or_else(|| PathBuf::from("env"))
 }
 
-fn sudo_available(env: &[(OsString, OsString)]) -> bool {
-    resolve_sudo_path(env).is_some()
+fn sudo_available() -> bool {
+    resolve_sudo_path().is_some()
 }
 
-fn resolve_sudo_path(env: &[(OsString, OsString)]) -> Option<PathBuf> {
-    resolve_command_path_os_with_path_var(OsStr::new("sudo"), effective_path_var(env))
-}
-
-fn effective_path_var(env: &[(OsString, OsString)]) -> Option<OsString> {
-    env.iter()
-        .rev()
-        .find_map(|(name, value)| is_path_env_name(name).then(|| value.clone()))
-        .or_else(|| std::env::var_os("PATH"))
+fn resolve_sudo_path() -> Option<PathBuf> {
+    resolve_command_path_in_standard_locations_os(OsStr::new("sudo"))
 }
 
 fn resolve_program_for_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
@@ -544,19 +562,31 @@ fn resolve_program_for_spawn(request: &HostCommandRequest<'_>) -> PathBuf {
 fn ensure_sudo_target_is_available(
     request: &HostCommandRequest<'_>,
 ) -> Result<(), HostCommandError> {
-    if is_explicit_command_path(request.program) {
+    let Some(target) = resolve_program_for_sudo_target(request) else {
+        return Err(HostCommandError::CommandNotFound {
+            program: request.program.to_os_string(),
+        });
+    };
+
+    if !is_explicit_command_path(request.program) {
         return Ok(());
     }
 
-    if resolve_command_path_os_with_path_var(request.program, effective_path_var(request.env))
-        .is_some()
-    {
+    if target.exists() {
         return Ok(());
     }
 
     Err(HostCommandError::CommandNotFound {
         program: request.program.to_os_string(),
     })
+}
+
+fn resolve_program_for_sudo_target(request: &HostCommandRequest<'_>) -> Option<PathBuf> {
+    if is_explicit_command_path(request.program) {
+        return Some(resolve_program_for_spawn(request));
+    }
+
+    resolve_host_system_package_manager_path(request.program)
 }
 
 fn is_explicit_command_path(command: &OsStr) -> bool {
@@ -603,6 +633,10 @@ mod tests {
     #[cfg(unix)]
     use super::ensure_sudo_target_is_available;
     use super::resolve_env_program;
+    #[cfg(unix)]
+    use super::resolve_program_for_sudo_target;
+    #[cfg(unix)]
+    use super::resolve_sudo_path;
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
     use super::{
@@ -680,11 +714,17 @@ mod tests {
             false,
             true,
         ));
+        assert!(!should_try_sudo_with_status(
+            OsStr::new("echo"),
+            HostCommandSudoMode::IfNonRootSystemCommand,
+            true,
+            true,
+        ));
     }
 
     #[cfg(unix)]
     #[test]
-    fn sudo_detection_uses_request_path_override() {
+    fn sudo_detection_ignores_request_path_override() {
         let temp = tempfile::tempdir().expect("tempdir");
         let sudo_path = write_test_command(temp.path(), "sudo");
         let env = vec![(
@@ -699,10 +739,12 @@ mod tests {
             sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
         };
 
-        assert!(should_try_sudo_for_request_with_status(&request, true));
-
-        let command = build_command(&request, HostCommandExecution::Sudo);
-        assert_eq!(Path::new(command.get_program()), sudo_path.as_path());
+        let resolved = resolve_sudo_path();
+        assert_ne!(resolved.as_deref(), Some(sudo_path.as_path()));
+        assert_eq!(
+            should_try_sudo_for_request_with_status(&request, true),
+            resolved.is_some()
+        );
     }
 
     #[test]
@@ -733,7 +775,10 @@ mod tests {
                 "--".to_string(),
                 "OMNE_TEST_VALUE=world".to_string(),
                 "OMNE_SECOND=value".to_string(),
-                "apt-get".to_string(),
+                resolve_program_for_sudo_target(&request)
+                    .unwrap_or_else(|| PathBuf::from("apt-get"))
+                    .to_string_lossy()
+                    .into_owned(),
                 "install".to_string(),
                 "curl".to_string(),
             ]
@@ -784,9 +829,30 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_missing_target_is_classified_as_command_not_found() {
+    fn sudo_unsupported_bare_target_is_classified_as_command_not_found() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let _sudo_path = write_test_command(temp.path(), "sudo");
+        let env = vec![(
+            OsString::from("PATH"),
+            temp.path().as_os_str().to_os_string(),
+        )];
+        let request = HostCommandRequest {
+            program: OsStr::new("echo"),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let err =
+            ensure_sudo_target_is_available(&request).expect_err("missing target should fail");
+        assert!(matches!(err, HostCommandError::CommandNotFound { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sudo_target_resolution_ignores_request_path_shadow_for_package_manager() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let fake_target = write_test_command(temp.path(), "apt-get");
         let env = vec![(
             OsString::from("PATH"),
             temp.path().as_os_str().to_os_string(),
@@ -799,9 +865,8 @@ mod tests {
             sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
         };
 
-        let err =
-            ensure_sudo_target_is_available(&request).expect_err("missing target should fail");
-        assert!(matches!(err, HostCommandError::CommandNotFound { .. }));
+        let resolved = resolve_program_for_sudo_target(&request);
+        assert_ne!(resolved.as_deref(), Some(fake_target.as_path()));
     }
 
     #[test]
@@ -1113,7 +1178,12 @@ mod tests {
                 0x45, 0x3d, 0x66, 0x6f, 0x80,
             ])
         );
-        assert_eq!(collected_args[4], OsString::from("apt-get"));
+        assert_eq!(
+            collected_args[4],
+            resolve_program_for_sudo_target(&request)
+                .unwrap_or_else(|| PathBuf::from("apt-get"))
+                .into_os_string()
+        );
     }
 
     #[cfg(unix)]

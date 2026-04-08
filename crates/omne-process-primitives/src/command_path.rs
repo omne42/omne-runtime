@@ -32,6 +32,10 @@ pub fn resolve_command_path_or_standard_location_os(command: &OsStr) -> Option<P
     })
 }
 
+pub(crate) fn resolve_command_path_in_standard_locations_os(command: &OsStr) -> Option<PathBuf> {
+    resolve_command_path_from_standard_locations(command, is_spawnable_command_path)
+}
+
 pub(crate) fn resolve_available_command_path(command: &str) -> Option<PathBuf> {
     resolve_available_command_path_os(OsStr::new(command))
 }
