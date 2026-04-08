@@ -23,6 +23,9 @@
   B”的路径漂移。
 - `command_available` / `command_available_os` / `command_available_for_request` 只会把真正可执行的命令视为 available，不会把普通文件或缺少执行位的路径伪装成“已可运行”。
 - direct 显式路径 spawn 如果返回 `ENOENT`，只有在解析后的目标路径确实不存在时才会折叠成 `CommandNotFound`；如果目标文件仍在，本 crate 会保留原始 spawn 失败，让缺失 shebang 解释器或动态 loader 这类问题不会被误报成“命令不存在”。
+- 如果 request 提供的 `working_directory` 本身缺失或不是目录，本 crate 也会保留原始
+  `SpawnFailed`，不会因为相对程序路径在那个无效 cwd 下同样“找不到”就误报成
+  `CommandNotFound`。
 - 当命中 `sudo` 路径时，在提权边界内完全丢弃 request env；提权链路会固定执行受信任标准目录里的 `sudo`、`env -i` 和目标命令绝对路径，提权后的目标只接收这条显式 argv 链，避免把 request `PATH`、sudo `secure_path` 差异或其他调用方环境变量重新带进 root 侧进程语义。
 - `sudo` 可用性判定、`sudo` 可执行路径选择、提权边界里的 `env` scrubber 选择以及提权后的 bare target 解析都不使用 request 里显式覆盖的 `PATH`，也不信任 ambient `PATH` 里的 shadow binary；这些 control-plane 程序只会从受信任的标准安装目录解析。
 - 相对地，direct bare command 的解析仍会沿用 request 显式覆盖的 `PATH`；这条 direct-resolution 语义与 sudo control-plane 解析是两条不同的 trust boundary，回归测试会分别钉住，避免未来重构把两者重新混成同一条查找规则。
@@ -36,7 +39,9 @@
 - Unix 下对 bare system command 做 `sudo -n` 试探。
 - 配置子进程以支持进程树清理；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
 - 捕获进程树清理标识并执行 best-effort 终止。
-- Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 descendant sweep。
+- Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 best-effort
+  root+descendant sweep，而且只有 root 进程也成功进入这条 fallback 终止路径后才消费掉
+  捕获的 PID，避免 fallback 失败时把 leader 从后续重试机会里静默丢掉。
 - Unix 上一旦无法重新验证原始 leader 身份，默认停止继续对该 process-group 做 `killpg`；Linux 现在连 cleanup capture 阶段也要求 leader `/proc` 身份仍然存在，leader 若已在 capture 完成前消失会直接 fail closed 返回错误，不再留下只记住历史 PGID 的 cleanup 句柄。cleanup 阶段则继续要求当前 leader `/proc` 身份与 capture 时那次完整 `/proc/<pid>/stat` 快照逐字段对齐。非 Linux Unix 因为当前没有同等级的 leader lifetime 重验能力，所以直接跳过 process-group `killpg`，只保留 direct child kill-on-drop / direct child kill 这层 fail-closed 行为。对“cleanup 时 leader PID 已被复用成另一个活进程”“leader 在 cleanup capture 前就已退出，导致无法再绑定 `/proc` 身份”以及“cleanup 时原 leader 已退出、无法继续重验原身份”这几类情况，本 crate 都会继续 fail closed。leader 的 process-group id、`start_ticks` 和 `session_id` 也必须来自同一次 `/proc/<pid>/stat` 读取并在 cleanup 时继续整体匹配，避免把不同进程生命周期的字段拼成伪身份，或把“同 session 才能 kill”放宽成仅凭 PGID 还存在就 kill。
 
 ## 不负责什么

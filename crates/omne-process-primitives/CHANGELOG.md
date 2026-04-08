@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- preserve `SpawnFailed(NotFound)` for invalid `working_directory` inputs instead of collapsing
+  them into `CommandNotFound`, so missing cwd errors stay distinguishable from missing executables
+- make Windows fallback process-tree cleanup best-effort kill the direct child as well as
+  descendants when `taskkill /T /F` fails, and keep the captured root PID available until either
+  that fallback or `taskkill` succeeds so failed fallback cleanup does not silently discard the
+  leader from later retries
 - make host-recipe regression tests pass an explicit `working_directory`, so concurrent tests that
   temporarily switch the process cwd cannot inject ambient `getcwd()` noise into stderr
   assertions
