@@ -176,9 +176,22 @@ impl PreparedAuditSink {
             .and_then(|_| writeln!(self.file, "{line}"))
             .and_then(|_| self.file.flush());
         let unlock_result = self.file.unlock();
-        write_result?;
-        unlock_result?;
-        Ok(())
+        finish_locked_write(write_result, unlock_result)
+    }
+}
+
+fn finish_locked_write(
+    write_result: std::io::Result<()>,
+    unlock_result: std::io::Result<()>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match (write_result, unlock_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(unlock_error)) => Err(unlock_error.into()),
+        (Err(write_error), Ok(())) => Err(write_error.into()),
+        (Err(write_error), Err(unlock_error)) => Err(std::io::Error::other(format!(
+            "audit log write failed: {write_error}; failed to release audit log lock: {unlock_error}"
+        ))
+        .into()),
     }
 }
 
@@ -713,6 +726,35 @@ mod tests {
             ExecError::AuditLogWriteFailed { path: err_path, .. } => assert_eq!(err_path, path),
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn finish_locked_write_returns_write_error_after_unlock_succeeds() {
+        let err = finish_locked_write(Err(std::io::Error::other("write failed")), Ok(()))
+            .expect_err("write failure should win");
+
+        assert!(err.to_string().contains("write failed"));
+    }
+
+    #[test]
+    fn finish_locked_write_surfaces_unlock_failure_after_successful_write() {
+        let err = finish_locked_write(Ok(()), Err(std::io::Error::other("unlock failed")))
+            .expect_err("unlock failure should be returned");
+
+        assert!(err.to_string().contains("unlock failed"));
+    }
+
+    #[test]
+    fn finish_locked_write_reports_both_write_and_unlock_failures() {
+        let err = finish_locked_write(
+            Err(std::io::Error::other("write failed")),
+            Err(std::io::Error::other("unlock failed")),
+        )
+        .expect_err("combined failure should be returned");
+
+        let message = err.to_string();
+        assert!(message.contains("write failed"));
+        assert!(message.contains("unlock failed"));
     }
 
     #[cfg(unix)]
