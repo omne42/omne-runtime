@@ -855,8 +855,5 @@ mod tests {
         assert!(!super::is_macos_root_alias_component(
             std::path::Component::Normal("private".as_ref())
         ));
-        assert!(!super::is_macos_root_alias_component(
-            std::path::Component::Normal("Users".as_ref())
-        ));
     }
 }

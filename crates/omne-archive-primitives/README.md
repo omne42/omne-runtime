@@ -16,10 +16,11 @@ Low-level archive/compression primitives shared across callers.
 - target binary matching by exact `archive_binary` hint or conventional `bin/<binary>` layout
 - extraction of the matched binary bytes from the archive, limited by the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget sized for large official single-binary releases
 - matched target validation that only accepts regular-file archive entries before reading content
-- archive-tree walking with shared entry-count / extracted-byte budgets and normalized path or link targets, so higher layers do not need to duplicate tar/zip traversal hardening
 
-If a caller needs to target a layout such as `PortableGit/cmd/git.exe`, it must pass that exact
-archive-relative path through `archive_binary_hint`.
+`BinaryArchiveRequest::tool_name` remains in the request shape for compatibility with existing
+callers, but this crate no longer interprets it. If a caller needs to target a layout such as
+`PortableGit/cmd/git.exe`, it must pass that exact archive-relative path through
+`archive_binary_hint`.
 
 ## Non-Goals
 

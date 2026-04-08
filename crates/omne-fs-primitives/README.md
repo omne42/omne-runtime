@@ -13,10 +13,8 @@ Low-level filesystem primitives shared by higher-level callers.
 
 - capability-style root opening and directory traversal
 - no-follow file opening and symlink/reparse classification
-- normalized-path no-follow regular-file reads and appendable regular-file validation/open helpers
 - bounded reads for text and byte streams
-- staged atomic file/directory replacement and advisory locking
-- parent-directory materialization for atomic staging that rejects non-root symlink ancestors instead of following them ambiently, while normalizing only known platform root aliases such as macOS `/var` and `/tmp`
+- staged atomic file/directory replacement and advisory locking, including no-follow parent-chain validation for staging roots
 
 ## Non-Goals
 

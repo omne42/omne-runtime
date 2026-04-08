@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use omne_fs_primitives::{AdvisoryLockGuard, lock_advisory_file_in_root};
+use omne_fs_primitives::{AdvisoryLockGuard, lock_advisory_file_in_ambient_root};
 
 use crate::artifact_download::ArtifactInstallError;
 
@@ -13,7 +13,7 @@ pub(crate) fn lock_install_destination(
 ) -> Result<AdvisoryLockGuard, ArtifactInstallError> {
     let lock_root = destination.parent().unwrap_or_else(|| Path::new("."));
     let lock_file = install_lock_file_name(destination, lock_prefix);
-    lock_advisory_file_in_root(
+    lock_advisory_file_in_ambient_root(
         lock_root,
         install_kind,
         &lock_file,

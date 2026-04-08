@@ -2,22 +2,19 @@
 
 ## 目的
 
-本文说明这个 workspace 的十个成员如何落在稳定边界上：
+本文说明这个 workspace 中九个 runtime crate 的职责划分：
 
 - `crates/omne-artifact-install-primitives`
 - `crates/omne-archive-primitives`
 - `crates/omne-execution-gateway`
 - `crates/omne-fs`
-- `crates/omne-fs/cli`，对应 package 名为 `omne-fs-cli`
 - `crates/omne-fs-primitives`
 - `crates/omne-host-info-primitives`
 - `crates/omne-integrity-primitives`
 - `crates/omne-process-primitives`，对应 package 名为 `omne-process-primitives`
 - `crates/omne-system-package-primitives`
 
-其中能力型 runtime crate 仍然是九个；`crates/omne-fs/cli` 是嵌套在 `omne-fs` 边界里的
-CLI package，不单独形成新的能力桶。这份文档把现有 ADR 的结论汇总成一份 workspace 级说明，
-方便后续新增代码时快速判断该放在哪里。
+这份文档把现有 ADR 的结论汇总成一份 workspace 级说明，方便后续新增代码时快速判断该放在哪里。
 
 命名规则也一并固定下来：统一采用 `omne-<能力/边界>`，用 `-primitives`、`-gateway`
 这类后缀表达层级和职责，不再重复 workspace 名本身；对外 package/crate 名避免引入新的
@@ -56,11 +53,6 @@ package 名保持一致。
 
 宿主机命令执行 / host recipe 执行 / 进程树清理原语
   -> omne-process-primitives
-
-`omne-fs` CLI package
-  -> omne-fs/cli
-       -> omne-fs
-       -> omne-fs-primitives
 ```
 
 直接含义是：
@@ -76,23 +68,18 @@ package 名保持一致。
 - `omne-system-package-primitives` 负责 canonical package manager、枚举和 install recipe，不和命令执行或 plan 语义混放。
 - `omne-execution-gateway` 负责执行决策和 sandbox 编排，但不负责通用进程生命周期策略。
 - `omne-process-primitives` 是独立 sibling crate，不是 `omne-fs` 的子模块。
-- `crates/omne-fs/cli` 只是 `omne-fs` 的 CLI package，不新增独立 capability 边界。
 
 ## 当前依赖方向
 
-- `omne-fs` 依赖 `omne-fs-primitives`，并在 `git-permissions` feature 下额外依赖
-  `omne-process-primitives` 的宿主机命令原语。
+- `omne-fs` 依赖 `omne-fs-primitives`。
   证据见 `crates/omne-fs/Cargo.toml`、
   `crates/omne-fs/src/platform_open.rs`、
-  `crates/omne-fs/src/ops/io.rs`、
-  `crates/omne-fs/src/ops/git_permissions.rs`。
-- `omne-fs-cli` 依赖 `omne-fs` 与 `omne-fs-primitives`，但它只是 `omne-fs` 边界的
-  二进制入口 package，不把文件系统策略层拆成新的 sibling crate。
+  `crates/omne-fs/src/ops/io.rs`。
 - `omne-artifact-install-primitives` 依赖 `omne-archive-primitives`、
   `omne-fs-primitives`、`omne-integrity-primitives` 与 foundation 的 `http-kit`。
   它首先面向需要共享 artifact 下载 + 校验 + 落盘/解压安装管道的 sibling caller。
-- `omne-execution-gateway` 当前依赖 `omne-fs-primitives` 与 `policy-meta`。
-  它把 bounded no-follow policy/request/audit-log 文件输入复用到 `omne-fs-primitives`，并把平台相关 sandbox 代码保留在 `src/sandbox/*` 下。
+- `omne-execution-gateway` 当前不依赖另外七个 workspace crate。
+  它直接依赖 `policy-meta`，并把平台相关 sandbox 代码保留在 `src/sandbox/*` 下。
 - `omne-process-primitives` 是独立的 sibling crate，供需要通用命令探测、宿主机命令执行、host recipe 执行和进程树清理能力的下游 runtime 或 domain caller 直接依赖。
 - `omne-archive-primitives` 当前也不被其他 runtime crate 依赖。
   它首先面向需要共享 archive/compression 提取能力的 sibling caller。
@@ -103,20 +90,18 @@ package 名保持一致。
 - `omne-system-package-primitives` 当前不依赖其他 runtime crate。
   它首先面向需要共享 canonical manager、默认 OS 级顺序和 install recipe 的 sibling caller。
 
-也就是说，这个 workspace 现在是有意拆成“七类共享能力 crate”“两类高层策略/编排 crate”
-以及“一个嵌套在 `omne-fs` 边界里的 CLI package”。随着 artifact install 管道进入 workspace，
-这个原则仍然不变：新增成员必须先判断它是新的能力边界，还是现有边界里的 package 入口，
-而不是继续堆新的兜底桶。
+也就是说，这个 workspace 现在是有意拆成“七类共享能力 crate”和“两类高层策略/编排 crate”。
+随着 artifact install 管道进入 workspace，这个原则仍然不变：新增的是一个新的能力型
+crate，不是新的兜底桶。
 
 ## 边界总表
 
-| Member | 负责什么 | 不负责什么 |
+| Crate | 负责什么 | 不负责什么 |
 | --- | --- | --- |
-| `omne-artifact-install-primitives` | 无产品策略的 artifact 安装管道：下载候选执行、可选 SHA-256 校验、direct binary 原子落盘、binary-from-archive 安装、以及基于 shared archive walker 的 staged directory replace 编排 | GitHub release 元数据、候选顺序策略、产品目录布局、领域错误码、CLI |
-| `omne-archive-primitives` | 无策略的 archive/compression 能力：`.tar.gz`、`.tar.xz`、`.zip` 识别，归档条目遍历，按精确 hint 或约定布局匹配目标二进制，提取目标二进制字节，以及 archive tree walker 的路径/link/预算硬化 | 文件写入、权限设置、原子替换、下载、来源校验、领域错误映射、CLI |
+| `omne-artifact-install-primitives` | 无产品策略的 artifact 安装管道：下载候选执行、可选 SHA-256 校验、direct binary 原子落盘、binary-from-archive 安装、archive-tree 预算/link 校验与 staged directory replace 编排 | GitHub release 元数据、候选顺序策略、产品目录布局、领域错误码、CLI |
+| `omne-archive-primitives` | 无策略的 archive/compression 能力：`.tar.gz`、`.tar.xz`、`.zip` 识别，归档条目遍历，按精确 hint 或约定布局匹配目标二进制，提取目标二进制字节 | 文件写入、权限设置、原子替换、下载、来源校验、领域错误映射、CLI |
 | `omne-execution-gateway` | 执行请求模型、隔离级别校验、`policy_default` 来源校验、执行时的 `workspace/cwd` 校验、声明式变更命令门控、sandbox 应用、审计事件与日志 | 文件系统操作策略、通用文件 API、`omne-fs` CLI 语义解析、超时/取消策略、stdout/stderr 保密策略、通用进程树清理原语 |
-| `omne-fs` | 文件系统 `SandboxPolicy`、root/path/permission/limit/secret 语义、redaction、高层文件操作、CLI、policy I/O，以及 `git-permissions` feature 下对 Git tracked/clean fallback 的策略解释 | 描述符级 no-follow open、通用 bounded-read 原语、宿主机命令 spawn 原语、进程清理、OS sandbox |
-| `omne-fs-cli` | `omne-fs` 的 CLI 二进制入口、参数接线和输出适配；它复用 `omne-fs` 的文件系统策略边界，而不是重新定义一套文件系统能力 | 新的 runtime capability 边界、低层文件系统原语、独立 policy 模型 |
+| `omne-fs` | 文件系统 `SandboxPolicy`、root/path/permission/limit/secret 语义、redaction、高层文件操作、CLI、policy I/O | 描述符级 no-follow open、通用 bounded-read 原语、进程清理、OS sandbox |
 | `omne-fs-primitives` | 无策略的文件系统原语：root materialization、capability 风格目录访问、no-follow open、symlink/reparse 分类、bounded read、staged atomic file/directory replace、advisory lock | `SandboxPolicy`、alias-root 语义、权限决策、secret 处理、redaction、CLI |
 | `omne-host-info-primitives` | 无策略的宿主信息原语：宿主 OS/arch 识别、canonical target triple 映射、target override 归一化、home 目录解析、目标可执行后缀推断 | `OMNE_DATA_DIR`/产品目录策略、包管理器适配、安装编排、CLI |
 | `omne-integrity-primitives` | 无策略的完整性原语：`sha256:<hex>` 解析、原始 hex 输入解析、内容摘要计算与校验错误建模 | HTTP 下载、release 元数据、来源选择、安装编排、CLI |
@@ -136,7 +121,7 @@ package 名保持一致。
 - 对下载结果执行可选的 SHA-256 校验
 - 把 direct binary asset 原子安装到目标路径
 - 从受支持的 archive 中提取目标二进制并安装
-- 基于 `omne-archive-primitives` 的 shared walker 把 archive tree 物化到 staged 目录，并在成功后替换目标目录
+- 把 archive tree 解到 `omne-fs-primitives` 提供的 staged 目录并在成功后替换目标目录
 
 这些职责可以从下面这些文件直接看到：
 
@@ -169,13 +154,11 @@ package 名保持一致。
 - 遍历归档条目并统一归一化条目路径
 - 按精确 `archive_binary` hint 或约定布局查找目标条目；非常规 archive 布局必须由调用方提供精确 hint，primitive 不内置产品特例
 - 读取并返回匹配到的目标二进制字节
-- 为 archive tree 调用方提供共享 walker，统一路径净化、link target 读取和 tree 级预算控制
 
 这些职责可以从下面这些文件直接看到：
 
 - `crates/omne-archive-primitives/src/lib.rs`
 - `crates/omne-archive-primitives/src/binary_archive.rs`
-- `crates/omne-archive-primitives/src/archive_tree.rs`
 
 ### 它不负责什么
 
