@@ -622,18 +622,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn detect_host_linux_libc_with_proc_maps_fails_closed_for_ambiguous_runtime_evidence() {
-        let libc = super::detect_host_linux_libc_with_proc_maps(
-            &|| Some("/lib64/ld-linux-x86-64.so.2\n/lib/ld-musl-x86_64.so.1\n".to_string()),
-        );
+        let libc = super::detect_host_linux_libc_with_proc_maps(&|| {
+            Some("/lib64/ld-linux-x86-64.so.2\n/lib/ld-musl-x86_64.so.1\n".to_string())
+        });
         assert_eq!(libc, None);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_host_platform_fails_closed_after_ambiguous_process_maps() {
-        let linux_libc = super::detect_host_linux_libc_with_proc_maps(
-            &|| Some("/lib64/ld-linux-x86-64.so.2\n/lib/ld-musl-x86_64.so.1\n".to_string()),
-        );
+        let linux_libc = super::detect_host_linux_libc_with_proc_maps(&|| {
+            Some("/lib64/ld-linux-x86-64.so.2\n/lib/ld-musl-x86_64.so.1\n".to_string())
+        });
         let host_platform =
             host_platform_from_parts("linux", "x86_64", linux_libc).expect("linux platform");
         assert_eq!(host_platform.linux_libc(), None);
@@ -643,9 +643,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn detect_host_linux_libc_uses_process_maps_when_available() {
-        let libc = super::detect_host_linux_libc_with_proc_maps(
-            &|| Some("/lib64/ld-linux-x86-64.so.2\n/usr/lib64/libc.so.6\n".to_string()),
-        );
+        let libc = super::detect_host_linux_libc_with_proc_maps(&|| {
+            Some("/lib64/ld-linux-x86-64.so.2\n/usr/lib64/libc.so.6\n".to_string())
+        });
         assert_eq!(libc, Some(HostLinuxLibc::Gnu));
     }
 
@@ -659,9 +659,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn detect_host_linux_libc_fails_closed_for_musl_markers_on_glibc_maps_conflict() {
-        let libc = super::detect_host_linux_libc_with_proc_maps(
-            &|| Some("/lib64/ld-linux-x86-64.so.2\n/lib/libc.musl-x86_64.so.1\n".to_string()),
-        );
+        let libc = super::detect_host_linux_libc_with_proc_maps(&|| {
+            Some("/lib64/ld-linux-x86-64.so.2\n/lib/libc.musl-x86_64.so.1\n".to_string())
+        });
         assert_eq!(libc, None);
     }
 
