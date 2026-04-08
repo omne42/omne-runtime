@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- restore startup-sensitive env denial plus strict mutating/non-mutating allowlist enforcement
+  inside `prepare_request()`, so the runtime once again matches the documented fail-closed policy
+  contract and the gateway test suite
 - make `ExecGateway::new()` / `with_supported_isolation(...)` disable mutation enforcement in their host-compatible constructor baseline, so default gateways stop behaving like empty-allowlist deny-all instances
 - add `CapabilityReport::policy_default_isolation_permitted`, so capability surfaces keep the
   configured `policy_default_isolation` while also stating whether that default is currently
