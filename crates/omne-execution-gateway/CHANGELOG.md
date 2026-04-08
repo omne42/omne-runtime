@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- stop treating runtime audit-sink availability as a preflight denial, so `resolve_request()` /
+  `evaluate()` / `preflight()` stay pure projections while `execute()` / `prepare_command()`
+  still fail closed before unaudited side effects
 - classify opaque launcher families by executable family patterns instead of a small exact-name
   set, so variant frontends such as `python3.12`, `pip3.12`, and `nodejs` cannot bypass
   allowlist enforcement while still avoiding broad basename-based mutation guesses for direct

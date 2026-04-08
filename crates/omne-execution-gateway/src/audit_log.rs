@@ -5,9 +5,9 @@ use std::process::ExitStatus;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
-use omne_fs_primitives::{
-    open_appendable_regular_file_in_ambient_root, validate_appendable_regular_file_in_ambient_root,
-};
+use omne_fs_primitives::open_appendable_regular_file_in_ambient_root;
+#[cfg(test)]
+use omne_fs_primitives::validate_appendable_regular_file_in_ambient_root;
 use serde::Serialize;
 
 use crate::audit::ExecEvent;
@@ -70,6 +70,7 @@ impl AuditLogger {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_ready_without_side_effects(&self) -> ExecResult<()> {
         validate_appendable_regular_file_path(&self.path).map_err(|err| {
             ExecError::AuditLogUnavailable {
@@ -115,6 +116,7 @@ impl AuditLogger {
     }
 }
 
+#[cfg(test)]
 fn validate_appendable_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     validate_absolute_audit_log_path(path)?;
     validate_appendable_regular_file_in_ambient_root(path, "audit log").map_err(|err| err.into())

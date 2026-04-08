@@ -27,9 +27,15 @@ The gateway exposes `ExecEvent` to describe decision outcomes.
 - `execute(&request).into_parts()` when tuple destructuring is preferred.
 - `prepare_command(&request)` for callers that need a spawn-only `PreparedCommand`; the gateway derives the prepared spawn entirely from the audited request, and `PreparedCommand::spawn()` revalidates bound `cwd` / `workspace_root` identities right before spawn.
 
-`execute()` is the only path that owns the full child lifecycle and therefore emits the final
-execution audit record plus runtime sandbox observation. `prepare_command()` only writes the
-preflight `prepared` / `prepare_error` audit record before returning control to the caller.
+`resolve_request()`, `evaluate()`, and `preflight()` stay pure projections: they do not create
+audit directories/files, and audit-sink availability only fails closed once `execute()` or
+`prepare_command()` enters the side-effecting path.
+
+`execute()` owns the full child lifecycle and therefore emits the final execution audit record plus
+runtime sandbox observation. `prepare_command()` writes the preflight `prepared` /
+`prepare_error` audit record before returning control to the caller, and `PreparedChild::wait()` /
+`try_wait()` / drop finalization append the terminal execution audit record once the prepared child
+actually runs.
 
 ## JSONL Audit Sink
 
