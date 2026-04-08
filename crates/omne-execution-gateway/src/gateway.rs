@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::OnceLock;
 
 use crate::audit::{ExecDecision, ExecEvent, SandboxRuntimeObservation, requested_policy_meta};
 use crate::audit_log::{AuditLogger, PreparedAuditSink};
@@ -621,31 +622,48 @@ impl ExecGateway {
 }
 
 fn uses_opaque_command_launcher(program: &OsStr) -> bool {
-    program_basename_ascii(program).is_some_and(|normalized| {
-        matches!(
-            normalized.as_str(),
-            "env"
-                | "sh"
-                | "bash"
-                | "dash"
-                | "zsh"
-                | "fish"
-                | "ksh"
-                | "cmd"
-                | "powershell"
-                | "pwsh"
-                | "python"
-                | "python2"
-                | "python3"
-                | "node"
-                | "deno"
-                | "bun"
-                | "ruby"
-                | "perl"
-                | "php"
-                | "lua"
-        )
-    })
+    program_basename_ascii(program)
+        .is_some_and(|normalized| normalized_opaque_command_launcher_name(&normalized))
+}
+
+fn normalized_opaque_command_launcher_name(program: &str) -> bool {
+    matches!(
+        program,
+        "env"
+            | "sh"
+            | "bash"
+            | "dash"
+            | "zsh"
+            | "fish"
+            | "ksh"
+            | "csh"
+            | "tcsh"
+            | "cmd"
+            | "powershell"
+            | "pwsh"
+            | "node"
+            | "nodejs"
+            | "deno"
+            | "bun"
+            | "ruby"
+            | "perl"
+            | "php"
+            | "lua"
+            | "npm"
+            | "npx"
+            | "pnpm"
+            | "yarn"
+    ) || matches_versioned_opaque_command_family(program, "python")
+        || matches_versioned_opaque_command_family(program, "pythonw")
+        || matches_versioned_opaque_command_family(program, "pip")
+}
+
+fn matches_versioned_opaque_command_family(program: &str, family: &str) -> bool {
+    let Some(suffix) = program.strip_prefix(family) else {
+        return false;
+    };
+
+    suffix.is_empty() || suffix.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
 }
 
 fn request_uses_opaque_command_launcher(program: &OsStr, bound_program: &BoundProgram) -> bool {
@@ -1209,23 +1227,28 @@ fn resolve_bare_program_path_from_env(program: &OsStr) -> Option<PathBuf> {
 }
 
 fn resolve_bare_program_path_from_standard_locations(program: &OsStr) -> Option<PathBuf> {
-    #[cfg(not(windows))]
-    let candidate_dirs = [
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-        "/opt/homebrew/bin",
-        "/opt/local/bin",
-    ];
-    #[cfg(windows)]
-    let candidate_dirs: [&str; 0] = [];
-
-    for dir in candidate_dirs {
+    for dir in standard_program_search_dirs() {
         if let Some(path) = resolve_bare_program_in_dir(program, Path::new(dir)) {
             return Some(path);
         }
     }
     None
+}
+
+#[cfg(not(windows))]
+fn standard_program_search_dirs() -> &'static [&'static str] {
+    &[
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/opt/homebrew/bin",
+        "/opt/local/bin",
+    ]
+}
+
+#[cfg(windows)]
+fn standard_program_search_dirs() -> &'static [&'static str] {
+    &[]
 }
 
 fn resolve_bare_program_in_dir(program: &OsStr, dir: &Path) -> Option<PathBuf> {
@@ -1330,12 +1353,10 @@ fn explicit_program_paths_match(actual: &Path, requested: &Path) -> bool {
 }
 
 fn bound_program_matches_trusted_opaque_launcher(program: &BoundProgram) -> bool {
-    trusted_opaque_launcher_paths()
-        .into_iter()
-        .any(|trusted_path| {
-            explicit_program_paths_match(&program.path, &trusted_path)
-                || trusted_opaque_launcher_fingerprint_matches(program, &trusted_path)
-        })
+    trusted_opaque_launcher_paths().iter().any(|trusted_path| {
+        explicit_program_paths_match(&program.path, trusted_path)
+            || trusted_opaque_launcher_fingerprint_matches(program, trusted_path)
+    })
 }
 
 fn trusted_opaque_launcher_fingerprint_matches(
@@ -1347,39 +1368,42 @@ fn trusted_opaque_launcher_fingerprint_matches(
         .unwrap_or(false)
 }
 
-fn trusted_opaque_launcher_paths() -> Vec<PathBuf> {
-    [
-        "sh",
-        "bash",
-        "dash",
-        "zsh",
-        "fish",
-        "ksh",
-        "cmd",
-        "powershell",
-        "pwsh",
-        "python",
-        "python2",
-        "python3",
-        "node",
-        "deno",
-        "bun",
-        "ruby",
-        "perl",
-        "php",
-        "lua",
-    ]
-    .into_iter()
-    .filter_map(|program| resolve_bare_program_path_from_standard_locations(OsStr::new(program)))
-    .fold(Vec::<PathBuf>::new(), |mut paths, path| {
-        if !paths
-            .iter()
-            .any(|known| explicit_program_paths_match(known, &path))
-        {
+fn trusted_opaque_launcher_paths() -> &'static [PathBuf] {
+    static TRUSTED_OPAQUE_LAUNCHER_PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+    TRUSTED_OPAQUE_LAUNCHER_PATHS
+        .get_or_init(discover_trusted_opaque_launcher_paths)
+        .as_slice()
+}
+
+fn discover_trusted_opaque_launcher_paths() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+
+    for dir in standard_program_search_dirs() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            if !uses_opaque_command_launcher(file_name.as_os_str()) {
+                continue;
+            }
+
+            let path = entry.path();
+            if !is_spawnable_program_path(&path) {
+                continue;
+            }
+            if paths
+                .iter()
+                .any(|known| explicit_program_paths_match(known, &path))
+            {
+                continue;
+            }
             paths.push(path);
         }
-        paths
-    })
+    }
+
+    paths
 }
 
 fn combine_result_with_audit_write<T>(
@@ -2681,6 +2705,14 @@ mod tests {
         assert!(uses_opaque_command_launcher(OsStr::new("/usr/bin/env")));
     }
 
+    #[test]
+    fn detects_versioned_and_variant_opaque_launchers() {
+        assert!(uses_opaque_command_launcher(OsStr::new("python3.12")));
+        assert!(uses_opaque_command_launcher(OsStr::new("pip3.12")));
+        assert!(uses_opaque_command_launcher(OsStr::new("nodejs")));
+        assert!(!uses_opaque_command_launcher(OsStr::new("python-config")));
+    }
+
     #[cfg(unix)]
     #[test]
     fn denies_env_launcher_without_allowlist() {
@@ -2767,6 +2799,60 @@ mod tests {
         let request = ExecRequest::new(
             interpreter_program(),
             vec![interpreter_inline_flag(), interpreter_mutating_snippet()],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
+    }
+
+    #[test]
+    fn denies_versioned_python_launcher_when_explicitly_allowlisted_for_non_mutation() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = variant_opaque_program_path(&workspace, "python3.12");
+        write_test_executable_placeholder(&program);
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &program,
+            vec![interpreter_inline_flag(), "print('hello')"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
+    }
+
+    #[test]
+    fn denies_versioned_pip_frontend_when_explicitly_allowlisted_for_non_mutation() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = variant_opaque_program_path(&workspace, "pip3.12");
+        write_test_executable_placeholder(&program);
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &program,
+            vec!["show", "setuptools"],
             workspace.path(),
             ExecutionIsolation::BestEffort,
             workspace.path(),
@@ -4022,6 +4108,16 @@ mod tests {
 
     #[cfg(not(windows))]
     fn test_program_path(workspace: &tempfile::TempDir, stem: &str) -> PathBuf {
+        workspace.path().join(stem)
+    }
+
+    #[cfg(windows)]
+    fn variant_opaque_program_path(workspace: &tempfile::TempDir, stem: &str) -> PathBuf {
+        workspace.path().join(format!("{stem}.exe"))
+    }
+
+    #[cfg(not(windows))]
+    fn variant_opaque_program_path(workspace: &tempfile::TempDir, stem: &str) -> PathBuf {
         workspace.path().join(stem)
     }
 

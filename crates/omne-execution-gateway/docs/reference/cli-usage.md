@@ -53,12 +53,15 @@ preflight; if lookup cannot be bound to a concrete executable, the request fails
 passing an unresolved name through to `spawn()`.
 Allowlisted explicit paths are compared by resolved executable identity, so a symlink alias is only
 authorized while it still points at the same executable file.
-Shell-like opaque launchers such as `sh`, `cmd`, `powershell`, `pwsh`, `python`, and `node` are denied even if
-their full executable paths appear in an allowlist. The gateway does not parse `omne-fs` subcommands, shell scripts,
-or interpreter payloads to infer mutation intent.
-The gateway likewise does not infer read-only vs mutating behavior from executable basenames. If
-you want to authorize a read-only `git status` or `cargo metadata` path, place that exact resolved
-executable in `non_mutating_program_allowlist`.
+Shell-like and multiplexing opaque frontends such as `sh`, `cmd`, `powershell`, `pwsh`,
+`python3.12`, `pip3.12`, and `nodejs` are denied even if their full executable paths appear in an
+allowlist. The gateway does not parse `omne-fs` subcommands, shell scripts, package-manager
+operations, or interpreter payloads to infer mutation intent.
+The gateway likewise does not infer arbitrary read-only vs mutating behavior from executable
+basenames. If you want to authorize a read-only direct executable such as `git status` or
+`cargo metadata`, place that exact resolved executable in `non_mutating_program_allowlist`;
+multiplexing launcher/frontend families stay fail-closed because executable identity alone does
+not prove a read-only subcommand.
 `request_resolution`, `event`, and the pure evaluation methods stay side-effect free; the gateway
 only creates the audit parent chain during `execute()` / `prepare_command()`.
 

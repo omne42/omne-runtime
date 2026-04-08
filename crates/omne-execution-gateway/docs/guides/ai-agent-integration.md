@@ -23,7 +23,7 @@ agent plan
 - Use explicit executable paths for any mutating tool, and replace shell/interpreter launchers with a direct executable whenever possible.
 - Treat denial reasons as actionable control signals.
 - Persist `execution.event.requested_policy_meta` when you need a canonical cross-repo record of the requested isolation contract.
-- Avoid shell-style launchers and interpreters such as `sh`, `cmd`, `powershell`, `pwsh`, `python`, and `node`; the gateway now rejects them even when they are allowlisted.
+- Avoid shell-style launchers and multiplexing frontends such as `sh`, `cmd`, `powershell`, `pwsh`, `python3.12`, `pip3.12`, and `nodejs`; the gateway rejects them even when they are allowlisted.
 - Current hosts only report `none` support. Treat `best_effort` / `strict` requests as deliberate fail-closed guards until a native sandbox backend is restored.
 
 ## Repair Mapping
