@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- reject archive-tree entries whose output paths only differ by case when the staged destination
+  filesystem is case-insensitive, so archives such as `bin/tool` plus `BIN/TOOL` fail closed
+  instead of depending on host filesystem semantics
 - drop direct archive/compression crate dependencies from the runtime dependency graph now that
   archive parsing and extraction stay behind `omne-archive-primitives`; only test fixtures keep
   `tar`/`zip`

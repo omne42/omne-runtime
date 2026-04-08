@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::io::{Cursor, Read, Seek, SeekFrom};
@@ -15,8 +16,8 @@ use omne_archive_primitives::{
 use omne_archive_primitives::{walk_tar_archive_tree, walk_zip_archive_tree};
 use omne_fs_primitives::{
     AtomicDirectoryOptions, AtomicWriteOptions, Dir, create_directory_component,
-    create_regular_file_at, lock_advisory_file_in_ambient_root, open_directory_component,
-    stage_directory_atomically, stage_file_atomically_with_name,
+    create_regular_file_at, filesystem_is_case_sensitive, lock_advisory_file_in_ambient_root,
+    open_directory_component, stage_directory_atomically, stage_file_atomically_with_name,
 };
 #[cfg(all(test, unix))]
 use omne_fs_primitives::{MissingRootPolicy, open_ambient_root};
@@ -165,10 +166,11 @@ where
     let staged = stage_directory_atomically(destination, &archive_tree_stage_options())
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     {
+        let staged_path = staged.path().to_path_buf();
         let staged_root = staged
             .try_clone_dir()
             .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-        extract_archive_tree_into_root(asset_name, reader, &staged_root, limits)?;
+        extract_archive_tree_into_root(asset_name, reader, &staged_root, &staged_path, limits)?;
     }
     staged
         .commit()
@@ -179,12 +181,13 @@ fn extract_archive_tree_into_root<R>(
     asset_name: &str,
     reader: R,
     destination_root: &Dir,
+    destination_root_path: &Path,
     limits: ArchiveExtractionLimits,
 ) -> Result<(), ArtifactInstallError>
 where
     R: Read + Seek,
 {
-    let mut installer = ArchiveTreeInstaller::new(destination_root)?;
+    let mut installer = ArchiveTreeInstaller::new(destination_root, destination_root_path)?;
     walk_archive_tree(asset_name, reader, limits, &mut installer)
         .map_err(map_archive_walk_error)?;
     installer.finish()
@@ -331,19 +334,45 @@ fn archive_tree_lock_identity_bytes(path: &Path) -> Vec<u8> {
 
 struct ArchiveTreeInstaller {
     destination_root: Dir,
+    case_collision_tracker: Option<CaseCollisionTracker>,
     pending_hard_links: Vec<PendingTarHardLink>,
 }
 
 impl ArchiveTreeInstaller {
-    fn new(destination_root: &Dir) -> Result<Self, ArtifactInstallError> {
+    fn new(
+        destination_root: &Dir,
+        destination_root_path: &Path,
+    ) -> Result<Self, ArtifactInstallError> {
+        Self::new_with_case_sensitivity(
+            destination_root,
+            filesystem_is_case_sensitive(destination_root_path),
+        )
+    }
+
+    fn new_with_case_sensitivity(
+        destination_root: &Dir,
+        case_sensitive: bool,
+    ) -> Result<Self, ArtifactInstallError> {
         Ok(Self {
             destination_root: open_archive_directory_root(destination_root)?,
+            case_collision_tracker: (!case_sensitive).then(CaseCollisionTracker::default),
             pending_hard_links: Vec::new(),
         })
     }
 
     fn finish(mut self) -> Result<(), ArtifactInstallError> {
-        resolve_pending_tar_hard_links(&mut self.pending_hard_links, &self.destination_root)
+        resolve_pending_tar_hard_links(
+            &mut self.pending_hard_links,
+            &self.destination_root,
+            self.case_collision_tracker.as_ref(),
+        )
+    }
+
+    fn record_case_collision(&mut self, path: &Path) -> Result<(), ArtifactInstallError> {
+        let Some(case_collision_tracker) = self.case_collision_tracker.as_mut() else {
+            return Ok(());
+        };
+        case_collision_tracker.record_path_chain(path)
     }
 }
 
@@ -351,6 +380,7 @@ impl ArchiveTreeVisitor for ArchiveTreeInstaller {
     type Error = ArtifactInstallError;
 
     fn visit_directory(&mut self, path: &Path) -> Result<(), Self::Error> {
+        self.record_case_collision(path)?;
         ensure_archive_directory_chain(path, path, &self.destination_root, true).map(|_| ())
     }
 
@@ -360,14 +390,17 @@ impl ArchiveTreeVisitor for ArchiveTreeInstaller {
         reader: &mut R,
         unix_mode: Option<u32>,
     ) -> Result<(), Self::Error> {
+        self.record_case_collision(path)?;
         write_archive_regular_file(path, path, &self.destination_root, reader, unix_mode)
     }
 
     fn visit_symlink(&mut self, path: &Path, target: &Path) -> Result<(), Self::Error> {
+        self.record_case_collision(path)?;
         create_tar_symlink(path, path, target, &self.destination_root)
     }
 
     fn visit_hard_link(&mut self, path: &Path, target: &Path) -> Result<(), Self::Error> {
+        self.record_case_collision(path)?;
         self.pending_hard_links.push(prepare_tar_hard_link(
             path,
             path,
@@ -376,6 +409,77 @@ impl ArchiveTreeVisitor for ArchiveTreeInstaller {
         )?);
         Ok(())
     }
+}
+
+#[derive(Debug, Default)]
+struct CaseCollisionTracker {
+    first_paths_by_key: HashMap<String, PathBuf>,
+}
+
+impl CaseCollisionTracker {
+    fn record_path_chain(&mut self, path: &Path) -> Result<(), ArtifactInstallError> {
+        let sanitized = sanitize_archive_path(path)?;
+        let mut current = PathBuf::new();
+        for component in sanitized.components() {
+            let Component::Normal(component) = component else {
+                unreachable!("sanitize_archive_path only returns normal components");
+            };
+            current.push(component);
+            self.record_exact_path(path, &current)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_exact_case_match(
+        &self,
+        entry_path: &Path,
+        referenced_path: &Path,
+    ) -> Result<(), ArtifactInstallError> {
+        let key = case_collision_key(referenced_path)?;
+        let Some(first_path) = self.first_paths_by_key.get(&key) else {
+            return Ok(());
+        };
+        if first_path == referenced_path {
+            return Ok(());
+        }
+
+        Err(case_collision_error(
+            entry_path,
+            referenced_path,
+            first_path,
+        ))
+    }
+
+    fn record_exact_path(
+        &mut self,
+        entry_path: &Path,
+        candidate_path: &Path,
+    ) -> Result<(), ArtifactInstallError> {
+        let key = case_collision_key(candidate_path)?;
+        if let Some(first_path) = self.first_paths_by_key.get(&key) {
+            if first_path != candidate_path {
+                return Err(case_collision_error(entry_path, candidate_path, first_path));
+            }
+            return Ok(());
+        }
+
+        self.first_paths_by_key
+            .insert(key, candidate_path.to_path_buf());
+        Ok(())
+    }
+}
+
+fn case_collision_error(
+    entry_path: &Path,
+    candidate_path: &Path,
+    first_path: &Path,
+) -> ArtifactInstallError {
+    ArtifactInstallError::install(format!(
+        "archive tree path `{}` collides with `{}` on a case-insensitive filesystem while extracting {}",
+        candidate_path.display(),
+        first_path.display(),
+        entry_path.display()
+    ))
 }
 
 #[cfg(all(test, unix))]
@@ -388,19 +492,36 @@ where
     R: Read + Seek,
 {
     let destination_root = open_archive_destination_root(destination)?;
-    extract_zip_tree_into_root(reader, &destination_root, limits)
+    extract_zip_tree_into_root(reader, &destination_root, destination, limits)
 }
 
 #[cfg(all(test, unix))]
 fn extract_zip_tree_into_root<R>(
     reader: R,
     destination_root: &Dir,
+    destination_root_path: &Path,
     limits: ArchiveExtractionLimits,
 ) -> Result<(), ArtifactInstallError>
 where
     R: Read + Seek,
 {
-    let mut installer = ArchiveTreeInstaller::new(destination_root)?;
+    let mut installer = ArchiveTreeInstaller::new(destination_root, destination_root_path)?;
+    walk_zip_archive_tree(reader, limits, &mut installer).map_err(map_archive_walk_error)?;
+    installer.finish()
+}
+
+#[cfg(all(test, unix))]
+fn extract_zip_tree_into_root_with_case_sensitivity<R>(
+    reader: R,
+    destination_root: &Dir,
+    case_sensitive: bool,
+    limits: ArchiveExtractionLimits,
+) -> Result<(), ArtifactInstallError>
+where
+    R: Read + Seek,
+{
+    let mut installer =
+        ArchiveTreeInstaller::new_with_case_sensitivity(destination_root, case_sensitive)?;
     walk_zip_archive_tree(reader, limits, &mut installer).map_err(map_archive_walk_error)?;
     installer.finish()
 }
@@ -415,19 +536,36 @@ where
     R: Read,
 {
     let destination_root = open_archive_destination_root(destination)?;
-    extract_tar_tree_into_root(reader, &destination_root, limits)
+    extract_tar_tree_into_root(reader, &destination_root, destination, limits)
 }
 
 #[cfg(all(test, unix))]
 fn extract_tar_tree_into_root<R>(
     reader: R,
     destination_root: &Dir,
+    destination_root_path: &Path,
     limits: ArchiveExtractionLimits,
 ) -> Result<(), ArtifactInstallError>
 where
     R: Read,
 {
-    let mut installer = ArchiveTreeInstaller::new(destination_root)?;
+    let mut installer = ArchiveTreeInstaller::new(destination_root, destination_root_path)?;
+    walk_tar_archive_tree(reader, limits, &mut installer).map_err(map_archive_walk_error)?;
+    installer.finish()
+}
+
+#[cfg(all(test, unix))]
+fn extract_tar_tree_into_root_with_case_sensitivity<R>(
+    reader: R,
+    destination_root: &Dir,
+    case_sensitive: bool,
+    limits: ArchiveExtractionLimits,
+) -> Result<(), ArtifactInstallError>
+where
+    R: Read,
+{
+    let mut installer =
+        ArchiveTreeInstaller::new_with_case_sensitivity(destination_root, case_sensitive)?;
     walk_tar_archive_tree(reader, limits, &mut installer).map_err(map_archive_walk_error)?;
     installer.finish()
 }
@@ -500,12 +638,13 @@ fn prepare_tar_hard_link(
 fn resolve_pending_tar_hard_links(
     pending_hard_links: &mut Vec<PendingTarHardLink>,
     destination_root: &Dir,
+    case_collision_tracker: Option<&CaseCollisionTracker>,
 ) -> Result<(), ArtifactInstallError> {
     while !pending_hard_links.is_empty() {
         let mut remaining = Vec::new();
         let mut progressed = false;
         for pending in pending_hard_links.drain(..) {
-            if try_create_tar_hard_link(&pending, destination_root)? {
+            if try_create_tar_hard_link(&pending, destination_root, case_collision_tracker)? {
                 progressed = true;
             } else {
                 remaining.push(pending);
@@ -535,7 +674,12 @@ fn resolve_pending_tar_hard_links(
 fn try_create_tar_hard_link(
     pending: &PendingTarHardLink,
     destination_root: &Dir,
+    case_collision_tracker: Option<&CaseCollisionTracker>,
 ) -> Result<bool, ArtifactInstallError> {
+    if let Some(case_collision_tracker) = case_collision_tracker {
+        case_collision_tracker
+            .ensure_exact_case_match(&pending.entry_path, &pending.resolved_target)?;
+    }
     let parent = pending.output_path.parent().ok_or_else(|| {
         ArtifactInstallError::install(format!(
             "cannot determine hard link parent for tar entry {}",
@@ -819,6 +963,38 @@ fn archive_leaf_name(path: &Path) -> Result<&Path, ArtifactInstallError> {
     })
 }
 
+fn case_collision_key(path: &Path) -> Result<String, ArtifactInstallError> {
+    let path = sanitize_archive_path(path)?;
+    let mut key = String::new();
+    for (index, component) in path.components().enumerate() {
+        let Component::Normal(component) = component else {
+            unreachable!("sanitize_archive_path only returns normal components");
+        };
+        if index > 0 {
+            key.push('/');
+        }
+        append_case_folded_component(&mut key, component);
+    }
+    Ok(key)
+}
+
+#[cfg(unix)]
+fn append_case_folded_component(buffer: &mut String, component: &std::ffi::OsStr) {
+    for byte in component.as_bytes() {
+        let lowered = byte.to_ascii_lowercase();
+        buffer.push(char::from(b"0123456789abcdef"[(lowered >> 4) as usize]));
+        buffer.push(char::from(b"0123456789abcdef"[(lowered & 0x0f) as usize]));
+    }
+}
+
+#[cfg(not(unix))]
+fn append_case_folded_component(buffer: &mut String, component: &std::ffi::OsStr) {
+    for byte in component.to_string_lossy().to_lowercase().into_bytes() {
+        buffer.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
+        buffer.push(char::from(b"0123456789abcdef"[(byte & 0x0f) as usize]));
+    }
+}
+
 fn sanitize_archive_path(path: &Path) -> Result<PathBuf, ArtifactInstallError> {
     let mut sanitized = PathBuf::new();
     for component in path.components() {
@@ -882,8 +1058,9 @@ mod tests {
     };
     #[cfg(unix)]
     use super::{
-        MAX_ZIP_SYMLINK_TARGET_BYTES, extract_tar_tree, extract_zip_tree,
-        extract_zip_tree_into_root,
+        MAX_ZIP_SYMLINK_TARGET_BYTES, extract_tar_tree,
+        extract_tar_tree_into_root_with_case_sensitivity, extract_zip_tree,
+        extract_zip_tree_into_root, extract_zip_tree_into_root_with_case_sensitivity,
     };
 
     fn make_zip_archive(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -1314,12 +1491,69 @@ mod tests {
         extract_zip_tree_into_root(
             Cursor::new(archive),
             &staged_root,
+            staged.path(),
             ArchiveExtractionLimits::default(),
         )?;
         staged.commit()?;
 
         assert!(!outside.join("tree").exists());
         assert_eq!(fs::read(moved_parent.join("tree/bin/demo"))?, b"demo");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_tree_extract_rejects_case_colliding_zip_entries_on_case_insensitive_roots()
+    -> Result<(), Box<dyn Error>> {
+        let archive = make_zip_archive(&[
+            ("bin/tool", b"demo".as_slice(), 0o755),
+            ("BIN/TOOL", b"shadow".as_slice(), 0o755),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())?;
+        let staged_root = staged.try_clone_dir()?;
+
+        let err = extract_zip_tree_into_root_with_case_sensitivity(
+            Cursor::new(archive),
+            &staged_root,
+            false,
+            ArchiveExtractionLimits::default(),
+        )
+        .expect_err("case-colliding zip entries must be rejected");
+
+        assert!(
+            err.to_string().contains("collides"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_tree_extract_rejects_case_colliding_tar_entries_on_case_insensitive_roots()
+    -> Result<(), Box<dyn Error>> {
+        let archive = make_tar_archive(&[
+            TarEntry::File("bin/tool", b"demo", 0o755),
+            TarEntry::File("BIN/TOOL", b"shadow", 0o755),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())?;
+        let staged_root = staged.try_clone_dir()?;
+
+        let err = extract_tar_tree_into_root_with_case_sensitivity(
+            Cursor::new(archive),
+            &staged_root,
+            false,
+            ArchiveExtractionLimits::default(),
+        )
+        .expect_err("case-colliding tar entries must be rejected");
+
+        assert!(
+            err.to_string().contains("collides"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 

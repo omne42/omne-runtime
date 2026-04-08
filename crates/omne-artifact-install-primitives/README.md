@@ -28,6 +28,9 @@ Reusable artifact download and install primitives shared by higher-level callers
 - archive-tree installation now reuses `omne-archive-primitives` for archive traversal, path
   sanitization, link validation, and extraction-budget accounting instead of carrying a duplicate
   archive reader stack locally
+- archive-tree extraction rejects path sets that only differ by case when the staged destination
+  filesystem is case-insensitive, so install results do not depend on host-specific path
+  collapsing rules
 - archive-tree link extraction that fails closed if the staged destination root or any staged parent directory chain component is a symlink ancestor
 - archive-tree regular-file, symlink, and hard-link materialization through `omne-fs-primitives` capability directories so staged extraction never trusts ambient leaf paths
 - archive-tree staging now clones the bound staged directory handle directly into extraction, so parent-path swaps after staging cannot retarget unzip/untar writes or the final replace step
