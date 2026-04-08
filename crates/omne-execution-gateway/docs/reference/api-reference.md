@@ -107,15 +107,14 @@ want commands to run must pass a custom policy or explicit allowlists.
 - `evaluate(&ExecRequest)`
 - `execute(&ExecRequest)`
 - `execute_status(&ExecRequest)`
-- `prepare_command(&ExecRequest, Command)`
+- `prepare_command(&ExecRequest)`
 
 `execute()` is the primary API because it preserves `ExecEvent` and sandbox metadata.
 `execute_status()` is a convenience helper that discards the event.
 `prepare_command()` now returns a `PreparedCommand` wrapper with `spawn()`, so validated callers
 cannot mutate program/args/cwd after preflight and silently bypass the gateway decision.
-When the request uses a bare command name, `execute()` resolves it to a concrete executable path
-before launch; `prepare_command()` likewise expects the caller-provided `Command` to already use
-that resolved executable path, and rejects unresolved bare-command `Command` values fail-closed.
+The prepared spawn is rebuilt entirely from the audited request instead of accepting a
+caller-supplied `Command`, so hidden process state cannot be smuggled across the gateway boundary.
 `execute()` and `prepare_command()` clear inherited process state before spawn and only apply the
 request's audited `env` entries.
 `execute()` and `PreparedCommand::spawn()` bind child `stdin/stdout/stderr` to null handles, so
@@ -208,7 +207,6 @@ check for requests that declare `declared_mutation = false`.
 - `PathIdentityUnavailable { kind, path }`
 - `RequestPathChanged { kind, path, detail }`
 - `PolicyDefaultIsolationMismatch { requested, policy_default }`
-- `PreparedCommandMismatch { .. }`
 - `Sandbox(String)`
 - `PolicyDenied(String)`
 - `AuditLogUnavailable { path, detail }`

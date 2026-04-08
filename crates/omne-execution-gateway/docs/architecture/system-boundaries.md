@@ -26,8 +26,7 @@
 - mutating allowlist 只授权显式程序路径；bare program name 因为无法绑定稳定可执行文件而 fail-closed 拒绝。
 - relative / drive-relative `program` 会在 allowlist/mutation 分类前先被识别并以 `relative_program_path_forbidden` 拒绝，避免审计原因被错误折叠成 allowlist denial。
 - 对 bare command 的普通执行路径，audit / `request_resolution` / `ExecEvent` 记录的是 gateway 解析并绑定后的绝对执行体路径，而不是原始 bare token。
-- `prepare_command()` 只接受与 gateway 已解析执行体一致的 `Command` 程序路径；如果调用方仍传 bare command name，会以 `prepared_command_mismatch` fail-closed 拒绝。
-- `prepare_command()` 会把调用方传入的 `Command` 当作 request identity 校验输入：至少 `program + args` 必须一致，调用方若显式预置了 env 或 `current_dir`，它们也必须与 audited request 匹配；真正返回给调用方的是 gateway 重新构造的干净 spawn 命令，因此预置的 `pre_exec`/`before_exec`、额外 stdio、环境或其他隐藏状态都不会越过执行边界。
+- `prepare_command()` 现在只接受 `ExecRequest`，返回值中的 `PreparedCommand` 完全由 gateway 根据 audited request 重新构造；调用方不能再塞入一个部分配置好的 `Command` 来混入 `pre_exec`/`before_exec`、额外 stdio、环境、`current_dir` 或其他隐藏状态。
 - `PreparedCommand::spawn()` 会把 post-spawn sandbox 观测包进 `PreparedChild`；prepared 路径的最终 `wait` / `try_wait` / drop 也会补齐 terminal audit record，避免 prepared spawn 在最终执行结果上绕开 authoritative audit 边界。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，所有请求都必须显式声明 `declared_mutation`；否则 gateway 会以 `mutation_declaration_required` fail-closed 拒绝。
 - `ExecRequest` 把 `required_isolation` / `requested_isolation_source` 和 `declared_mutation` /

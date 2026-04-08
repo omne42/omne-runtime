@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- make `prepare_command()` request-only, so the prepared spawn is derived entirely from the
+  audited `ExecRequest` instead of accepting a caller-supplied `Command` with hidden process state
 - reject relative / drive-relative and other invalid executable paths before mutation allowlist
   classification, so default fail-closed policy no longer misreports `./tool`-style requests as
   allowlist denials instead of `relative_program_path_forbidden` / `program_path_invalid`
@@ -76,16 +78,9 @@
 - add regression coverage proving explicit-path detection and request path validation keep non-UTF-8 / symlink-sensitive checks on native OS-string and filesystem boundaries
 - return `PreparedChild` from `PreparedCommand::spawn()` so prepared spawns preserve the
   post-spawn sandbox observation instead of silently dropping monitor metadata after preflight
-- require `prepare_command()` callers to match the request's explicit env and any caller-supplied
-  `current_dir`, so prepared-command validation cannot silently discard a different execution
-  identity before the gateway rebuilds the final spawn command
 - deny startup-sensitive request env such as `PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`,
   `PYTHONPATH`, `RUBYOPT`, and `NODE_OPTIONS` when mutation enforcement is enabled, so
   allowlisted execution cannot reopen loader/interpreter/search-path control through audited env
-- add regression coverage proving `prepare_command()` discards caller-provided `stdin`
-  overrides, so hidden input handles cannot leak back across the gateway boundary
-- add regression coverage proving `prepare_command()` discards caller-provided `stdout`/`stderr`
-  overrides, so hidden stdio state cannot leak back across the gateway boundary
 - add regression coverage proving bare-command `ExecEvent` output stays bound to the resolved
   absolute executable path instead of drifting back to the caller's unresolved token
 - rebuild `prepare_command()` results from the validated request instead of reusing the caller's original `Command`, so hidden pre-exec and other opaque process state cannot bypass the gateway boundary
@@ -98,7 +93,8 @@
 - keep `evaluate()` / `resolve_request()` / `preflight()` side-effect free by moving audit-sink preparation to `execute()` / `prepare_command()`, while still failing closed before unaudited execution when the sink is unavailable
 - retry appendable audit-log file opens when concurrent first-writer creation briefly reports `ENOENT`, so JSONL audit writes stay stable on macOS and other sensitive filesystems
 - require `declared_mutation=false` requests to bind an explicit executable from `non_mutating_program_allowlist`; unknown tools can no longer bypass mutation policy just by self-labeling as read-only
-- resolve bare command names to absolute executable identities before execution, fail closed when lookup cannot be bound, and require `prepare_command()` callers to pass the same resolved executable path instead of an unresolved bare `Command`
+- resolve bare command names to absolute executable identities before execution and fail closed
+  when lookup cannot be bound
 - reject explicit program paths that are not spawnable executables, and replace Unix test-only `/bin/sh` assumptions with runtime shell resolution so package tests stay portable across minimal hosts
 - include `event.args` plus exact `program_exact` / `args_exact` JSON encodings so audit logs and CLI output preserve non-UTF-8 argv without relying on lossy replacement characters
 - include explicit request `env` plus exact `env_exact` JSON encodings, and clear inherited process state so `execute()` / `prepare_command()` only spawn with the audited request environment
