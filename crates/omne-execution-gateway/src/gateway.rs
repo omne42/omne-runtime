@@ -454,12 +454,6 @@ impl ExecGateway {
             ));
         }
 
-        if let Some(audit) = &self.audit
-            && let Err(err) = audit.validate_ready_without_side_effects()
-        {
-            return Err(self.deny_preflight(event, "audit_log_unavailable", err));
-        }
-
         match resolve_request_paths(&request.cwd, &request.workspace_root) {
             Ok(resolved_paths) => match bind_program_path(&request.program) {
                 Ok(bound_program) => {
@@ -1882,7 +1876,7 @@ mod tests {
     }
 
     #[test]
-    fn preflight_denies_when_audit_log_parent_is_not_directory() {
+    fn pure_request_projections_ignore_unavailable_audit_parent() {
         let workspace = tempdir().expect("create temp workspace");
         let parent_file = workspace.path().join("not-a-dir");
         fs::write(&parent_file, "blocker").expect("write parent file");
@@ -1902,16 +1896,41 @@ mod tests {
             workspace.path(),
         );
 
-        let err = gateway
-            .preflight(&request)
-            .expect_err("non-directory audit parent should be rejected");
-        let (event, err) = err.into_parts();
+        let resolution = gateway.resolve_request(&request);
+        assert!(Path::new(&resolution.program).is_absolute());
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
+
+        let event = gateway.preflight(&request).expect("preflight should stay pure");
+        assert_eq!(event.decision, ExecDecision::Run);
+    }
+
+    #[test]
+    fn execute_denies_when_audit_log_parent_is_not_directory() {
+        let workspace = tempdir().expect("create temp workspace");
+        let parent_file = workspace.path().join("not-a-dir");
+        fs::write(&parent_file, "blocker").expect("write parent file");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                audit_log_path: Some(parent_file.join("audit.jsonl")),
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        );
+
+        let (event, result) = gateway.execute(&request).into_parts();
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(event.reason.as_deref(), Some("audit_log_unavailable"));
-        match err {
-            ExecError::AuditLogUnavailable { .. } => {}
-            other => panic!("unexpected error: {other}"),
-        }
+        assert!(matches!(result, Err(ExecError::AuditLogUnavailable { .. })));
     }
 
     #[test]
@@ -1949,7 +1968,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn preflight_denies_when_audit_log_path_traverses_ancestor_symlink() {
+    fn pure_request_projections_ignore_rejected_audit_ancestor_symlink() {
         use std::os::unix::fs::symlink;
 
         let workspace = tempdir().expect("create temp workspace");
@@ -1973,16 +1992,53 @@ mod tests {
             workspace.path(),
         );
 
-        let err = gateway
-            .preflight(&request)
-            .expect_err("ancestor symlink should deny audit log path");
-        let (event, err) = err.into_parts();
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("audit_log_unavailable"));
-        assert!(matches!(err, ExecError::AuditLogUnavailable { .. }));
+        let resolution = gateway.resolve_request(&request);
+        assert!(Path::new(&resolution.program).is_absolute());
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
+
+        let event = gateway.preflight(&request).expect("preflight should stay pure");
+        assert_eq!(event.decision, ExecDecision::Run);
         assert!(
             !real_dir.join("nested").exists(),
-            "preflight must not create audit directories behind a rejected symlink ancestor"
+            "pure projections must not create audit directories behind a rejected symlink ancestor"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_denies_when_audit_log_path_traverses_ancestor_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempdir().expect("create temp workspace");
+        let real_dir = workspace.path().join("real-audit");
+        let alias_dir = workspace.path().join("alias-audit");
+        fs::create_dir(&real_dir).expect("create real audit dir");
+        symlink(&real_dir, &alias_dir).expect("create audit dir symlink");
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                audit_log_path: Some(alias_dir.join("nested").join("audit.jsonl")),
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        );
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("audit_log_unavailable"));
+        assert!(matches!(result, Err(ExecError::AuditLogUnavailable { .. })));
+        assert!(
+            !real_dir.join("nested").exists(),
+            "execute must not create audit directories behind a rejected symlink ancestor"
         );
     }
 
