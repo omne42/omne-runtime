@@ -2499,7 +2499,9 @@ mod tests {
         let env = vec![(OsString::from("OMNE_TEST_VALUE"), OsString::from("world"))];
 
         let output = run_host_recipe(
-            &HostRecipeRequest::new(command_path.as_os_str(), &args).with_env(&env),
+            &HostRecipeRequest::new(command_path.as_os_str(), &args)
+                .with_env(&env)
+                .with_working_directory(temp.path()),
         )
         .expect("run host recipe");
         assert_eq!(output.execution, HostCommandExecution::Direct);
@@ -2515,8 +2517,11 @@ mod tests {
         let command_path = write_failing_command(temp.path(), "failcmd");
         let args = Vec::new();
 
-        let err = run_host_recipe(&HostRecipeRequest::new(command_path.as_os_str(), &args))
-            .expect_err("recipe should fail");
+        let err = run_host_recipe(
+            &HostRecipeRequest::new(command_path.as_os_str(), &args)
+                .with_working_directory(temp.path()),
+        )
+        .expect_err("recipe should fail");
         let rendered = err.to_string();
         match err {
             HostRecipeError::NonZeroExit {
@@ -2547,7 +2552,8 @@ mod tests {
         let args = Vec::new();
 
         let err = run_host_recipe_with_options(
-            &HostRecipeRequest::new(command_path.as_os_str(), &args),
+            &HostRecipeRequest::new(command_path.as_os_str(), &args)
+                .with_working_directory(temp.path()),
             HostCommandRunOptions::new().with_timeout(Duration::from_millis(50)),
         )
         .expect_err("slow recipe should time out");
