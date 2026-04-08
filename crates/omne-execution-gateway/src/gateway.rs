@@ -475,15 +475,6 @@ impl ExecGateway {
                                 ExecError::MutationDeclarationRequired,
                             ));
                         }
-                        if let Some(name) = first_startup_sensitive_env_name(&request.env) {
-                            return Err(self.deny_preflight(
-                                event,
-                                "startup_sensitive_env_forbidden",
-                                ExecError::PolicyDenied(format!(
-                                    "allowlisted execution forbids startup-sensitive environment variable `{name}`"
-                                )),
-                            ));
-                        }
                         if request_uses_opaque_command_launcher(&request.program, &bound_program) {
                             return Err(self.deny_preflight(
                                 event,
@@ -492,6 +483,15 @@ impl ExecGateway {
                                     "opaque command launchers cannot be authorized by policy"
                                         .to_string(),
                                 ),
+                            ));
+                        }
+                        if let Some(env_name) = first_startup_sensitive_env_name(&request.env) {
+                            return Err(self.deny_preflight(
+                                event,
+                                "startup_sensitive_env_forbidden",
+                                ExecError::PolicyDenied(format!(
+                                    "startup-sensitive environment variable `{env_name}` is forbidden when mutation enforcement is enabled"
+                                )),
                             ));
                         }
 
@@ -518,7 +518,7 @@ impl ExecGateway {
                                 ));
                             }
                         } else {
-                            if mutating_allowlisted {
+                            if mutating_allowlisted && !non_mutating_allowlisted {
                                 return Err(self.deny_preflight(
                                     event,
                                     "allowlisted_program_requires_declared_mutation",
