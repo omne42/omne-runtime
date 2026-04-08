@@ -17,11 +17,10 @@ Low-level host platform and target-triple primitives shared across callers.
 - canonical target-triple mapping for host platforms with known Linux libc, with checked host
   APIs that surface `LinuxLibcUnknown` instead of collapsing unknown Linux hosts into
   `*-unknown-linux-gnu`
-- Linux `gnu` vs `musl` detection from current-process loader/libc mappings with fail-closed
-  loader-marker fallback only when direct runtime evidence is unavailable; current-process
-  evidence stays authoritative even if unrelated musl loader files exist on disk, coarse distro
-  markers such as `/etc/alpine-release` are not treated as sufficient libc evidence, and unknown
-  Linux libc continues to fail closed
+- Linux `gnu` vs `musl` detection from current-process loader/libc mappings only; if the running
+  process does not expose unambiguous runtime evidence, Linux libc stays unknown and the crate
+  fails closed instead of guessing from build configuration, ambient commands, distro markers, or
+  unrelated loader files on disk
 - validated target override normalization for the crate's supported canonical triples, with checked
   APIs that return structured errors and compatibility helpers that fail closed
 - home-directory resolution

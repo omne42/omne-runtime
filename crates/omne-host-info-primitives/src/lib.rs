@@ -304,9 +304,7 @@ fn host_platform_from_parts(
 
 #[cfg(target_os = "linux")]
 fn detect_host_linux_libc() -> Option<HostLinuxLibc> {
-    detect_host_linux_libc_with_probes(current_process_linux_libc_detection(), &|| {
-        std::fs::read_to_string("/proc/self/maps").ok()
-    })
+    detect_host_linux_libc_with_proc_maps(&|| std::fs::read_to_string("/proc/self/maps").ok())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -315,38 +313,17 @@ fn detect_host_linux_libc() -> Option<HostLinuxLibc> {
 }
 
 #[cfg(target_os = "linux")]
-fn detect_host_linux_libc_with_probes<ProcMapsReader>(
-    current_process_detection: LinuxLibcDetection,
+fn detect_host_linux_libc_with_proc_maps<ProcMapsReader>(
     proc_maps_reader: &ProcMapsReader,
 ) -> Option<HostLinuxLibc>
 where
     ProcMapsReader: Fn() -> Option<String>,
 {
-    match current_process_detection {
-        LinuxLibcDetection::Detected(libc) => Some(libc),
-        LinuxLibcDetection::Ambiguous => None,
-        LinuxLibcDetection::Unavailable => proc_maps_reader()
-            .as_deref()
-            .map(detect_host_linux_libc_from_proc_maps)
-            .unwrap_or(LinuxLibcDetection::Unavailable)
-            .into_option(),
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn current_process_linux_libc_detection() -> LinuxLibcDetection {
-    current_process_linux_libc_detection_from_target_env(option_env!("CARGO_CFG_TARGET_ENV"))
-}
-
-#[cfg(target_os = "linux")]
-fn current_process_linux_libc_detection_from_target_env(
-    target_env: Option<&str>,
-) -> LinuxLibcDetection {
-    match target_env {
-        Some("gnu") => LinuxLibcDetection::Detected(HostLinuxLibc::Gnu),
-        Some("musl") => LinuxLibcDetection::Detected(HostLinuxLibc::Musl),
-        _ => LinuxLibcDetection::Unavailable,
-    }
+    proc_maps_reader()
+        .as_deref()
+        .map(detect_host_linux_libc_from_proc_maps)
+        .unwrap_or(LinuxLibcDetection::Unavailable)
+        .into_option()
 }
 
 #[cfg(target_os = "linux")]
@@ -607,37 +584,6 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn current_process_linux_libc_detection_maps_supported_target_envs() {
-        assert_eq!(
-            super::current_process_linux_libc_detection_from_target_env(Some("gnu")),
-            super::LinuxLibcDetection::Detected(HostLinuxLibc::Gnu)
-        );
-        assert_eq!(
-            super::current_process_linux_libc_detection_from_target_env(Some("musl")),
-            super::LinuxLibcDetection::Detected(HostLinuxLibc::Musl)
-        );
-        assert_eq!(
-            super::current_process_linux_libc_detection_from_target_env(Some("android")),
-            super::LinuxLibcDetection::Unavailable
-        );
-        assert_eq!(
-            super::current_process_linux_libc_detection_from_target_env(None),
-            super::LinuxLibcDetection::Unavailable
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn detect_host_linux_libc_uses_current_process_target_env_when_available() {
-        let libc = super::detect_host_linux_libc_with_probes(
-            super::LinuxLibcDetection::Detected(HostLinuxLibc::Musl),
-            &|| Some("/lib64/ld-linux-x86-64.so.2\n/usr/lib64/libc.so.6\n".to_string()),
-        );
-        assert_eq!(libc, Some(HostLinuxLibc::Musl));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
     fn detect_host_linux_libc_reads_glibc_from_current_process_maps() {
         let proc_maps = "/lib64/ld-linux-x86-64.so.2\n/usr/lib64/libc.so.6\n";
         assert_eq!(
@@ -668,19 +614,15 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_returns_none_without_target_env_or_process_map_evidence() {
-        let libc = super::detect_host_linux_libc_with_probes(
-            super::LinuxLibcDetection::Unavailable,
-            &|| None,
-        );
+    fn detect_host_linux_libc_returns_none_without_process_map_evidence() {
+        let libc = super::detect_host_linux_libc_with_proc_maps(&|| None);
         assert_eq!(libc, None);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_does_not_fallback_after_ambiguous_process_maps() {
-        let libc = super::detect_host_linux_libc_with_probes(
-            super::LinuxLibcDetection::Unavailable,
+    fn detect_host_linux_libc_with_proc_maps_fails_closed_for_ambiguous_runtime_evidence() {
+        let libc = super::detect_host_linux_libc_with_proc_maps(
             &|| Some("/lib64/ld-linux-x86-64.so.2\n/lib/ld-musl-x86_64.so.1\n".to_string()),
         );
         assert_eq!(libc, None);
@@ -689,8 +631,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_host_platform_fails_closed_after_ambiguous_process_maps() {
-        let linux_libc = super::detect_host_linux_libc_with_probes(
-            super::LinuxLibcDetection::Unavailable,
+        let linux_libc = super::detect_host_linux_libc_with_proc_maps(
             &|| Some("/lib64/ld-linux-x86-64.so.2\n/lib/ld-musl-x86_64.so.1\n".to_string()),
         );
         let host_platform =
@@ -701,9 +642,8 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_uses_process_maps_when_target_env_is_unavailable() {
-        let libc = super::detect_host_linux_libc_with_probes(
-            super::LinuxLibcDetection::Unavailable,
+    fn detect_host_linux_libc_uses_process_maps_when_available() {
+        let libc = super::detect_host_linux_libc_with_proc_maps(
             &|| Some("/lib64/ld-linux-x86-64.so.2\n/usr/lib64/libc.so.6\n".to_string()),
         );
         assert_eq!(libc, Some(HostLinuxLibc::Gnu));
@@ -711,12 +651,18 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_keeps_current_process_target_env_authoritative() {
-        let libc = super::detect_host_linux_libc_with_probes(
-            super::LinuxLibcDetection::Detected(HostLinuxLibc::Gnu),
-            &|| Some("/lib/ld-musl-x86_64.so.1\n/lib/libc.musl-x86_64.so.1\n".to_string()),
+    fn detect_host_linux_libc_does_not_treat_proc_maps_absence_as_guessable_host() {
+        let libc = super::detect_host_linux_libc_with_proc_maps(&|| Some(String::new()));
+        assert_eq!(libc, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_host_linux_libc_fails_closed_for_musl_markers_on_glibc_maps_conflict() {
+        let libc = super::detect_host_linux_libc_with_proc_maps(
+            &|| Some("/lib64/ld-linux-x86-64.so.2\n/lib/libc.musl-x86_64.so.1\n".to_string()),
         );
-        assert_eq!(libc, Some(HostLinuxLibc::Gnu));
+        assert_eq!(libc, None);
     }
 
     #[cfg(target_os = "linux")]
