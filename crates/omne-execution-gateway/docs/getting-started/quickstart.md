@@ -63,7 +63,9 @@ JSON mode example:
 ```
 
 If you pass `--policy ./policy.json`, `policy_default_isolation` reflects that file instead of the
-default in-memory policy.
+default in-memory policy. It reports the configured policy default, not a host-compatible fallback,
+so compare it with `supported_isolation` before constructing `policy_default` requests; unsupported
+defaults still fail closed at execution time.
 
 ## 4. Optional CLI Mode
 

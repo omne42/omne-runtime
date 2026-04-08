@@ -2260,6 +2260,20 @@ mod tests {
     }
 
     #[test]
+    fn capability_report_preserves_configured_policy_default() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                default_isolation: ExecutionIsolation::Strict,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let report = gateway.capability_report();
+        assert_eq!(report.supported_isolation, ExecutionIsolation::None);
+        assert_eq!(report.policy_default_isolation, ExecutionIsolation::Strict);
+    }
+
+    #[test]
     fn execute_with_event_preserves_deny_reason() {
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             GatewayPolicy {

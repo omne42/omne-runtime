@@ -45,8 +45,9 @@ Accessors / mutators:
 - `set_required_isolation(...)`
 - `with_required_isolation(...)`
 - `set_policy_default_isolation(...)`
-- `with_effective_policy_default_isolation(...)`
+- `with_declared_mutation(...)`
 - `set_declared_mutation(...)`
+- `with_env(...)`
 
 `declared_mutation` is caller input. Use `with_policy_default_isolation(...)` when the caller is
 intentionally delegating isolation selection to `GatewayPolicy::default_isolation`.
@@ -134,6 +135,12 @@ child status instead of collapsing the outcome into an undifferentiated audit-wr
 - fields:
   - `supported_isolation`
   - `policy_default_isolation`
+
+`policy_default_isolation` reflects the gateway policy's configured default isolation. For
+`ExecGateway::new()` / `with_supported_isolation(...)` this is already host-compatible via
+`GatewayPolicy::default_for_supported_isolation(...)`; for caller-supplied policies it may still
+exceed `supported_isolation`, and the gateway will continue to fail closed on unsupported
+requests.
 
 ## ExecEvent
 
