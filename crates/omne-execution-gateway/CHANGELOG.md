@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- make `ExecGateway::new()` / `with_supported_isolation(...)` disable mutation enforcement in their host-compatible constructor baseline, so default gateways stop behaving like empty-allowlist deny-all instances
 - add `CapabilityReport::policy_default_isolation_permitted`, so capability surfaces keep the
   configured `policy_default_isolation` while also stating whether that default is currently
   usable on this host/policy combination; the README and policy/API docs now describe that split,
