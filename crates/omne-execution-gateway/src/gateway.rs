@@ -1902,7 +1902,9 @@ mod tests {
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Run);
 
-        let event = gateway.preflight(&request).expect("preflight should stay pure");
+        let event = gateway
+            .preflight(&request)
+            .expect("preflight should stay pure");
         assert_eq!(event.decision, ExecDecision::Run);
     }
 
@@ -1998,7 +2000,9 @@ mod tests {
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Run);
 
-        let event = gateway.preflight(&request).expect("preflight should stay pure");
+        let event = gateway
+            .preflight(&request)
+            .expect("preflight should stay pure");
         assert_eq!(event.decision, ExecDecision::Run);
         assert!(
             !real_dir.join("nested").exists(),
