@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `git-permissions` fallback now clears ambient repository-shaping Git environment variables
+  (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, related pathspec toggles, etc.) before running
+  repo-scoped authorization checks, so write fallback evaluation cannot be redirected onto a
+  different repository by caller-controlled process environment.
 - `copy_file` / `move_path` / `create_parents` now fail closed when destination-parent identity
   cannot be revalidated, instead of treating Windows/exotic-filesystem `Unverifiable` results as
   success or falling back to canonical-path-only rechecks.

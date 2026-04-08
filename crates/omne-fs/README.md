@@ -93,10 +93,14 @@ println!("{}", resp.content);
 annotations. In `omne-fs` they are descriptive only and do not override
 `[[roots]].write_scope`, permissions, or limits.
 
+When the optional `git-permissions` feature is enabled, the revertible-write fallback evaluates
+Git state against the declared root with a sanitized Git environment; ambient repository override
+variables such as `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_INDEX_FILE` are ignored for those checks.
+
 ## Cargo Features
 
 - Default: `glob`, `grep`, `patch`
-- Optional: `policy-io`
+- Optional: `policy-io`, `git-permissions`
 
 If a feature is disabled, the operation API remains available but returns `Error::NotPermitted`.
 
