@@ -1066,7 +1066,6 @@ mod tests {
             &archive,
             &BinaryArchiveRequest {
                 binary_name: "demo",
-                tool_name: "demo",
                 archive_binary_hint: None,
             },
         )
@@ -1087,7 +1086,6 @@ mod tests {
             &archive,
             &BinaryArchiveRequest {
                 binary_name: "demo",
-                tool_name: "demo",
                 archive_binary_hint: None,
             },
         )
@@ -1109,7 +1107,6 @@ mod tests {
             Cursor::new(archive),
             &BinaryArchiveRequest {
                 binary_name: "demo",
-                tool_name: "demo",
                 archive_binary_hint: None,
             },
             &mut writer,
