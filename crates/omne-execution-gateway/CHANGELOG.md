@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- classify opaque launcher families by executable family patterns instead of a small exact-name
+  set, so variant frontends such as `python3.12`, `pip3.12`, and `nodejs` cannot bypass
+  allowlist enforcement while still avoiding broad basename-based mutation guesses for direct
+  tools
 - reject relative `audit_log_path` values during preflight and appendable-sink validation, so
   audit logging cannot drift with caller-relative working directories or reopen a different sink
   after request evaluation

@@ -11,7 +11,7 @@
 - 请求里的 `program` 只能是 bare command name 或绝对路径；像 `./tool`、`bin/tool`，以及 Windows `C:tool.exe` 这类 drive-relative 路径都会 fail-closed 拒绝，避免执行语义依赖 gateway 进程自身的工作目录或宿主 drive cwd。
 - 对显式绝对 `program` 路径做“必须是可 spawn 的可执行文件”校验、解析到 canonical real executable path、绑定 file identity 与内容指纹，并在真正 spawn 前再次校验；bare command name 也会在 preflight 阶段解析成 canonical 绝对执行体并绑定同样的 identity + content 视图，如果无法稳定解析就 fail-closed 拒绝。allowlist 仍按最终可执行文件 identity 匹配，而不是按 basename 或原始路径字面量放行，避免 preflight 通过后被换文件、同 inode 原地改写或通过稳定别名漂移到别的可执行文件；但在最终 revalidate 到内核 `spawn/exec` 之间仍存在无法完全消除的 OS 级 TOCTOU 窗口，这里只承诺尽量缩小而不是假装消灭它。
 - 对 `cwd` / `workspace_root` 先做“不得穿过 symlink/reparse-point 祖先目录”的 fail-closed 校验，再做 canonical path + 目录 identity 绑定，并在真正 spawn 前重新校验；macOS 只对系统根别名 `/var`、`/tmp` 做最小例外，避免把平台自带 temp/workspace 路径误判成调用方可控别名。
-- 声明式变更命令门控，以及显式 mutation declaration、`mutating_program_allowlist` / `non_mutating_program_allowlist` 和 opaque launcher 之间的一致性校验；其中 opaque launcher/interpreter 会按最终绑定到的 trusted launcher identity / content 做判断，所以就算 allowlisted 显式路径经过稳定 symlink、硬链接、复制重命名等 alias 最终落到 `sh`、`python`、`env` 之类 launcher，也会直接 fail-closed，不能靠别名名字绕过授权边界。
+- 声明式变更命令门控，以及显式 mutation declaration、`mutating_program_allowlist` / `non_mutating_program_allowlist` 和 opaque launcher 之间的一致性校验；其中 opaque launcher/interpreter/多路 frontend 会按最终绑定到的 trusted launcher identity / content 做判断，而且识别按 launcher family 而不是脆弱的精确名字，所以就算 allowlisted 显式路径经过稳定 symlink、硬链接、复制重命名等 alias 最终落到 `sh`、`python3.12`、`pip3.12`、`nodejs`、`env` 之类 frontend，也会直接 fail-closed，不能靠别名名字绕过授权边界。
 - gateway 自己管理的 spawn 路径会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端。
 - 平台 sandbox 编排与 runtime 观测。
 - 结构化审计事件和日志输出，包括可读的 lossy `program` / `args` / `env` 字段，以及面向机器恢复的 exact OS-string 编码字段。allowlist 和 opaque launcher 门控本身继续保持在原生 `OsStr` / `Path` 边界，不先把请求收窄成 lossy UTF-8；Unix 非 UTF-8 可执行路径不会因为 replacement character 文本而和 UTF-8 allowlist 项发生碰撞授权。
@@ -32,7 +32,7 @@
 - `ExecRequest` 把 `required_isolation` / `requested_isolation_source` 和 `declared_mutation` /
   “是否显式声明过 mutation” 这两组不变量收口在构造器、builder 和 setter 里，调用方不能再直接改公开字段把 request 组装成运行时才被 deny 的自相矛盾状态。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，`declared_mutation=true` 的请求必须绑定到 `mutating_program_allowlist` 里的显式程序路径；`declared_mutation=false` 的请求也必须绑定到 `non_mutating_program_allowlist` 里的显式程序路径，避免“未知 mutator 只要自称只读就能绕过”。
-- 当 `enforce_allowlisted_program_for_mutation=true` 时，gateway 不再根据 basename 猜测工具族群的读写语义；是否允许只读 `git status`、`cargo metadata` 等调用，必须由调用方通过显式 `non_mutating_program_allowlist` 决定。opaque launcher/interpreter（例如 `env`、`sh`、`python`、`node`）仍会直接 fail-closed，调用方必须改成更具体、可审计的直接执行体。
+- 当 `enforce_allowlisted_program_for_mutation=true` 时，gateway 不再根据 basename 猜测任意工具族群的读写语义；是否允许只读 `git status`、`cargo metadata` 等 direct executable 调用，必须由调用方通过显式 `non_mutating_program_allowlist` 决定。opaque launcher/interpreter/多路 frontend（例如 `env`、`sh`、`python3.12`、`pip3.12`、`nodejs`）仍会直接 fail-closed，因为仅凭 executable identity 无法证明其真实脚本或子命令是只读的。
 - Windows 上命令路径和 workspace 边界比较按平台语义做大小写不敏感处理，不要求调用方传入与文件系统完全同大小写的字面量。
 - `GatewayPolicy::load_json()` 只接受通过 descriptor-backed 祖先目录 no-follow walk 打开的 regular file；祖先 symlink/reparse point、目录或其他特殊文件都会 fail-closed 拒绝，包括“最终文件在一个已存在嵌套目录里，但更高层父目录其实是 symlink”的情况。
 - `omne-execution` CLI 的 `request.json` 也只接受同样的 bounded no-follow regular file 输入，避免通过祖先 symlink、特殊文件或超大输入把 CLI 边界退化成非确定性文件读取；其中 `program` / `args` / `env` 既可以用普通 UTF-8 JSON string，也可以用 exact OS-string 编码对象保留非 UTF-8 输入。
