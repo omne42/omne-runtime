@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- default `ExecGateway::new()` / `Default` / `with_supported_isolation()` policies now align with the
+  actually supported isolation tier on the host instead of hard-coding `best_effort`; hosts that
+  currently support only `none` now get a usable default gateway without silently weakening
+  fail-closed isolation checks
+- policy JSON loading and audit-log append setup now reuse `omne-fs-primitives` no-follow regular
+  file helpers, so ancestor-symlink and special-file checks share the same fail-closed file-opening
+  contract instead of carrying a weaker local copy
 - include `event.args` plus exact `program_exact` / `args_exact` JSON encodings so audit logs and CLI output preserve non-UTF-8 argv without relying on lossy replacement characters
 - deny known-mutating tool families such as `git`, `make`, package managers, and core file-mutating utilities when callers label them `declared_mutation = false`; those tools must now declare mutation and bind an allowlisted explicit path
 - add regression coverage for `cwd_invalid` so missing working directories do not regress back into `cwd_outside_workspace`

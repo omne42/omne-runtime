@@ -8,6 +8,7 @@
 
 - root materialization 与 capability 风格目录访问。
 - no-follow 打开和 regular-file 校验。
+- 面向 ambient root 的 no-follow regular-file 读取与 append sink helper。
 - symlink/reparse point 错误分类。
 - bounded read helper。
 - staged atomic file/directory replace 与 advisory lock。

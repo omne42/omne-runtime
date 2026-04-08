@@ -14,6 +14,7 @@ Low-level filesystem primitives shared by higher-level callers.
 - capability-style root opening and directory traversal
 - no-follow file opening and symlink/reparse classification
 - bounded reads for text and byte streams
+- ambient-root helpers for no-follow regular-file reads and appendable audit/log sinks
 - staged atomic file/directory replacement and advisory locking
 
 ## Non-Goals

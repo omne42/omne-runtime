@@ -1,11 +1,11 @@
 use std::fmt::Display;
-use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
+use omne_fs_primitives::open_appendable_regular_file_in_ambient_root;
 use serde::Serialize;
 
 use crate::audit::ExecEvent;
@@ -74,91 +74,12 @@ impl AuditLogger {
     }
 
     fn try_open_appendable_file(&self) -> Result<std::fs::File, Box<dyn std::error::Error>> {
-        if let Some(parent) = self.path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            if let Some(existing_parent) = existing_ancestor(parent) {
-                ensure_existing_directory(existing_parent)?;
-            }
-            fs::create_dir_all(parent)?;
-            ensure_existing_directory(parent)?;
-        }
-        if self.path.exists() {
-            ensure_existing_regular_file_path(&self.path)?;
-        }
-        open_appendable_regular_file_nofollow(&self.path)
+        open_appendable_regular_file_nofollow(&self.path).map_err(|err| err.into())
     }
 }
 
-fn ensure_existing_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(format!("path is not a directory: {}", path.display()).into());
-    }
-    Ok(())
-}
-
-fn ensure_existing_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(format!("path is not a regular file: {}", path.display()).into());
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut options = OpenOptions::new();
-    options
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(windows)]
-fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-
-    let mut options = OpenOptions::new();
-    options
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn open_appendable_regular_file_nofollow(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)?;
-    ensure_regular_file(path, file)
-}
-
-fn ensure_regular_file(path: &Path, file: File) -> Result<File, Box<dyn std::error::Error>> {
-    let metadata = file.metadata()?;
-    if metadata.is_file() {
-        return Ok(file);
-    }
-
-    Err(format!("path is not a regular file: {}", path.display()).into())
-}
-
-fn existing_ancestor(path: &Path) -> Option<&Path> {
-    path.ancestors().find(|ancestor| ancestor.exists())
+fn open_appendable_regular_file_nofollow(path: &Path) -> Result<std::fs::File, std::io::Error> {
+    open_appendable_regular_file_in_ambient_root(path, "audit log").map(|file| file.into_std())
 }
 
 #[derive(Debug, Serialize)]

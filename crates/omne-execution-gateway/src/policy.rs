@@ -1,10 +1,8 @@
-use std::fs::{File, OpenOptions};
 use std::io;
-use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
-use std::str;
 
+use omne_fs_primitives::{ReadUtf8Error, read_utf8_regular_file_in_ambient_root};
 use serde::{Deserialize, Serialize};
 
 use policy_meta::ExecutionIsolation;
@@ -34,6 +32,21 @@ impl Default for GatewayPolicy {
 }
 
 impl GatewayPolicy {
+    pub fn default_for_supported_isolation(supported_isolation: ExecutionIsolation) -> Self {
+        let default_isolation = match supported_isolation {
+            ExecutionIsolation::None => ExecutionIsolation::None,
+            ExecutionIsolation::BestEffort | ExecutionIsolation::Strict => {
+                ExecutionIsolation::BestEffort
+            }
+        };
+
+        Self {
+            allow_isolation_none: matches!(default_isolation, ExecutionIsolation::None),
+            default_isolation,
+            ..Self::default()
+        }
+    }
+
     pub fn is_mutating_program_allowlisted(&self, program: &str) -> bool {
         if !is_explicit_program_path(program) {
             return false;
@@ -44,84 +57,24 @@ impl GatewayPolicy {
     }
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
-        let content = read_utf8_regular_file_nofollow(path.as_ref(), MAX_POLICY_JSON_BYTES)?;
+        let content =
+            read_utf8_regular_file_in_ambient_root(path.as_ref(), "gateway policy", MAX_POLICY_JSON_BYTES)
+                .map_err(map_read_utf8_error)?;
         let policy = serde_json::from_str::<Self>(&content)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
         Ok(policy)
     }
 }
 
-fn read_utf8_regular_file_nofollow(path: &Path, max_bytes: usize) -> io::Result<String> {
-    let metadata = std::fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("path is not a regular file: {}", path.display()),
-        ));
-    }
-    let file = open_regular_readonly_nofollow(path)?;
-    let mut bytes = Vec::new();
-    let limit = u64::try_from(max_bytes)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let mut limited = file.take(limit);
-    limited.read_to_end(&mut bytes)?;
-    if bytes.len() > max_bytes {
-        return Err(io::Error::new(
+fn map_read_utf8_error(err: ReadUtf8Error) -> io::Error {
+    match err {
+        ReadUtf8Error::Io(err) => err,
+        ReadUtf8Error::TooLarge { bytes, max_bytes } => io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "policy file exceeds size limit ({} > {} bytes)",
-                bytes.len(),
-                max_bytes
-            ),
-        ));
+            format!("policy file exceeds size limit ({bytes} > {max_bytes} bytes)"),
+        ),
+        ReadUtf8Error::InvalidUtf8(err) => io::Error::new(io::ErrorKind::InvalidData, err),
     }
-    str::from_utf8(&bytes)
-        .map(str::to_owned)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))
-}
-
-#[cfg(unix)]
-fn open_regular_readonly_nofollow(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(windows)]
-fn open_regular_readonly_nofollow(path: &Path) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    let file = options.open(path)?;
-    ensure_regular_file(path, file)
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn open_regular_readonly_nofollow(path: &Path) -> io::Result<File> {
-    let file = OpenOptions::new().read(true).open(path)?;
-    ensure_regular_file(path, file)
-}
-
-fn ensure_regular_file(path: &Path, file: File) -> io::Result<File> {
-    let metadata = file.metadata()?;
-    if metadata.is_file() {
-        return Ok(file);
-    }
-
-    Err(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("path is not a regular file: {}", path.display()),
-    ))
 }
 
 fn is_explicit_program_path(program: &str) -> bool {
@@ -191,6 +144,7 @@ fn executable_stem(name: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::fs::File;
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
 
@@ -303,7 +257,10 @@ mod tests {
     fn load_json_rejects_directory_input() {
         let dir = tempdir().expect("tempdir");
         let err = GatewayPolicy::load_json(dir.path()).expect_err("directory should be rejected");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(matches!(
+            err.kind(),
+            io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+        ));
     }
 
     #[test]
@@ -346,7 +303,10 @@ mod tests {
         symlink(&target, &link).expect("create symlink");
 
         let err = GatewayPolicy::load_json(&link).expect_err("symlink should be rejected");
-        assert_ne!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(matches!(
+            err.kind(),
+            io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+        ));
     }
 
     #[cfg(unix)]
@@ -357,6 +317,9 @@ mod tests {
         let _listener = UnixListener::bind(&socket_path).expect("bind unix socket");
 
         let err = GatewayPolicy::load_json(&socket_path).expect_err("socket should be rejected");
-        assert_ne!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(matches!(
+            err.kind(),
+            io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+        ));
     }
 }

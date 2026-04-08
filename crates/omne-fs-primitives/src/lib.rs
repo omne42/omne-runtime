@@ -27,7 +27,9 @@ pub const DEFAULT_TEXT_TREE_BYTES_LIMIT: usize = 8 * DEFAULT_TEXT_FILE_BYTES_LIM
 
 pub use cap_root::{
     Dir, File, MissingRootPolicy, RootDir, create_directory_component, create_regular_file_at,
-    open_ambient_root, open_directory_component, open_regular_file_at, open_root,
+    open_ambient_root, open_appendable_regular_file_in_ambient_root, open_directory_component,
+    open_regular_file_at, open_root, read_utf8_regular_file_in_ambient_root,
+    validate_appendable_regular_file_in_ambient_root,
 };
 pub use path_identity::filesystem_is_case_sensitive;
 pub use platform_open::{

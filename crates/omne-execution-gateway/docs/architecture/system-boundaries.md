@@ -20,12 +20,14 @@
 
 - Linux、macOS 和 Windows 当前都只报告 `None` 为受支持隔离级别。
 - Linux 原生 sandbox 暂时下线，直到能在不依赖 post-`fork` unsafe Rust 执行的前提下重新引入。
+- `ExecGateway::new()` / `Default` / `with_supported_isolation()` 的默认 policy 必须与宿主真实支持的隔离级别一致；当前只支持 `None` 的平台不能再默认构造出一个永远自相矛盾、永远无法成功执行的 gateway。
 - 当请求的隔离级别高于宿主报告能力时，gateway 必须 fail-closed 拒绝，而不是回退到未隔离执行。
 - mutating allowlist 只授权显式程序路径；bare program name 因为无法绑定稳定可执行文件而 fail-closed 拒绝。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，所有请求都必须显式声明 `declared_mutation`；否则 gateway 会以 `mutation_declaration_required` fail-closed 拒绝。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，已知高风险 mutator/toolchain（例如 `git`、`make`、包管理器和核心文件变更命令）不能宣称 `declared_mutation=false`；调用方必须显式声明 mutation，并绑定到 allowlisted 显式程序路径，避免把明显 mutating 的工具伪装成只读命令。
 - Windows 上命令路径和 workspace 边界比较按平台语义做大小写不敏感处理，不要求调用方传入与文件系统完全同大小写的字面量。
 - `GatewayPolicy::load_json()` 只接受 no-follow regular file 输入，不会把 symlink、目录或其他特殊文件当成可信策略文件读取。
+- `GatewayPolicy::load_json()` 和 audit log append sink 都必须复用同一套 no-follow regular-file 原语，并对 ancestor symlink / special-file 路径 fail-closed，不能在 gateway 内维护一份更弱的本地文件打开实现。
 - `omne-execution` CLI 的 `request.json` 也只接受 bounded no-follow regular file 输入，避免通过 symlink、特殊文件或超大输入把 CLI 边界退化成非确定性文件读取。
 - 缺失、不可访问或不是目录的 `cwd` 会被报告为 `cwd_invalid`，避免把普通输入/环境错误误记成 workspace 越界。
 - 配置了 `audit_log_path` 时，gateway 会在 preflight 阶段创建缺失父目录并验证日志可追加；如果审计日志不可用，请求必须 fail-closed 拒绝，而不是在无审计记录下继续执行。

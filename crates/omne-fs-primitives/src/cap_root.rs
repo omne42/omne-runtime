@@ -7,6 +7,8 @@ use cap_std::ambient_authority;
 use cap_std::fs::OpenOptions;
 pub use cap_std::fs::{Dir, File};
 
+use crate::read_limited::{ReadUtf8Error, read_utf8_limited};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissingRootPolicy {
     Error,
@@ -215,6 +217,51 @@ pub fn create_regular_file_at(directory: &Dir, component: &Path) -> io::Result<F
     directory.open_with(component, &options)
 }
 
+pub fn read_utf8_regular_file_in_ambient_root(
+    path: &Path,
+    label: &str,
+    max_bytes: usize,
+) -> Result<String, ReadUtf8Error> {
+    let (root, leaf, _) = open_parent_root_for_regular_file(path, label, MissingRootPolicy::Error)
+        .map_err(ReadUtf8Error::Io)?
+        .ok_or_else(|| {
+            ReadUtf8Error::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{label} parent directory not found: {}", path.display()),
+            ))
+        })?;
+    let root = root.into_dir();
+    let mut file = open_regular_file_at(&root, Path::new(&leaf)).map_err(ReadUtf8Error::Io)?;
+    read_utf8_limited(&mut file, max_bytes)
+}
+
+pub fn open_appendable_regular_file_in_ambient_root(path: &Path, label: &str) -> io::Result<File> {
+    let (root, leaf, _) =
+        open_parent_root_for_regular_file(path, label, MissingRootPolicy::Create)?.ok_or_else(
+            || {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("{label} parent directory not found: {}", path.display()),
+                )
+            },
+        )?;
+    let root = root.into_dir();
+    open_appendable_regular_file_at(&root, Path::new(&leaf))
+}
+
+pub fn validate_appendable_regular_file_in_ambient_root(
+    path: &Path,
+    label: &str,
+) -> io::Result<()> {
+    let Some((root, leaf, _)) =
+        open_parent_root_for_regular_file(path, label, MissingRootPolicy::ReturnNone)?
+    else {
+        return Ok(());
+    };
+    let root = root.into_dir();
+    validate_appendable_regular_file_at(&root, Path::new(&leaf))
+}
+
 fn ensure_regular_file(file: File) -> io::Result<File> {
     let metadata = file.metadata()?;
     if metadata.is_file() {
@@ -225,6 +272,46 @@ fn ensure_regular_file(file: File) -> io::Result<File> {
         io::ErrorKind::InvalidData,
         "target file must be a regular file",
     ))
+}
+
+fn open_appendable_regular_file_at(directory: &Dir, component: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true).truncate(false);
+    options.follow(FollowSymlinks::No);
+    let file = directory.open_with(component, &options)?;
+    ensure_regular_file(file)
+}
+
+fn validate_appendable_regular_file_at(directory: &Dir, component: &Path) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    options.follow(FollowSymlinks::No);
+    match directory.open_with(component, &options) {
+        Ok(file) => {
+            ensure_regular_file(file)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn open_parent_root_for_regular_file(
+    path: &Path,
+    label: &str,
+    missing_root_policy: MissingRootPolicy,
+) -> io::Result<Option<(RootDir, OsString, PathBuf)>> {
+    let normalized = normalize_root(path, label)?;
+    let leaf = normalized
+        .file_name()
+        .map(|value| value.to_os_string())
+        .ok_or_else(|| invalid_root_path(label, &normalized))?;
+    let parent = normalized
+        .parent()
+        .ok_or_else(|| invalid_root_path(label, &normalized))?;
+    let parent = materialize_root(parent, label)?;
+    let root = open_ambient_root(&parent, label, missing_root_policy, |_, _, _, error| error)?;
+    Ok(root.map(|root| (root, leaf, normalized)))
 }
 
 fn normalize_root(root: &Path, label: &str) -> io::Result<PathBuf> {
