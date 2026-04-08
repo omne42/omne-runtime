@@ -20,7 +20,8 @@ Reusable artifact download and install primitives shared by higher-level callers
 - regression coverage that keeps both the free-form `source_label` surface and the generic `ArtifactDownloader` boundary stable, so future refactors cannot silently collapse provenance into fixed enums or leak a concrete HTTP client type into callers
 - optional SHA-256 verification for downloaded artifacts, with digest mismatches reported as install-phase failures once bytes have been fetched successfully
 - structured install errors that preserve candidate-level failures and key archive extraction
-  details such as `ArchiveBinaryNotFound`, so callers do not have to branch on display strings
+  details such as `ArchiveBinaryNotFound` or `ArchiveBinaryAmbiguous`, so callers do not have to
+  branch on display strings
 - direct binary artifact atomic installation, serialized for the full per-destination install attempt so a second installer cannot race ahead to download/commit the same target
 - binary-from-archive installation with the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget and the same full per-destination install lock
 - archive-tree installation via `omne-fs-primitives` staged directory replacement plus exported extracted-byte and entry-count budgets
