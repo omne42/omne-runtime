@@ -10,9 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;
 
+use crate::cap_root::open_parent_root_for_leaf_path;
 use crate::{
     Dir, MissingRootPolicy, RootDir, create_directory_component, open_directory_component,
-    open_root,
 };
 
 static STAGED_ENTRY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -246,9 +246,9 @@ pub fn stage_file_atomically_with_name(
     options: &AtomicWriteOptions,
     staged_file_name: Option<&str>,
 ) -> Result<StagedAtomicFile, AtomicWriteError> {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let parent_root = open_atomic_parent_root(parent, options.create_parent_directories)
-        .map_err(|err| AtomicWriteError::io_path("prepare_parent", parent, err))?;
+    let (parent_root, destination_leaf) =
+        prepare_atomic_destination_parent(destination, options.create_parent_directories)
+            .map_err(|err| AtomicWriteError::io_path("prepare_parent", destination, err))?;
     let file_name = staged_file_name
         .and_then(normalize_staged_file_name)
         .or_else(|| {
@@ -261,8 +261,6 @@ pub fn stage_file_atomically_with_name(
     let prefix = format!(".{file_name}.tmp-");
     let (staged_leaf, staged) = create_staged_file_in_root(&parent_root, &prefix, ".tmp")
         .map_err(|err| AtomicWriteError::io_path("create_temp", destination, err))?;
-    let destination_leaf = destination_leaf_path(destination)
-        .map_err(|err| AtomicWriteError::io_path("destination_leaf", destination, err))?;
     let staged_path = parent_root.path().join(&staged_leaf);
 
     Ok(StagedAtomicFile {
@@ -280,9 +278,9 @@ pub fn stage_directory_atomically(
     destination: &Path,
     options: &AtomicDirectoryOptions,
 ) -> Result<StagedAtomicDirectory, AtomicDirectoryError> {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let parent_root = open_atomic_parent_root(parent, options.create_parent_directories)
-        .map_err(|err| AtomicDirectoryError::io_path("prepare_parent", parent, err))?;
+    let (parent_root, destination_leaf) =
+        prepare_atomic_destination_parent(destination, options.create_parent_directories)
+            .map_err(|err| AtomicDirectoryError::io_path("prepare_parent", destination, err))?;
     let file_name = destination
         .file_name()
         .and_then(|value| value.to_str())
@@ -291,8 +289,6 @@ pub fn stage_directory_atomically(
     let prefix = format!(".{file_name}.tmpdir-");
     let (staged_leaf, staged_root) = create_staged_directory_in_root(&parent_root, &prefix)
         .map_err(|err| AtomicDirectoryError::io_path("create_tempdir", destination, err))?;
-    let destination_leaf = destination_leaf_path(destination)
-        .map_err(|err| AtomicDirectoryError::io_path("destination_leaf", destination, err))?;
     let staged_path = parent_root.path().join(&staged_leaf);
 
     Ok(StagedAtomicDirectory {
@@ -319,37 +315,23 @@ fn normalize_staged_file_name(raw: &str) -> Option<String> {
     }
 }
 
-fn open_atomic_parent_root(parent: &Path, create_parent_directories: bool) -> io::Result<RootDir> {
-    if parent.as_os_str().is_empty() {
-        return open_root(
-            Path::new("."),
-            "atomic write parent",
-            MissingRootPolicy::Error,
-            |_, _, _, error| error,
-        )
-        .and_then(|root| root.ok_or_else(|| io::Error::other("missing atomic write parent")));
-    }
-    let normalized_parent = normalize_platform_root_alias(parent)?;
-
+fn prepare_atomic_destination_parent(
+    destination: &Path,
+    create_parent_directories: bool,
+) -> io::Result<(RootDir, PathBuf)> {
     let policy = if create_parent_directories {
         MissingRootPolicy::Create
     } else {
         MissingRootPolicy::Error
     };
-    open_root(
-        &normalized_parent,
-        "atomic write parent",
+    let normalized_destination = normalize_platform_root_alias(destination)?;
+    let (parent_root, destination_leaf, _) = open_parent_root_for_leaf_path(
+        &normalized_destination,
+        "atomic write destination",
         policy,
-        |_, _, _, error| error,
-    )
-    .and_then(|root| root.ok_or_else(|| io::Error::other("missing atomic write parent")))
-}
-
-fn destination_leaf_path(destination: &Path) -> io::Result<PathBuf> {
-    destination
-        .file_name()
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no leaf"))
+    )?
+    .ok_or_else(|| io::Error::other("missing atomic write parent"))?;
+    Ok((parent_root, PathBuf::from(destination_leaf)))
 }
 
 fn create_staged_file_in_root(
