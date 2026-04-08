@@ -145,6 +145,9 @@ executable path that the gateway bound during preflight.
 Both `request_resolution` and `event` keep readable lossy `program` / `args` fields and also emit
 `program_exact` / `args_exact` so non-UTF-8 OS strings remain reconstructable in machine-facing
 output.
+If the child already exits but the terminal audit write fails, the CLI still preserves the
+authoritative `exit_code` / `signal` from that child status and reports the audit failure in
+`error`, so downstream callers can see both "the command ran" and "audit persistence failed".
 If `cwd` is missing, inaccessible, or not a directory, the CLI surfaces `cwd_invalid` instead of
 mislabeling the input as `cwd_outside_workspace`.
 `requested_isolation_source` explains whether the effective isolation came from the request payload
@@ -154,5 +157,5 @@ until a native sandbox backend is reintroduced safely.
 
 ## Exit Behavior
 
-- exit `0` only when command exits `0`.
+- exit `0` only when command exits `0` and no gateway/audit error is present.
 - non-zero for deny/failure/non-zero child exit.
