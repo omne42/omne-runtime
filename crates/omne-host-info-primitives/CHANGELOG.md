@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- preserve Linux hosts with unknown libc as explicit `unknown` platform state instead of dropping
+  them or letting callers treat the host as implicit `*-unknown-linux-gnu`
+- make host-platform target-triple mapping checked: Linux hosts with unknown libc now surface a
+  dedicated error, while compatibility helpers fail closed by returning no host target triple
 - stop treating coarse distro markers such as `/etc/alpine-release` as Linux libc evidence; when
   runtime mappings are unavailable the crate now falls back only to concrete loader markers, so
   uncertain hosts fail closed instead of guessing a downloadable target triple
