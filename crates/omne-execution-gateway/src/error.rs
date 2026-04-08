@@ -67,6 +67,9 @@ pub enum ExecError {
     #[error("audit log is unavailable at {path}: {detail}")]
     AuditLogUnavailable { path: PathBuf, detail: String },
 
+    #[error("audit log path is invalid: {path} ({detail})")]
+    AuditLogPathInvalid { path: PathBuf, detail: String },
+
     #[error("failed to write audit log at {path}: {detail}")]
     AuditLogWriteFailed { path: PathBuf, detail: String },
 

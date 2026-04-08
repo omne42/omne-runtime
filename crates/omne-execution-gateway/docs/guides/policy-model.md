@@ -11,7 +11,7 @@
 | `mutating_program_allowlist` | `Vec<String>` | empty | Explicit program paths whose resolved executable identity may authorize declared mutation. Bare program names are not trusted for mutation authorization. |
 | `non_mutating_program_allowlist` | `Vec<String>` | empty | Explicit program paths whose resolved executable identity may authorize a declared non-mutating request. Bare program names are not trusted for non-mutating authorization either. |
 | `default_isolation` | `policy_meta::ExecutionIsolation` | `None` | Fallback isolation for CLI requests when not provided. |
-| `audit_log_path` | `Option<PathBuf>` | `None` | Optional JSONL audit file path. |
+| `audit_log_path` | `Option<PathBuf>` | `None` | Optional JSONL audit file path. Must be absolute. |
 
 ## Default Policy JSON
 
@@ -61,3 +61,5 @@
 - `workspace_root_invalid`
 - `cwd_invalid`
 - `cwd_outside_workspace`
+- `audit_log_path_invalid`
+- `audit_log_unavailable`
