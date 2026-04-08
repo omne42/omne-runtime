@@ -1312,29 +1312,6 @@ fn path_starts_with(path: &Path, prefix: &Path) -> bool {
     path.starts_with(&prefix)
 }
 
-#[cfg(windows)]
-fn programs_match(actual: &OsStr, requested: &OsStr) -> bool {
-    let actual_path = Path::new(actual);
-    let requested_path = Path::new(requested);
-    if actual_path.is_absolute() && requested_path.is_absolute() {
-        return explicit_program_paths_match(actual_path, requested_path);
-    }
-    if actual_path.components().count() > 1 || requested_path.components().count() > 1 {
-        return path_equals(actual_path, requested_path);
-    }
-
-    let actual = actual.to_string_lossy();
-    let requested = requested.to_string_lossy();
-    actual.eq_ignore_ascii_case(&requested)
-        || strip_windows_exe_suffix(&actual)
-            .eq_ignore_ascii_case(strip_windows_exe_suffix(&requested))
-}
-
-#[cfg(windows)]
-fn strip_windows_exe_suffix(value: &str) -> &str {
-    value.strip_suffix(".exe").unwrap_or(value)
-}
-
 fn explicit_program_paths_match(actual: &Path, requested: &Path) -> bool {
     same_file::is_same_file(actual, requested).unwrap_or(false) || path_equals(actual, requested)
 }
@@ -3374,6 +3351,7 @@ mod tests {
         assert_eq!(record["result"]["status"], "execution_error");
     }
 
+    #[cfg(unix)]
     #[test]
     fn prepare_command_rejects_symlink_cwd_ancestor() {
         use std::os::unix::fs::symlink;
