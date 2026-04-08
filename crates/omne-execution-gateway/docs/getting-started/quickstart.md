@@ -35,9 +35,9 @@ assert_eq!(execution.event.decision, omne_execution_gateway::ExecDecision::Run);
 # Ok::<(), omne_execution_gateway::ExecError>(())
 ```
 
-This example uses `with_policy(...)` on purpose. `ExecGateway::new()` / `Default` keep mutation
-enforcement enabled with empty allowlists, so they deny ordinary commands until you explicitly
-configure policy.
+This example uses `with_policy(...)` on purpose to show the policy surface explicitly. For a
+host-compatible executable baseline, `ExecGateway::new()` / `Default` now work too; switch back to
+an explicit policy when you want deny-by-default mutation enforcement.
 
 ## 3. Check Host Capability
 

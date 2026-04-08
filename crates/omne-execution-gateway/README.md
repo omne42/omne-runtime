@@ -29,7 +29,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `BestEffort` is a compatibility tier, not a strong sandbox guarantee.
 - Linux, macOS, and Windows currently do not expose a native `BestEffort` or `Strict` sandbox. Requests above `None` fail closed.
 - the in-memory `GatewayPolicy::default()` baseline now uses `allow_isolation_none = true` plus `default_isolation = none`, so a default `ExecGateway::new()` stays usable on today's `None`-only hosts; callers that want fail-closed sandbox preference must opt into `best_effort` or `strict` explicitly.
-- `ExecGateway::new()` / `Default` are still deny-by-default on mutation policy: mutation enforcement remains on and both allowlists start empty, so callers that actually want commands to run must either provide allowlists or build a policy with `enforce_allowlisted_program_for_mutation = false`.
+- `ExecGateway::new()` / `Default` and `with_supported_isolation(...)` now use a host-compatible executable baseline: they keep isolation aligned with host capability and leave mutation enforcement off, so ordinary non-mutating commands can run without first seeding allowlists. Callers that want deny-by-default mutation policy must opt into it with an explicit `GatewayPolicy`.
 - `CapabilityReport` exposes both the configured `policy_default_isolation` and a derived
   `policy_default_isolation_permitted` bit. For `ExecGateway::new()` /
   `with_supported_isolation(...)` the configured default stays host-compatible via
@@ -120,8 +120,9 @@ assert_eq!(execution.event.decision, omne_execution_gateway::ExecDecision::Run);
 # Ok::<(), omne_execution_gateway::ExecError>(())
 ```
 
-Use `ExecGateway::new()` only when you intentionally want that fail-closed default policy shape;
-it will not authorize ordinary commands until you add allowlists or disable mutation enforcement.
+Use `ExecGateway::new()` when a host-compatible executable baseline is acceptable. If you want
+deny-by-default mutation policy, construct the gateway with an explicit `GatewayPolicy` that keeps
+`enforce_allowlisted_program_for_mutation = true`.
 
 ## Capability Check
 
