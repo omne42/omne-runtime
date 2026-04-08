@@ -152,7 +152,7 @@ impl PreparedChild {
         } else {
             Ok(())
         };
-        combine_result_with_audit_write(result, audit_result)
+        combine_exit_status_with_audit_write(result, audit_result)
     }
 
     fn finalize_on_drop(&mut self) {
@@ -323,10 +323,10 @@ impl ExecGateway {
             result
         } else if let Some(mut audit_sink) = audit_sink {
             let audit_result = audit_sink.write_execution_record(&event, &result);
-            combine_result_with_audit_write(result, audit_result)
+            combine_exit_status_with_audit_write(result, audit_result)
         } else if let Some(audit) = &self.audit {
             let audit_result = audit.write_execution_record(&event, &result);
-            combine_result_with_audit_write(result, audit_result)
+            combine_exit_status_with_audit_write(result, audit_result)
         } else {
             result
         };
@@ -1418,11 +1418,28 @@ fn combine_result_with_audit_write<T>(
     }
 }
 
+fn combine_exit_status_with_audit_write(
+    result: ExecResult<ExitStatus>,
+    audit_result: ExecResult<()>,
+) -> ExecResult<ExitStatus> {
+    match (result, audit_result) {
+        (Ok(status), Err(ExecError::AuditLogWriteFailed { path, detail })) => {
+            Err(ExecError::AuditLogWriteFailedAfterExecutionSuccess {
+                path,
+                detail,
+                status,
+            })
+        }
+        (result, audit_result) => combine_result_with_audit_write(result, audit_result),
+    }
+}
+
 fn audit_error_already_reported<T>(result: &ExecResult<T>) -> bool {
     matches!(
         result,
         Err(ExecError::AuditLogUnavailable { .. }
             | ExecError::AuditLogWriteFailed { .. }
+            | ExecError::AuditLogWriteFailedAfterExecutionSuccess { .. }
             | ExecError::AuditLogWriteFailedAfterExecutionError { .. })
     )
 }
@@ -1464,6 +1481,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
     use std::path::PathBuf;
+    use std::process::ExitStatus;
     #[cfg(unix)]
     use std::process::Stdio;
     #[cfg(unix)]
@@ -1478,6 +1496,20 @@ mod tests {
         dir.path()
             .canonicalize()
             .unwrap_or_else(|_| dir.path().to_path_buf())
+    }
+
+    #[cfg(unix)]
+    fn exit_status_from_code(code: i32) -> ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+
+        ExitStatus::from_raw(code << 8)
+    }
+
+    #[cfg(windows)]
+    fn exit_status_from_code(code: u32) -> ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+
+        ExitStatus::from_raw(code)
     }
 
     #[cfg(unix)]
@@ -2847,6 +2879,30 @@ mod tests {
                 assert_eq!(path, PathBuf::from("audit.jsonl"));
                 assert_eq!(detail, "disk full");
                 assert_eq!(execution_error, "policy denied request: spawn denied");
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn audit_write_failure_after_execution_success_preserves_exit_status() {
+        let result = Ok(exit_status_from_code(7));
+        let audit_result: ExecResult<()> = Err(ExecError::AuditLogWriteFailed {
+            path: PathBuf::from("audit.jsonl"),
+            detail: "disk full".to_string(),
+        });
+
+        let combined = combine_exit_status_with_audit_write(result, audit_result);
+
+        match combined {
+            Err(ExecError::AuditLogWriteFailedAfterExecutionSuccess {
+                path,
+                detail,
+                status,
+            }) => {
+                assert_eq!(path, PathBuf::from("audit.jsonl"));
+                assert_eq!(detail, "disk full");
+                assert_eq!(status.code(), Some(7));
             }
             other => panic!("unexpected result: {other:?}"),
         }
