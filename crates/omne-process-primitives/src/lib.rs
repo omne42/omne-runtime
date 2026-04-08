@@ -19,7 +19,8 @@
 //!
 //! Windows prefers Job Objects. When the current process cannot attach the child to a kill-on-close
 //! job, cleanup falls back to best-effort tree cleanup rooted at the captured child PID:
-//! `taskkill /T /F` while the leader is still alive, and a descendant sweep after the leader exits.
+//! `taskkill /T /F` while the leader is still alive, and a local root-plus-descendant kill sweep
+//! if `taskkill` itself fails.
 
 use std::io;
 #[cfg(any(windows, test))]
@@ -293,7 +294,7 @@ fn kill_process_tree(cleanup: &ProcessTreeCleanup) {
         cleanup.windows_job.is_some(),
         &cleanup.windows_process_id,
         windows_taskkill_tree,
-        kill_windows_orphan_descendants,
+        kill_windows_remaining_process_tree,
     );
 }
 
@@ -317,18 +318,19 @@ fn kill_windows_process_tree<F, G>(
     fallback: G,
 ) where
     F: FnOnce(u32) -> io::Result<()>,
-    G: FnOnce(u32),
+    G: FnOnce(u32) -> io::Result<()>,
 {
     if has_windows_job {
         return;
     }
 
-    let Some(pid) = take_windows_process_id(process_id) else {
+    let Some(pid) = *lock_windows_process_id(process_id) else {
         return;
     };
 
-    if taskkill_tree(pid).is_err() {
-        fallback(pid);
+    let termination_result = taskkill_tree(pid).or_else(|_| fallback(pid));
+    if termination_result.is_ok() {
+        take_windows_process_id(process_id);
     }
 }
 
@@ -370,11 +372,11 @@ fn windows_taskkill_tree(pid: u32) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn kill_windows_orphan_descendants(root_pid: u32) {
+fn kill_windows_remaining_process_tree(root_pid: u32) -> io::Result<()> {
     use sysinfo::Pid;
 
     let snapshot = windows_process_snapshot();
-    let descendants = collect_descendant_pids(
+    let remaining_tree = collect_process_tree_pids(
         snapshot
             .processes()
             .iter()
@@ -382,11 +384,23 @@ fn kill_windows_orphan_descendants(root_pid: u32) {
         root_pid,
     );
 
-    for pid in descendants {
+    let mut root_kill_failed = false;
+    for pid in remaining_tree {
         if let Some(process) = snapshot.process(Pid::from_u32(pid)) {
-            let _ = process.kill();
+            let killed = process.kill();
+            if pid == root_pid && !killed {
+                root_kill_failed = true;
+            }
         }
     }
+
+    if root_kill_failed {
+        return Err(io::Error::other(format!(
+            "failed to terminate root process {root_pid} after taskkill failure"
+        )));
+    }
+
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -444,12 +458,22 @@ fn collect_descendant_pids(
     descendants
 }
 
+#[cfg(any(windows, test))]
+fn collect_process_tree_pids(
+    processes: impl IntoIterator<Item = (u32, Option<u32>)>,
+    root_pid: u32,
+) -> Vec<u32> {
+    let mut pids = collect_descendant_pids(processes, root_pid);
+    pids.push(root_pid);
+    pids
+}
+
 #[cfg(test)]
 mod descendant_tests {
     use std::io;
     use std::sync::Mutex;
 
-    use super::{collect_descendant_pids, kill_windows_process_tree};
+    use super::{collect_descendant_pids, collect_process_tree_pids, kill_windows_process_tree};
 
     #[test]
     fn collect_descendant_pids_returns_postorder_descendants_only() {
@@ -473,6 +497,16 @@ mod descendant_tests {
     }
 
     #[test]
+    fn collect_process_tree_pids_includes_root_after_descendants() {
+        let processes = [(10, None), (11, Some(10)), (12, Some(10)), (13, Some(11))];
+
+        assert_eq!(
+            collect_process_tree_pids(processes, 10),
+            vec![13, 11, 12, 10]
+        );
+    }
+
+    #[test]
     fn windows_fallback_runs_when_taskkill_returns_error() {
         let process_id = Mutex::new(Some(42));
         let mut taskkill_attempts = Vec::new();
@@ -485,7 +519,10 @@ mod descendant_tests {
                 taskkill_attempts.push(pid);
                 Err(io::Error::other("taskkill failed"))
             },
-            |pid| fallback_pids.push(pid),
+            |pid| {
+                fallback_pids.push(pid);
+                Ok(())
+            },
         );
 
         assert_eq!(taskkill_attempts, vec![42]);
@@ -506,12 +543,39 @@ mod descendant_tests {
                 taskkill_attempts.push(pid);
                 Ok(())
             },
-            |pid| fallback_pids.push(pid),
+            |pid| {
+                fallback_pids.push(pid);
+                Ok(())
+            },
         );
 
         assert_eq!(taskkill_attempts, vec![42]);
         assert!(fallback_pids.is_empty());
         assert_eq!(*process_id.lock().expect("lock pid"), None);
+    }
+
+    #[test]
+    fn windows_fallback_keeps_pid_when_root_termination_still_fails() {
+        let process_id = Mutex::new(Some(42));
+        let mut taskkill_attempts = Vec::new();
+        let mut fallback_pids = Vec::new();
+
+        kill_windows_process_tree(
+            false,
+            &process_id,
+            |pid| {
+                taskkill_attempts.push(pid);
+                Err(io::Error::other("taskkill failed"))
+            },
+            |pid| {
+                fallback_pids.push(pid);
+                Err(io::Error::other("fallback failed"))
+            },
+        );
+
+        assert_eq!(taskkill_attempts, vec![42]);
+        assert_eq!(fallback_pids, vec![42]);
+        assert_eq!(*process_id.lock().expect("lock pid"), Some(42));
     }
 }
 

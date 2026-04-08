@@ -1290,9 +1290,16 @@ fn spawn_error_is_missing_program(
     match execution {
         HostCommandExecution::Sudo => !is_explicit_command_path(request.program),
         HostCommandExecution::Direct => {
+            if !working_directory_can_spawn(request) {
+                return false;
+            }
             resolve_program_for_direct_command(request).is_none_or(|path| !path.exists())
         }
     }
+}
+
+fn working_directory_can_spawn(request: &HostCommandRequest<'_>) -> bool {
+    resolved_working_directory_for_request(request).is_none_or(|path| path.is_dir())
 }
 
 #[cfg(test)]
@@ -1869,6 +1876,27 @@ mod tests {
 
         let error = run_host_command(&request).expect_err("missing command should fail");
         assert!(matches!(error, HostCommandError::CommandNotFound { .. }));
+    }
+
+    #[test]
+    fn run_host_command_reports_missing_working_directory_as_spawn_failed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing_working_directory = temp.path().join("missing");
+        let request = HostCommandRequest {
+            program: OsStr::new("bin/tool"),
+            args: &[],
+            env: &[],
+            working_directory: Some(&missing_working_directory),
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let error = run_host_command(&request).expect_err("missing cwd should fail");
+        match error {
+            HostCommandError::SpawnFailed { source, .. } => {
+                assert_eq!(source.kind(), io::ErrorKind::NotFound);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]

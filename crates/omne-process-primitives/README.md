@@ -42,6 +42,8 @@ Low-level host-command and process-tree primitives shared across callers.
   `sudo`, so missing, non-executable, or untrusted package-manager paths cannot escape into
   elevated child-process errors
 - direct explicit-path spawns only collapse `ENOENT` into `CommandNotFound` when the resolved target path itself is gone; if the file still exists, interpreter/loader failures remain structured spawn errors
+- invalid `working_directory` inputs remain structured spawn failures instead of being collapsed
+  into `CommandNotFound` just because relative resolution under that cwd no longer yields a file
 - sudo resolution that ignores both request-scoped and ambient `PATH` pollution when choosing the `sudo` binary or the elevated bare-command target, and only auto-escalates canonical system package manager commands whose explicit paths match the same binary identity trusted standard locations resolve for that manager name
 - default sudo-mode selection driven by the canonical `omne-system-package-primitives` manager catalog
 - optional `sudo -n` probing on Unix
@@ -49,6 +51,9 @@ Low-level host-command and process-tree primitives shared across callers.
 - fail-closed process-tree capture on Unix unless the child was spawned into its own dedicated process group via `configure_command_for_process_tree`
 - Linux process-tree cleanup capture that now fails closed if the leader identity is already gone before capture completes, instead of arming a later `killpg` from a bare historical PGID
 - Windows `taskkill` cleanup that waits for command success before skipping descendant fallback
+- Windows fallback cleanup that best-effort kills the direct child as well as captured
+  descendants when `taskkill /T /F` itself fails, and keeps the captured root PID available for a
+  later retry if that local fallback still cannot terminate the leader
 - Unix process-group cleanup that fails closed once the captured leader PID has been reused by a
   different live process, and on Linux also fails closed when the leader exits before cleanup can
   still revalidate the original `/proc` identity; non-Linux Unix skips `killpg` entirely because
