@@ -866,14 +866,17 @@ mod tests {
 
     #[test]
     fn archive_binary_ambiguous_target_surfaces_structured_detail() -> Result<(), Box<dyn Error>> {
+        let asset_name = format!("demo{}", std::env::consts::EXE_SUFFIX);
         let archive = make_zip_archive(&[
-            ("demo-linux-x64/bin/demo", b"x64", 0o755),
-            ("demo-linux-arm64/bin/demo", b"arm64", 0o755),
+            (&format!("demo-linux-x64/bin/{asset_name}"), b"x64", 0o755),
+            (
+                &format!("demo-linux-arm64/bin/{asset_name}"),
+                b"arm64",
+                0o755,
+            ),
         ])?;
         let temp = tempfile::tempdir()?;
-        let destination = temp
-            .path()
-            .join(format!("demo{}", std::env::consts::EXE_SUFFIX));
+        let destination = temp.path().join(&asset_name);
 
         let err = install_binary_from_archive(
             "demo.zip",
