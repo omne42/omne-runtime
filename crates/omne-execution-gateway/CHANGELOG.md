@@ -2,10 +2,10 @@
 
 ## [Unreleased]
 
-- clarify the configured-vs-supported `CapabilityReport::policy_default_isolation` contract,
-  add regression coverage pinning that behavior for caller-supplied policies, fix the stale
-  `with_effective_policy_default_isolation(...)` API-reference typo, and align policy docs with
-  the actual preflight order plus denial-reason surface
+- add `CapabilityReport::policy_default_isolation_permitted`, so capability surfaces keep the
+  configured `policy_default_isolation` while also stating whether that default is currently
+  usable on this host/policy combination; the README and policy/API docs now describe that split,
+  and regression coverage pins the behavior for caller-supplied policies
 - preserve `exit_code` / `signal` in `omne-execution` CLI output when the command already exited
   but the terminal audit write fails, so callers can distinguish "command ran, audit failed" from
   "command never produced a status"

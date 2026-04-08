@@ -38,6 +38,14 @@ fn main() -> ExitCode {
         }
     } else {
         println!("supported_isolation={:?}", report.supported_isolation);
+        println!(
+            "policy_default_isolation={:?}",
+            report.policy_default_isolation
+        );
+        println!(
+            "policy_default_isolation_permitted={}",
+            report.policy_default_isolation_permitted
+        );
     }
 
     ExitCode::SUCCESS
@@ -141,16 +149,19 @@ mod tests {
         let report = CapabilityReport {
             supported_isolation: ExecutionIsolation::BestEffort,
             policy_default_isolation: ExecutionIsolation::BestEffort,
+            policy_default_isolation_permitted: true,
         };
         let value = serde_json::to_value(report).expect("serialize output");
 
         assert_eq!(value["supported_isolation"], "best_effort");
         assert_eq!(value["policy_default_isolation"], "best_effort");
+        assert_eq!(value["policy_default_isolation_permitted"], true);
         assert_eq!(
             value,
             json!({
                 "supported_isolation": "best_effort",
-                "policy_default_isolation": "best_effort"
+                "policy_default_isolation": "best_effort",
+                "policy_default_isolation_permitted": true
             })
         );
     }
@@ -168,6 +179,7 @@ mod tests {
             CapabilityReport {
                 supported_isolation: ExecutionIsolation::None,
                 policy_default_isolation: ExecutionIsolation::None,
+                policy_default_isolation_permitted: true,
             }
         );
     }
@@ -197,6 +209,11 @@ mod tests {
         assert_eq!(
             gateway.capability_report().policy_default_isolation,
             ExecutionIsolation::Strict
+        );
+        assert!(
+            !gateway
+                .capability_report()
+                .policy_default_isolation_permitted
         );
     }
 }

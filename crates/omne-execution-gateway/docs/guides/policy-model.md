@@ -47,6 +47,11 @@
 - allowlist matching is executable-identity based for explicit paths; it is not binary provenance verification.
 - `execute()` still owns the simplest full-lifecycle path, but prepared execution is no longer audit-blind: `prepare_command()` records the preflight `prepared` / `prepare_error` state, and `PreparedChild::wait()` / `try_wait()` / drop finalization append the terminal execution record.
 - `GatewayPolicy::default()` is a host-compatible unsandboxed baseline for current shipped hosts, so it defaults to `allow_isolation_none=true` and `default_isolation=none`; if a caller wants fail-closed sandbox preference, it must set `default_isolation` to `best_effort` or `strict` explicitly.
+- `CapabilityReport` reports the configured `policy_default_isolation` and also
+  `policy_default_isolation_permitted`. The configured value remains host-compatible for
+  `ExecGateway::new()` / `with_supported_isolation(...)`; for caller-supplied policies, check the
+  boolean before building `ExecRequest::with_policy_default_isolation(...)` because the configured
+  default may still be rejected by the current host/policy isolation gates.
 - Linux、macOS 和 Windows 当前都只报告 `None` 为受支持能力；如果 policy/default/request 仍要求 `best_effort` 或 `strict`，gateway 会按 `isolation_not_supported` fail-closed。
 
 ## Denial Reasons
