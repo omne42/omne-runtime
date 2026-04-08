@@ -802,15 +802,13 @@ fn write_buffered_match<W>(
 where
     W: Write + ?Sized,
 {
-    writer
-        .write_all(&buffered_match.bytes)
-        .map_err(|err| {
-            ExtractBinaryFromArchiveError::archive_read(
-                archive_format,
-                "write_entry_content",
-                format!("{}: {err}", buffered_match.archive_path),
-            )
-        })?;
+    writer.write_all(&buffered_match.bytes).map_err(|err| {
+        ExtractBinaryFromArchiveError::archive_read(
+            archive_format,
+            "write_entry_content",
+            format!("{}: {err}", buffered_match.archive_path),
+        )
+    })?;
     Ok(ArchiveBinaryMatch {
         archive_format,
         archive_path: buffered_match.archive_path,
