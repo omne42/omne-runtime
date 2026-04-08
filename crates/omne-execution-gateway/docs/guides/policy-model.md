@@ -30,10 +30,10 @@
 
 1. Deny requests that claim `requested_isolation_source = policy_default` when their stored isolation no longer matches `policy.default_isolation`.
 2. Deny `none` isolation if forbidden.
-3. Enforce explicit mutation declaration, allowlisted mutating/non-mutating executable identities, and opaque launcher rules.
-4. Deny if requested isolation exceeds host capability.
-5. Deny invalid `workspace_root`.
-6. Deny invalid `cwd`, then deny `cwd` outside workspace.
+3. Deny if requested isolation exceeds host capability.
+4. Deny invalid relative `audit_log_path` values.
+5. Bind and validate `workspace_root`, `cwd`, and the executable path.
+6. Enforce explicit mutation declaration, startup-sensitive env denial, allowlisted mutating/non-mutating executable identities, and opaque launcher rules.
 7. Apply sandbox and execute.
 
 ## Notes
@@ -53,8 +53,12 @@
 
 - `policy_default_isolation_mismatch`
 - `isolation_none_forbidden`
+- `relative_program_path_forbidden`
+- `program_path_invalid`
 - `mutation_requires_allowlisted_program`
 - `allowlisted_program_requires_declared_mutation`
+- `non_mutating_requires_allowlisted_program`
+- `startup_sensitive_env_forbidden`
 - `opaque_command_forbidden`
 - `isolation_not_supported`
 - `mutation_declaration_required`

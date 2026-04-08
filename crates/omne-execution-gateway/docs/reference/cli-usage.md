@@ -138,6 +138,10 @@ Example output fragment:
 the same authoritative execution/preflight event snapshot emitted in `event`. It makes defaulted
 isolation decisions explicit through `input_required_isolation`, `requested_isolation_source`, and
 `policy_default_isolation`.
+That `policy_default_isolation` field is the configured gateway-policy default, not a
+host-compatible fallback; if a caller-supplied policy still prefers `best_effort` or `strict` on a
+`supported_isolation = none` host, the gateway continues to fail closed with
+`isolation_not_supported`.
 `event` is the canonical execution/audit shape and includes canonicalized `cwd`,
 canonicalized `workspace_root`, declared mutation intent, and the authoritative argv seen by the
 gateway. When the request used a bare command name, `program` reflects the resolved absolute
