@@ -25,7 +25,7 @@ The gateway exposes `ExecEvent` to describe decision outcomes.
 - `evaluate(&request)` for dry-run decision check.
 - `execute(&request)` for decision plus execution result.
 - `execute(&request).into_parts()` when tuple destructuring is preferred.
-- `prepare_command(&request, command)` for callers that need a spawn-only `PreparedCommand`; the gateway rejects the call if `command` program/args diverge from `request`, and `PreparedCommand::spawn()` revalidates bound `cwd` / `workspace_root` identities right before spawn.
+- `prepare_command(&request)` for callers that need a spawn-only `PreparedCommand`; the gateway derives the prepared spawn entirely from the audited request, and `PreparedCommand::spawn()` revalidates bound `cwd` / `workspace_root` identities right before spawn.
 
 `execute()` is the only path that owns the full child lifecycle and therefore emits the final
 execution audit record plus runtime sandbox observation. `prepare_command()` only writes the

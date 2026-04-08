@@ -337,39 +337,26 @@ impl ExecGateway {
         self.execute(request).result
     }
 
-    /// Validate command identity and return a spawn-only prepared wrapper.
+    /// Validate request identity and return a spawn-only prepared wrapper.
     pub fn prepare_command(
         &self,
         request: &ExecRequest,
-        command: Command,
     ) -> (ExecEvent, ExecResult<PreparedCommand>) {
         let (event, result, audit_sink) = match self.prepare_request(request) {
             Ok(prepared) => match self.prepare_audit_sink(&prepared.event) {
-                Ok(mut audit_sink) => match validate_prepared_command_matches_request(
-                    prepared.bound_program.path.as_os_str(),
-                    &request.args,
-                    &request.env,
-                    &prepared.resolved_paths.cwd.path,
-                    &command,
-                ) {
-                    Ok(()) => {
-                        let command = build_prepared_spawn_command(&prepared, &request.args);
-                        let event = prepared.event.clone();
-                        (
-                            event,
-                            Ok(PreparedCommand {
-                                command,
-                                prepared,
-                                audit_sink: None,
-                            }),
-                            audit_sink.take(),
-                        )
-                    }
-                    Err(err) => {
-                        let event = self.deny_event(prepared.event, "prepared_command_mismatch");
-                        (event, Err(err), audit_sink.take())
-                    }
-                },
+                Ok(mut audit_sink) => {
+                    let command = build_prepared_spawn_command(&prepared, &request.args);
+                    let event = prepared.event.clone();
+                    (
+                        event,
+                        Ok(PreparedCommand {
+                            command,
+                            prepared,
+                            audit_sink: None,
+                        }),
+                        audit_sink.take(),
+                    )
+                }
                 Err(err) => {
                     let (event, err) = err.into_parts();
                     (event, Err(err), None)
@@ -1189,100 +1176,6 @@ fn fingerprint_program_contents(path: &Path) -> ExecResult<[u8; 32]> {
     Ok(hasher.finalize().into())
 }
 
-fn validate_prepared_command_matches_request(
-    requested_program: &OsStr,
-    requested_args: &[OsString],
-    requested_env: &[(OsString, OsString)],
-    requested_cwd: &Path,
-    command: &Command,
-) -> ExecResult<()> {
-    let actual_program = command.get_program();
-    let actual_args = command.get_args().collect::<Vec<&OsStr>>();
-    let requested_args = requested_args
-        .iter()
-        .map(OsString::as_os_str)
-        .collect::<Vec<_>>();
-    let actual_env = command
-        .get_envs()
-        .map(|(name, value)| (name.to_os_string(), value.map(OsStr::to_os_string)))
-        .collect::<Vec<_>>();
-    let requested_env = requested_env
-        .iter()
-        .map(|(name, value)| (name.clone(), Some(value.clone())))
-        .collect::<Vec<_>>();
-
-    if !programs_match(actual_program, requested_program) || actual_args != requested_args {
-        return Err(ExecError::PreparedCommandMismatch {
-            requested_program: requested_program.to_string_lossy().into_owned(),
-            requested_args: requested_args
-                .iter()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect(),
-            actual_program: actual_program.to_string_lossy().into_owned(),
-            actual_args: actual_args
-                .into_iter()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect(),
-            detail: "program or args differ".to_string(),
-        });
-    }
-
-    if actual_env != requested_env {
-        return Err(ExecError::PreparedCommandMismatch {
-            requested_program: requested_program.to_string_lossy().into_owned(),
-            requested_args: requested_args
-                .iter()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect(),
-            actual_program: actual_program.to_string_lossy().into_owned(),
-            actual_args: actual_args
-                .iter()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect(),
-            detail: "explicit environment differs".to_string(),
-        });
-    }
-
-    if let Some(actual_cwd) = command.get_current_dir() {
-        let actual_cwd =
-            actual_cwd
-                .canonicalize()
-                .map_err(|err| ExecError::PreparedCommandMismatch {
-                    requested_program: requested_program.to_string_lossy().into_owned(),
-                    requested_args: requested_args
-                        .iter()
-                        .map(|arg| arg.to_string_lossy().into_owned())
-                        .collect(),
-                    actual_program: actual_program.to_string_lossy().into_owned(),
-                    actual_args: actual_args
-                        .iter()
-                        .map(|arg| arg.to_string_lossy().into_owned())
-                        .collect(),
-                    detail: format!("explicit current_dir is invalid: {err}"),
-                })?;
-        if !path_equals(&actual_cwd, requested_cwd) {
-            return Err(ExecError::PreparedCommandMismatch {
-                requested_program: requested_program.to_string_lossy().into_owned(),
-                requested_args: requested_args
-                    .iter()
-                    .map(|arg| arg.to_string_lossy().into_owned())
-                    .collect(),
-                actual_program: actual_program.to_string_lossy().into_owned(),
-                actual_args: actual_args
-                    .iter()
-                    .map(|arg| arg.to_string_lossy().into_owned())
-                    .collect(),
-                detail: format!(
-                    "explicit current_dir {:?} differs from request cwd {:?}",
-                    actual_cwd, requested_cwd
-                ),
-            });
-        }
-    }
-
-    Ok(())
-}
-
 fn is_explicit_program_path(program: &OsStr) -> bool {
     explicit_path_like_os(program)
 }
@@ -1435,16 +1328,6 @@ fn programs_match(actual: &OsStr, requested: &OsStr) -> bool {
     actual.eq_ignore_ascii_case(&requested)
         || strip_windows_exe_suffix(&actual)
             .eq_ignore_ascii_case(strip_windows_exe_suffix(&requested))
-}
-
-#[cfg(not(windows))]
-fn programs_match(actual: &OsStr, requested: &OsStr) -> bool {
-    let actual_path = Path::new(actual);
-    let requested_path = Path::new(requested);
-    if actual_path.is_absolute() && requested_path.is_absolute() {
-        return explicit_program_paths_match(actual_path, requested_path);
-    }
-    actual == requested
 }
 
 #[cfg(windows)]
@@ -2154,8 +2037,7 @@ mod tests {
         )
         .with_declared_mutation(false);
 
-        let command = Command::new(resolved_non_mutating_program_path());
-        let (event, result) = gateway.prepare_command(&request, command);
+        let (event, result) = gateway.prepare_command(&request);
 
         assert_eq!(event.decision, ExecDecision::Run);
         assert!(result.is_ok(), "prepare_command should succeed: {result:?}");
@@ -2198,10 +2080,7 @@ mod tests {
             workspace.path(),
         )
         .with_declared_mutation(false);
-        let mut command = Command::new(&program);
-        command.args([dummy_shell_flag(), "exit 0"]);
-
-        let (_event, result) = gateway.prepare_command(&request, command);
+        let (_event, result) = gateway.prepare_command(&request);
         let status = result
             .expect("prepare command")
             .spawn()
@@ -2285,8 +2164,7 @@ mod tests {
         );
 
         let evaluated = gateway.evaluate(&request);
-        let command = Command::new(dummy_program());
-        let (event, result) = gateway.prepare_command(&request, command);
+        let (event, result) = gateway.prepare_command(&request);
 
         assert_eq!(event.reason, evaluated.reason);
         assert_eq!(event.decision, evaluated.decision);
@@ -2532,8 +2410,7 @@ mod tests {
             workspace.path(),
         )
         .with_declared_mutation(true);
-        let command = Command::new(&program);
-        let (_event, result) = gateway.prepare_command(&request, command);
+        let (_event, result) = gateway.prepare_command(&request);
         let prepared = result.expect("prepare command");
 
         write_unix_shell_executable(&program, "exit 1\n");
@@ -2573,8 +2450,7 @@ mod tests {
             workspace.path(),
         )
         .with_declared_mutation(false);
-        let command = Command::new(&program);
-        let (_event, result) = gateway.prepare_command(&request, command);
+        let (_event, result) = gateway.prepare_command(&request);
         let prepared = result.expect("prepare command");
 
         write_unix_shell_executable(&program, "exit 1\n");
@@ -2613,8 +2489,7 @@ mod tests {
             ExecutionIsolation::None,
             workspace.path(),
         );
-        let command = Command::new(&program);
-        let (_event, result) = gateway.prepare_command(&request, command);
+        let (_event, result) = gateway.prepare_command(&request);
         let prepared = result.expect("prepare command");
 
         write_unix_shell_executable(&program, "exit 1\n");
@@ -2653,8 +2528,7 @@ mod tests {
             ExecutionIsolation::None,
             workspace.path(),
         );
-        let command = Command::new(&program);
-        let (_event, result) = gateway.prepare_command(&request, command);
+        let (_event, result) = gateway.prepare_command(&request);
         let prepared = result.expect("prepare command");
 
         write_unix_shell_executable(&program, "exit 1\n");
@@ -3170,8 +3044,7 @@ mod tests {
             workspace.path(),
         )
         .with_declared_mutation(false);
-        let command = Command::new(resolved_non_mutating_program_path());
-        let (_event, result) = gateway.prepare_command(&request, command);
+        let (_event, result) = gateway.prepare_command(&request);
         let prepared = result.expect("prepare command");
         let expected_cwd = workspace
             .path()
@@ -3214,7 +3087,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn prepare_command_allows_matching_preconfigured_environment() {
+    fn prepare_command_applies_audited_request_environment() {
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             GatewayPolicy {
                 allow_isolation_none: true,
@@ -3237,14 +3110,7 @@ mod tests {
         )
         .with_env([("OMNE_GATEWAY_REQUEST", "expected")])
         .with_declared_mutation(false);
-        let mut command = Command::new(&program);
-        command.args([
-            "-c",
-            "test \"$OMNE_GATEWAY_REQUEST\" = expected && test -z \"$OMNE_GATEWAY_AMBIENT\"",
-        ]);
-        command.env("OMNE_GATEWAY_REQUEST", "expected");
-
-        let (_event, result) = gateway.prepare_command(&request, command);
+        let (_event, result) = gateway.prepare_command(&request);
         let status = result
             .expect("prepare command")
             .spawn()
@@ -3257,7 +3123,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn prepare_command_discards_preconfigured_stdio_overrides() {
+    fn prepared_command_spawn_uses_noninteractive_stdio() {
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             GatewayPolicy {
                 allow_isolation_none: true,
@@ -3276,14 +3142,7 @@ mod tests {
             workspace.path(),
         )
         .with_declared_mutation(false);
-        let mut command = Command::new(&program);
-        command.args(["-c", "exit 0"]);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let (_event, result) = gateway.prepare_command(&request, command);
+        let (_event, result) = gateway.prepare_command(&request);
         let mut prepared_child = result
             .expect("prepare command")
             .spawn()
@@ -3291,146 +3150,15 @@ mod tests {
 
         assert!(
             prepared_child.stdin().is_none(),
-            "prepared command should discard caller stdin override"
+            "prepared command should not expose stdin"
         );
         assert!(
             prepared_child.stdout().is_none(),
-            "prepared command should discard caller stdout override"
+            "prepared command should not expose stdout"
         );
         assert!(
             prepared_child.stderr().is_none(),
-            "prepared command should discard caller stderr override"
-        );
-        let status = prepared_child.wait().result.expect("wait prepared command");
-        assert!(status.success(), "unexpected status: {status}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_command_discards_preconfigured_arg0_override() {
-        use std::os::unix::process::CommandExt;
-
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let program = dummy_program_absolute_path();
-        let request = ExecRequest::new(
-            &program,
-            vec!["-c", "test \"$0\" != leaked-argv0"],
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-        let mut command = Command::new(&program);
-        command.args(["-c", "test \"$0\" != leaked-argv0"]);
-        command.arg0("leaked-argv0");
-
-        let (_event, result) = gateway.prepare_command(&request, command);
-        let status = result
-            .expect("prepare command")
-            .spawn()
-            .expect("spawn prepared command without leaked argv0")
-            .wait()
-            .result
-            .expect("wait prepared command");
-        assert!(status.success(), "unexpected status: {status}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_command_discards_process_group_override_from_input_command() {
-        use std::os::unix::process::CommandExt;
-
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let program = dummy_program_absolute_path();
-        let request = ExecRequest::new(
-            &program,
-            vec![
-                "-c",
-                "pgid=$(ps -o pgid= -p \"$$\" | tr -d ' ')\ntest \"$pgid\" != \"$$\"",
-            ],
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-        let mut command = Command::new(&program);
-        command.args([
-            "-c",
-            "pgid=$(ps -o pgid= -p \"$$\" | tr -d ' ')\ntest \"$pgid\" != \"$$\"",
-        ]);
-        command.process_group(0);
-
-        let (_event, result) = gateway.prepare_command(&request, command);
-        let status = result
-            .expect("prepare command")
-            .spawn()
-            .expect("spawn prepared command without inherited process-group override")
-            .wait()
-            .result
-            .expect("wait prepared command");
-        assert!(status.success(), "unexpected status: {status}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_command_discards_preconfigured_stdio_handles() {
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: true,
-                enforce_allowlisted_program_for_mutation: false,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let program = dummy_program_absolute_path();
-        let request = ExecRequest::new(
-            &program,
-            vec!["-c", "exit 0"],
-            workspace.path(),
-            ExecutionIsolation::None,
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-        let mut command = Command::new(&program);
-        command.args(["-c", "exit 0"]);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let (_event, result) = gateway.prepare_command(&request, command);
-        let mut prepared_child = result
-            .expect("prepare command")
-            .spawn()
-            .expect("spawn prepared command");
-        assert!(
-            prepared_child.stdin().is_none(),
-            "prepared command should not inherit stdin"
-        );
-        assert!(
-            prepared_child.stdout().is_none(),
-            "prepared command should not expose stdout capture handles"
-        );
-        assert!(
-            prepared_child.stderr().is_none(),
-            "prepared command should not expose stderr capture handles"
+            "prepared command should not expose stderr"
         );
         let status = prepared_child.wait().result.expect("wait prepared command");
         assert!(status.success(), "unexpected status: {status}");
@@ -3550,38 +3278,6 @@ mod tests {
     }
 
     #[test]
-    fn prepare_command_denies_unbound_bare_command() {
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            non_mutating_program(),
-            Vec::<OsString>::new(),
-            workspace.path(),
-            host_supported_test_isolation(),
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-
-        let command = Command::new(non_mutating_program());
-        let (event, result) = gateway.prepare_command(&request, command);
-
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("prepared_command_mismatch"));
-        assert!(matches!(
-            result,
-            Err(ExecError::PreparedCommandMismatch { .. })
-        ));
-    }
-
-    #[test]
     fn post_preflight_request_path_errors_flip_event_to_deny() {
         let event = ExecEvent {
             decision: ExecDecision::Run,
@@ -3655,9 +3351,7 @@ mod tests {
             &workspace_root,
         )
         .with_declared_mutation(false);
-        let command = Command::new(&program);
-
-        let (_event, result) = gateway.prepare_command(&request, command);
+        let (_event, result) = gateway.prepare_command(&request);
         let prepared = result.expect("prepare command");
 
         fs::remove_file(&program).expect("remove original program");
@@ -3680,110 +3374,6 @@ mod tests {
         assert_eq!(record["result"]["status"], "execution_error");
     }
 
-    #[test]
-    fn prepare_command_denies_mismatched_command_identity() {
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            "echo",
-            vec!["hello"],
-            workspace.path(),
-            host_supported_test_isolation(),
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-        let mut command = Command::new("printf");
-        command.arg("hello");
-
-        let (event, result) = gateway.prepare_command(&request, command);
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("prepared_command_mismatch"));
-        assert!(matches!(
-            result,
-            Err(ExecError::PreparedCommandMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn prepare_command_denies_mismatched_command_environment() {
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            "echo",
-            vec!["hello"],
-            workspace.path(),
-            host_supported_test_isolation(),
-            workspace.path(),
-        )
-        .with_env([("OMNE_GATEWAY_REQUEST", "expected")])
-        .with_declared_mutation(false);
-        let mut command = Command::new("echo");
-        command.arg("hello");
-        command.env("OMNE_GATEWAY_REQUEST", "different");
-
-        let (event, result) = gateway.prepare_command(&request, command);
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("prepared_command_mismatch"));
-        assert!(matches!(
-            result,
-            Err(ExecError::PreparedCommandMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn prepare_command_denies_mismatched_command_current_dir() {
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request_cwd = workspace.path().join("request");
-        let other_cwd = workspace.path().join("other");
-        fs::create_dir_all(&request_cwd).expect("create request cwd");
-        fs::create_dir_all(&other_cwd).expect("create other cwd");
-        let request = ExecRequest::new(
-            "echo",
-            vec!["hello"],
-            &request_cwd,
-            host_supported_test_isolation(),
-            workspace.path(),
-        )
-        .with_declared_mutation(false);
-        let mut command = Command::new("echo");
-        command.arg("hello");
-        command.current_dir(&other_cwd);
-
-        let (event, result) = gateway.prepare_command(&request, command);
-        assert_eq!(event.decision, ExecDecision::Deny);
-        assert_eq!(event.reason.as_deref(), Some("prepared_command_mismatch"));
-        assert!(matches!(
-            result,
-            Err(ExecError::PreparedCommandMismatch { .. })
-        ));
-    }
-
-    #[cfg(unix)]
     #[test]
     fn prepare_command_rejects_symlink_cwd_ancestor() {
         use std::os::unix::fs::symlink;
@@ -3811,8 +3401,7 @@ mod tests {
             workspace.path(),
         )
         .with_declared_mutation(false);
-        let command = Command::new(resolved_non_mutating_program_path());
-        let (event, result) = gateway.prepare_command(&request, command);
+        let (event, result) = gateway.prepare_command(&request);
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(event.reason.as_deref(), Some("cwd_invalid"));
         match result.expect_err("symlink cwd ancestor should fail closed") {
@@ -4008,7 +3597,7 @@ mod tests {
         let mut command = Command::new(dummy_program_absolute_path());
         command.args(["-c", "exit 0"]);
 
-        let (_event, result) = gateway.prepare_command(&request, command);
+        let (_event, result) = gateway.prepare_command(&request);
         let prepared = result.expect("prepare command");
 
         fs::rename(&cwd, &moved).expect("move original cwd away");
@@ -4029,33 +3618,6 @@ mod tests {
         assert_eq!(record["event"]["decision"], "deny");
         assert_eq!(record["event"]["reason"], "cwd_outside_workspace");
         assert_eq!(record["result"]["status"], "execution_error");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn prepare_command_allows_case_insensitive_windows_program_match() {
-        let policy = GatewayPolicy {
-            allow_isolation_none: true,
-            enforce_allowlisted_program_for_mutation: false,
-            ..GatewayPolicy::default()
-        };
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            policy,
-            host_supported_test_isolation(),
-        );
-        let workspace = tempdir().expect("create temp workspace");
-        let request = ExecRequest::new(
-            r"C:\Windows\System32\CMD.EXE",
-            Vec::<OsString>::new(),
-            workspace.path(),
-            host_supported_test_isolation(),
-            workspace.path(),
-        );
-        let command = Command::new(r"c:\windows\system32\cmd.exe");
-
-        let (event, result) = gateway.prepare_command(&request, command);
-        assert_eq!(event.decision, ExecDecision::Run);
-        assert!(result.is_ok());
     }
 
     #[cfg(windows)]
@@ -4238,9 +3800,7 @@ mod tests {
             workspace.path(),
         )
         .with_declared_mutation(true);
-        let command = Command::new(&program);
-
-        let (_event, result) = gateway.prepare_command(&request, command);
+        let (_event, result) = gateway.prepare_command(&request);
         let outcome = result
             .expect("prepare command should succeed")
             .spawn()
@@ -4489,8 +4049,7 @@ mod tests {
                 assert!(status.success());
             }
             "prepare" => {
-                let command = Command::new(&program);
-                let (_event, result) = gateway.prepare_command(&request, command);
+                let (_event, result) = gateway.prepare_command(&request);
                 let prepared = result.expect("prepare command");
                 let mut prepared_child = prepared.spawn().expect("prepared command should spawn");
                 let status = prepared_child
