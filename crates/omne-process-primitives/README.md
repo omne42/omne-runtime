@@ -13,8 +13,9 @@ Low-level host-command and process-tree primitives shared across callers.
 
 - host command discovery, including `OsStr`-friendly probe/resolve helpers
 - explicit-path command discovery that treats `./tool` and `subdir/tool` as explicit paths instead
-  of continuing to search `PATH`, matching shell/`exec` semantics for probe helpers; Windows
-  drive-relative paths such as `C:tool.exe` are treated as explicit relative paths too
+  of continuing to search `PATH`, matching shell/`exec` semantics for probe helpers; Unix command
+  names containing `\` remain ordinary names rather than being misclassified as paths, while
+  Windows drive-relative paths such as `C:tool.exe` are treated as explicit relative paths
 - request-scoped command probes that honor request `PATH` overrides for bare direct commands while failing closed on explicit relative program paths that omit `working_directory`
 - bare direct commands that resolve `PATH` exactly once before spawn and fail closed with
   `CommandNotFound` when that resolution does not yield a concrete executable, instead of
@@ -52,8 +53,8 @@ Low-level host-command and process-tree primitives shared across callers.
 - Linux process-tree cleanup capture that now fails closed if the leader identity is already gone before capture completes, instead of arming a later `killpg` from a bare historical PGID
 - Windows `taskkill` cleanup that waits for command success before skipping descendant fallback
 - Windows fallback cleanup that best-effort kills the direct child as well as captured
-  descendants when `taskkill /T /F` itself fails, and keeps the captured root PID available for a
-  later retry if that local fallback still cannot terminate the leader
+  descendants when `taskkill /T /F` itself fails, while binding retries to the captured root
+  `(pid, start_time)` identity so PID reuse cannot retarget cleanup at an unrelated process tree
 - Unix process-group cleanup that fails closed once the captured leader PID has been reused by a
   different live process, and on Linux also fails closed when the leader exits before cleanup can
   still revalidate the original `/proc` identity; non-Linux Unix skips `killpg` entirely because

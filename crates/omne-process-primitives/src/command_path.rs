@@ -122,22 +122,24 @@ pub(crate) fn is_regular_command_path(path: &Path) -> bool {
 
 fn is_explicit_command_path(command: &OsStr) -> bool {
     let path = Path::new(command);
-    path.is_absolute()
-        || command
-            .to_string_lossy()
-            .chars()
-            .any(|ch| ch == '/' || ch == '\\')
+    path.is_absolute() || command.to_string_lossy().chars().any(is_path_separator)
+}
+
+#[cfg(windows)]
+fn is_path_separator(ch: char) -> bool {
+    ch == '/' || ch == '\\'
+}
+
+#[cfg(not(windows))]
+fn is_path_separator(ch: char) -> bool {
+    ch == '/'
 }
 
 fn resolve_command_path_from_standard_locations<F>(command: &OsStr, predicate: F) -> Option<PathBuf>
 where
     F: Fn(&Path) -> bool + Copy,
 {
-    if command
-        .to_string_lossy()
-        .chars()
-        .any(|ch| ch == '/' || ch == '\\')
-    {
+    if command.to_string_lossy().chars().any(is_path_separator) {
         return None;
     }
 
@@ -368,6 +370,32 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_backslash_command_name_is_not_treated_as_explicit_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_name = OsStr::new("demo\\tool");
+        let command_path = temp.path().join(command_name);
+        std::fs::write(
+            &command_path,
+            format!("#!{}\nexit 0\n", test_shell_path().display()),
+        )
+        .expect("write command");
+        let mut permissions = std::fs::metadata(&command_path)
+            .expect("stat command")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&command_path, permissions).expect("chmod command");
+
+        let path_var = std::env::join_paths([temp.path()]).expect("join PATH");
+        let resolved = super::resolve_command_path_os_with_path_var(command_name, Some(path_var));
+
+        assert_eq!(resolved, Some(command_path));
+        assert!(!super::is_explicit_command_path(command_name));
     }
 
     #[cfg(unix)]

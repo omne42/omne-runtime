@@ -8,8 +8,9 @@
 
 - 探测命令是否存在和是否可执行。
 - `resolve_command_path*` 这类 probe helper 对 `./tool`、`subdir/tool` 只按显式路径解释，
-  不会继续把它们拿去扫描 `PATH`，以保持与 shell/`exec` 一致的命令解析契约；Windows
-  drive-relative 路径（例如 `C:tool.exe`）也按显式相对路径处理，不会误判成 bare command。
+  不会继续把它们拿去扫描 `PATH`，以保持与 shell/`exec` 一致的命令解析契约；Unix 上单独的
+  `\` 不会被误判成路径分隔符，Windows drive-relative 路径（例如 `C:tool.exe`）则继续按显式
+  相对路径处理，不会误判成 bare command。
 - 对宿主命令 request/recipe 维持 `OsStr` / `OsString` 边界，不把 argv/env 先强制收窄成 UTF-8 `String`。
 - 运行宿主机命令并捕获输出；捕获实现以临时文件为边界，因此 direct child 退出后不会再被继续持有 stdout/stderr 的后台后代进程永久卡住；当 stdout/stderr 超过上限且 direct child 仍在运行时，会先 best-effort 终止 child，并把 direct child 的 reap 放到后台完成，再返回超限错误，避免持续输出命令在超限路径上卡死。
 - 在调用方显式声明时，对宿主机命令执行应用 request-scoped env removal、hard timeout 和 per-stream capture limit；timeout 命中后会 best-effort 终止 direct child，并把已捕获的 bounded stdout/stderr 一并回传给上层。默认便利 API 仍保留 8 MiB/stream 的保守上限，但调用方可以显式收紧、放宽或关闭这个上限。
@@ -40,8 +41,9 @@
 - 配置子进程以支持进程树清理；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
 - 捕获进程树清理标识并执行 best-effort 终止。
 - Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 best-effort
-  root+descendant sweep，而且只有 root 进程也成功进入这条 fallback 终止路径后才消费掉
-  捕获的 PID，避免 fallback 失败时把 leader 从后续重试机会里静默丢掉。
+  root+descendant sweep，而且 fallback 会继续绑定 capture 时记录的 root `(pid, start_time)`
+  身份，只在当前快照仍匹配同一个 root 进程时才继续终止并在成功后消费掉这份句柄，避免 PID
+  重用时误杀无关进程树，也避免 fallback 失败时把 leader 从后续重试机会里静默丢掉。
 - Unix 上一旦无法重新验证原始 leader 身份，默认停止继续对该 process-group 做 `killpg`；Linux 现在连 cleanup capture 阶段也要求 leader `/proc` 身份仍然存在，leader 若已在 capture 完成前消失会直接 fail closed 返回错误，不再留下只记住历史 PGID 的 cleanup 句柄。cleanup 阶段则继续要求当前 leader `/proc` 身份与 capture 时那次完整 `/proc/<pid>/stat` 快照逐字段对齐。非 Linux Unix 因为当前没有同等级的 leader lifetime 重验能力，所以直接跳过 process-group `killpg`，只保留 direct child kill-on-drop / direct child kill 这层 fail-closed 行为。对“cleanup 时 leader PID 已被复用成另一个活进程”“leader 在 cleanup capture 前就已退出，导致无法再绑定 `/proc` 身份”以及“cleanup 时原 leader 已退出、无法继续重验原身份”这几类情况，本 crate 都会继续 fail closed。leader 的 process-group id、`start_ticks` 和 `session_id` 也必须来自同一次 `/proc/<pid>/stat` 读取并在 cleanup 时继续整体匹配，避免把不同进程生命周期的字段拼成伪身份，或把“同 session 才能 kill”放宽成仅凭 PGID 还存在就 kill。
 
 ## 不负责什么
