@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- reconstruct the sudo target environment from the same inherited-plus-request overlay model used
+  by direct execution, including request-scoped env removals and same-name request env restores,
+  so `HostCommandRequest.env` no longer changes meaning when a request crosses the privilege
+  boundary
 - preserve `SpawnFailed(NotFound)` for invalid `working_directory` inputs instead of collapsing
   them into `CommandNotFound`, so missing cwd errors stay distinguishable from missing executables
 - make Windows fallback process-tree cleanup best-effort kill the direct child as well as

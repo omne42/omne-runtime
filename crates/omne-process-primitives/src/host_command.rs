@@ -469,6 +469,7 @@ fn build_command_with_resolved_programs(
                     .as_deref()
                     .expect("sudo execution must resolve a target path"),
                 request,
+                options,
             );
             cmd
         }
@@ -496,15 +497,69 @@ fn append_sudo_target_command(
     env_program: &Path,
     program: &Path,
     request: &HostCommandRequest<'_>,
+    options: HostCommandRunOptions<'_>,
 ) {
-    let _ = request;
     command.arg(env_program);
     command.arg("-i");
+    for assignment in effective_target_environment_assignments(request.env, options.env_remove) {
+        command.arg(assignment);
+    }
     command.arg("--");
     command.arg(program);
     for arg in request.args {
         command.arg(arg);
     }
+}
+
+fn effective_target_environment_assignments(
+    request_env: &[(OsString, OsString)],
+    env_remove: &[OsString],
+) -> Vec<OsString> {
+    effective_target_environment_assignments_with_base_env(
+        request_env,
+        env_remove,
+        std::env::vars_os(),
+    )
+}
+
+fn effective_target_environment_assignments_with_base_env<I>(
+    request_env: &[(OsString, OsString)],
+    env_remove: &[OsString],
+    base_env: I,
+) -> Vec<OsString>
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    let mut effective = base_env
+        .into_iter()
+        .filter(|(name, _)| !should_skip_request_environment_name(name, env_remove))
+        .collect::<Vec<_>>();
+
+    for (name, value) in request_env {
+        if let Some((_, existing_value)) =
+            effective.iter_mut().find(|(existing, _)| existing == name)
+        {
+            *existing_value = value.clone();
+            continue;
+        }
+        effective.push((name.clone(), value.clone()));
+    }
+
+    effective
+        .into_iter()
+        .map(|(name, value)| environment_assignment(name, value))
+        .collect()
+}
+
+fn environment_assignment(name: OsString, value: OsString) -> OsString {
+    let mut assignment = name;
+    assignment.push("=");
+    assignment.push(value);
+    assignment
+}
+
+fn should_skip_request_environment_name(name: &OsStr, env_remove: &[OsString]) -> bool {
+    env_remove.iter().any(|removed| removed == name)
 }
 
 fn run_command_output(
@@ -1325,6 +1380,7 @@ mod tests {
     #[cfg(unix)]
     use super::command_available_os;
     use super::command_exists_os;
+    use super::effective_target_environment_assignments_with_base_env;
     #[cfg(unix)]
     use super::ensure_sudo_environment_cleaner_is_available_with_resolved;
     #[cfg(unix)]
@@ -1347,7 +1403,7 @@ mod tests {
         HostCommandRunOptions, HostCommandSudoMode, HostRecipeError, HostRecipeRequest,
         build_command, build_command_with_options, command_available,
         command_available_for_request, command_exists, command_exists_for_request,
-        command_path_exists, default_recipe_sudo_mode_for_program,
+        command_path_exists, default_recipe_sudo_mode_for_program, environment_assignment,
         resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
         select_execution_for_request_with_status, should_try_sudo_with_status,
     };
@@ -1563,17 +1619,26 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_command_drops_request_environment_at_privilege_boundary() {
+    fn sudo_command_reconstructs_direct_effective_environment() {
         let explicit_program = std::env::current_exe().expect("current exe");
         let args = vec![OsString::from("-c"), OsString::from("exit 0")];
+        let Some((ambient_name, ambient_value)) = std::env::vars_os().find(|(name, _)| {
+            name != "PATH" && name != "OMNE_TEST_VALUE" && name != "OMNE_REMOVED"
+        }) else {
+            return;
+        };
         let env = vec![
             (
                 OsString::from("PATH"),
                 OsString::from("/tmp/not-trusted:/usr/bin"),
             ),
             (OsString::from("OMNE_TEST_VALUE"), OsString::from("world")),
-            (OsString::from("OMNE_SECOND"), OsString::from("value")),
+            (
+                OsString::from("OMNE_REMOVED"),
+                OsString::from("request-restored"),
+            ),
         ];
+        let removed = vec![OsString::from("OMNE_REMOVED")];
         let request = HostCommandRequest {
             program: explicit_program.as_os_str(),
             args: &args,
@@ -1587,13 +1652,13 @@ mod tests {
             &request,
             HostCommandExecution::Sudo,
             &resolved_programs,
-            HostCommandRunOptions::default(),
+            HostCommandRunOptions::new().with_env_remove(&removed),
         );
         let collected_args = command
             .get_args()
-            .map(|arg: &OsStr| arg.to_string_lossy().into_owned())
+            .map(OsStr::to_os_string)
             .collect::<Vec<_>>();
-        assert_eq!(collected_args[0], "-n");
+        assert_eq!(collected_args[0], OsString::from("-n"));
         assert_eq!(
             Path::new(&collected_args[1]),
             resolved_programs
@@ -1601,28 +1666,124 @@ mod tests {
                 .as_deref()
                 .expect("sudo env path"),
         );
-        assert_eq!(collected_args[2], "-i");
-        assert_eq!(collected_args[3], "--");
-        assert_eq!(Path::new(&collected_args[4]), explicit_program.as_path());
-        assert_eq!(collected_args[5], "-c");
-        assert_eq!(collected_args[6], "exit 0");
+        assert_eq!(collected_args[2], OsString::from("-i"));
+        let separator = collected_args
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("sudo env separator");
+        let env_assignments = &collected_args[3..separator];
         assert!(
-            collected_args.iter().all(|arg| !arg.contains('=')),
-            "sudo target must not receive request env assignments: {collected_args:?}"
+            env_assignments.contains(&environment_assignment(
+                OsString::from("PATH"),
+                OsString::from("/tmp/not-trusted:/usr/bin")
+            )),
+            "sudo target must receive request PATH override: {env_assignments:?}"
+        );
+        assert!(
+            env_assignments.contains(&environment_assignment(
+                OsString::from("OMNE_TEST_VALUE"),
+                OsString::from("world")
+            )),
+            "sudo target must receive request env overlay: {env_assignments:?}"
+        );
+        assert!(
+            env_assignments.contains(&environment_assignment(
+                ambient_name.clone(),
+                ambient_value.clone()
+            )),
+            "ambient env entries should survive into the sudo target environment: {env_assignments:?}"
+        );
+        assert!(
+            env_assignments.contains(&environment_assignment(
+                OsString::from("OMNE_REMOVED"),
+                OsString::from("request-restored")
+            )),
+            "request env should override env_remove just like direct execution: {env_assignments:?}"
+        );
+        assert_eq!(collected_args[separator], OsString::from("--"));
+        assert_eq!(
+            Path::new(&collected_args[separator + 1]),
+            explicit_program.as_path()
+        );
+        assert_eq!(collected_args[separator + 2], OsString::from("-c"));
+        assert_eq!(collected_args[separator + 3], OsString::from("exit 0"));
+
+        assert!(
+            command
+                .get_envs()
+                .all(|(_, value): (&OsStr, Option<&OsStr>)| value.is_none()),
+            "sudo wrapper should only carry explicit env removals, not target env payloads"
+        );
+    }
+
+    #[test]
+    fn effective_target_environment_assignments_follow_direct_overlay_model() {
+        let request_env = vec![
+            (OsString::from("PATH"), OsString::from("/request/bin")),
+            (
+                OsString::from("OMNE_REQUEST_ONLY"),
+                OsString::from("request-value"),
+            ),
+            (
+                OsString::from("OMNE_RESTORED"),
+                OsString::from("request-restored"),
+            ),
+        ];
+        let removed = vec![
+            OsString::from("OMNE_REMOVED"),
+            OsString::from("OMNE_RESTORED"),
+        ];
+        let assignments = effective_target_environment_assignments_with_base_env(
+            &request_env,
+            &removed,
+            [
+                (OsString::from("PATH"), OsString::from("/ambient/bin")),
+                (
+                    OsString::from("OMNE_REMOVED"),
+                    OsString::from("ambient-removed"),
+                ),
+                (
+                    OsString::from("OMNE_RESTORED"),
+                    OsString::from("ambient-restored"),
+                ),
+                (OsString::from("OMNE_KEPT"), OsString::from("kept")),
+            ],
         );
 
-        let collected_env = command
-            .get_envs()
-            .map(|(name, value): (&OsStr, Option<&OsStr>)| {
-                (
-                    name.to_string_lossy().into_owned(),
-                    value
-                        .map(|value: &OsStr| value.to_string_lossy().into_owned())
-                        .expect("explicit env value should exist"),
-                )
-            })
-            .collect::<Vec<_>>();
-        assert!(collected_env.is_empty());
+        assert!(
+            assignments.contains(&environment_assignment(
+                OsString::from("PATH"),
+                OsString::from("/request/bin")
+            )),
+            "request PATH should override ambient PATH: {assignments:?}"
+        );
+        assert!(
+            assignments.contains(&environment_assignment(
+                OsString::from("OMNE_REQUEST_ONLY"),
+                OsString::from("request-value")
+            )),
+            "request-only entries should be added: {assignments:?}"
+        );
+        assert!(
+            assignments.contains(&environment_assignment(
+                OsString::from("OMNE_RESTORED"),
+                OsString::from("request-restored")
+            )),
+            "request env should override env_remove just like direct execution: {assignments:?}"
+        );
+        assert!(
+            assignments.contains(&environment_assignment(
+                OsString::from("OMNE_KEPT"),
+                OsString::from("kept")
+            )),
+            "ambient entries not mentioned by the request should remain: {assignments:?}"
+        );
+        assert!(
+            !assignments
+                .iter()
+                .any(|assignment| assignment == "OMNE_REMOVED=ambient-removed"),
+            "env_remove entries must not survive into the effective target environment: {assignments:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -1794,10 +1955,14 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        assert!(collected_env.contains(&("UV_INDEX".to_string(), None)));
-        assert!(collected_env.contains(&("UV_PYTHON".to_string(), None)));
         assert!(
             collected_env.contains(&("OMNE_TEST_VALUE".to_string(), Some("world".to_string())))
+        );
+        assert!(
+            !collected_env.iter().any(|(name, value)| {
+                matches!(name.as_str(), "UV_INDEX" | "UV_PYTHON") && value.is_some()
+            }),
+            "request-scoped env removals must not reintroduce removed values: {collected_env:?}"
         );
     }
 
@@ -2833,7 +2998,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_discards_non_utf8_request_environment_values() {
+    fn sudo_preserves_non_utf8_request_environment_values_in_env_assignments() {
         let non_utf8_value = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
         let env = vec![(OsString::from("OMNE_TEST_VALUE"), non_utf8_value)];
         let explicit_program = std::env::current_exe().expect("current exe");
@@ -2867,9 +3032,23 @@ mod tests {
                 .as_os_str(),
         );
         assert_eq!(collected_args[2], OsString::from("-i"));
-        assert_eq!(collected_args[3], OsString::from("--"));
-        assert_eq!(collected_args[4], explicit_program.into_os_string());
-        assert_eq!(collected_args.len(), 5);
+        let separator = collected_args
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("sudo env separator");
+        assert!(
+            collected_args[3..separator].contains(&environment_assignment(
+                OsString::from("OMNE_TEST_VALUE"),
+                OsString::from_vec(vec![0x66, 0x6f, 0x80])
+            )),
+            "sudo env assignments must preserve non-UTF8 values: {:?}",
+            &collected_args[3..separator]
+        );
+        assert_eq!(collected_args[separator], OsString::from("--"));
+        assert_eq!(
+            collected_args[separator + 1],
+            explicit_program.into_os_string()
+        );
     }
 
     #[cfg(unix)]
