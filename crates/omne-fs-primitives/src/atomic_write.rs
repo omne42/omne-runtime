@@ -793,12 +793,12 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
+    #[cfg(unix)]
+    use super::sync_directory_tree;
     use super::{
         AtomicDirectoryOptions, AtomicWriteError, AtomicWriteOptions, stage_directory_atomically,
         stage_file_atomically, stage_file_atomically_with_name, write_file_atomically,
     };
-    #[cfg(unix)]
-    use super::sync_directory_tree;
 
     #[test]
     fn atomic_write_creates_parent_directories_and_writes_content() {
