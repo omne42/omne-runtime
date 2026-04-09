@@ -589,6 +589,7 @@ fn validate_staged_directory(
     )))
 }
 
+#[cfg(all(not(windows), unix))]
 fn sync_directory_tree(directory: &Dir, path: &Path) -> Result<(), AtomicDirectoryError> {
     for entry in directory
         .entries()
@@ -613,7 +614,7 @@ fn sync_directory_tree(directory: &Dir, path: &Path) -> Result<(), AtomicDirecto
             let file = entry
                 .open()
                 .map_err(|err| AtomicDirectoryError::io_path("open", &entry_path, err))?;
-            file.sync_all()
+            sync_regular_file_handle(&file)
                 .map_err(|err| AtomicDirectoryError::io_path("sync", &entry_path, err))?;
             continue;
         }
@@ -630,6 +631,21 @@ fn sync_directory_tree(directory: &Dir, path: &Path) -> Result<(), AtomicDirecto
     }
 
     sync_dir_handle(directory).map_err(|err| AtomicDirectoryError::io_path("sync", path, err))
+}
+
+#[cfg(all(not(windows), unix))]
+fn sync_regular_file_handle(file: &cap_std::fs::File) -> io::Result<()> {
+    file.sync_all()
+}
+
+#[cfg(not(all(not(windows), unix)))]
+fn sync_regular_file_handle(_file: &cap_std::fs::File) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(all(not(windows), unix)))]
+fn sync_directory_tree(_directory: &Dir, _path: &Path) -> Result<(), AtomicDirectoryError> {
+    Ok(())
 }
 
 fn commit_replace(
