@@ -414,7 +414,7 @@ fn kill_windows_remaining_process_tree(identity: WindowsProcessIdentity) -> io::
     for pid in remaining_tree {
         if let Some(process) = snapshot.process(Pid::from_u32(pid)) {
             let killed = process.kill();
-            if pid == root_pid && !killed {
+            if pid == identity.pid && !killed {
                 root_kill_failed = true;
             }
         }
