@@ -639,11 +639,6 @@ fn sync_regular_file_handle(file: &cap_std::fs::File) -> io::Result<()> {
 }
 
 #[cfg(not(all(not(windows), unix)))]
-fn sync_regular_file_handle(_file: &cap_std::fs::File) -> io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(all(not(windows), unix)))]
 fn sync_directory_tree(_directory: &Dir, _path: &Path) -> Result<(), AtomicDirectoryError> {
     Ok(())
 }
@@ -786,11 +781,6 @@ fn sync_dir_handle(dir: &Dir) -> io::Result<()> {
         Err(rustix::io::Errno::BADF) | Err(rustix::io::Errno::INVAL) => Ok(()),
         Err(err) => Err(io::Error::from(err)),
     }
-}
-
-#[cfg(not(all(not(windows), unix)))]
-fn sync_dir_handle(_dir: &Dir) -> io::Result<()> {
-    Ok(())
 }
 
 #[cfg(all(not(windows), unix))]
