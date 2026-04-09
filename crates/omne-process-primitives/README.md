@@ -35,7 +35,7 @@ Low-level host-command and process-tree primitives shared across callers.
 - host recipe execution with `OsString` argv/env, env/cwd support, and non-zero-exit errors
 - non-zero-exit `HostRecipeError::Display` summaries that report exit status and captured byte counts without dumping full stdout/stderr into logs
 - explicit relative program paths that resolve only against an explicit `working_directory`, instead of silently inheriting the caller process cwd
-- sudo-style escalation that resolves the `sudo` wrapper, privileged `env -i` scrubber, and target command from trusted host locations and executes those exact absolute paths, so elevated commands never reintroduce caller-controlled `PATH`, `secure_path` surprises, or other request-scoped environment into the root-side target process
+- sudo-style escalation that resolves the `sudo` wrapper, privileged `env -i` scrubber, and target command from trusted host locations and executes those exact absolute paths while reconstructing the same inherited-plus-request env overlay model used by direct execution, so elevated commands never depend on `sudo` `secure_path` surprises or drift into a different request-env contract
 - regression coverage that keeps request-scoped `PATH` resolution available for direct bare commands while pinning `sudo`, `env -i`, and auto-sudo targets to trusted host paths, so future refactors cannot collapse these two trust boundaries back into the same lookup rule
 - `IfNonRootSystemCommand` requests fail closed when `sudo` itself is unavailable in trusted standard locations, instead of silently downgrading to direct execution and masking a missing privilege boundary as a target-command failure
 - fail-closed `CommandNotFound` classification before invoking `sudo` when the requested bare target cannot be resolved from trusted standard install locations as a canonical system package manager command
@@ -67,7 +67,8 @@ Low-level host-command and process-tree primitives shared across callers.
 
 - product allowlists
 - default timeout policy
-- general direct-execution environment filtering, lossy UTF-8 coercion, or output-log leakage policy
+- general direct-execution environment filtering, lossy UTF-8 coercion, or output-log leakage
+  policy
 - sandbox selection
 
 ## Verification
