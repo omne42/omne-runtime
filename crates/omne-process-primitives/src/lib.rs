@@ -357,7 +357,7 @@ fn windows_taskkill_program() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("taskkill"))
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn process_identity_matches(
     identity: WindowsProcessIdentity,
     processes: impl IntoIterator<Item = WindowsProcessIdentity>,
