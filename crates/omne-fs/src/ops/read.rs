@@ -50,12 +50,6 @@ pub fn read_file(ctx: &Context, request: ReadRequest) -> Result<ReadResponse> {
 
     let (path, relative, requested_path) =
         ctx.canonical_path_in_root(&request.root_id, &request.path)?;
-    if is_sensitive_env_file_for_read(&relative) {
-        return Err(Error::NotPermitted(format!(
-            "read is disabled by policy: refusing to read {} (use an env-specific tool)",
-            relative.display()
-        )));
-    }
 
     let (bytes_read, content) = match mode {
         ReadMode::Full => read_full(&path, &relative, ctx)?,
@@ -90,27 +84,6 @@ pub fn read_file(ctx: &Context, request: ReadRequest) -> Result<ReadResponse> {
         start_line: request.start_line,
         end_line: request.end_line,
     })
-}
-
-fn is_sensitive_env_file_for_read(relative_path: &Path) -> bool {
-    let Some(file_name) = relative_path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    let file_name = file_name.to_ascii_lowercase();
-    if !file_name.starts_with(".env") {
-        return false;
-    }
-
-    let suffix = &file_name[".env".len()..];
-    if !suffix.is_empty()
-        && !suffix.starts_with('.')
-        && !suffix.starts_with('_')
-        && !suffix.starts_with('-')
-    {
-        return false;
-    }
-
-    !(file_name.contains("example") || file_name.contains("template"))
 }
 
 fn parse_read_mode(start_line: Option<u64>, end_line: Option<u64>) -> Result<ReadMode> {
@@ -403,7 +376,6 @@ mod tests {
 
     use super::{
         checked_next_line, initial_line_range_capacity, initial_line_range_reader_capacity,
-        is_sensitive_env_file_for_read,
     };
 
     #[test]
@@ -433,17 +405,5 @@ mod tests {
             Error::InvalidPath(message) => assert!(message.contains("line count overflow")),
             other => panic!("unexpected error: {other:?}"),
         }
-    }
-
-    #[test]
-    fn sensitive_env_read_blocking_allows_example_and_template_variants() {
-        assert!(is_sensitive_env_file_for_read(Path::new(".env")));
-        assert!(is_sensitive_env_file_for_read(Path::new(".env.local")));
-        assert!(is_sensitive_env_file_for_read(Path::new(".env.production")));
-        assert!(!is_sensitive_env_file_for_read(Path::new(".env.example")));
-        assert!(!is_sensitive_env_file_for_read(Path::new(".env.template")));
-        assert!(!is_sensitive_env_file_for_read(Path::new(".env-example")));
-        assert!(!is_sensitive_env_file_for_read(Path::new(".environment")));
-        assert!(!is_sensitive_env_file_for_read(Path::new("config.env")));
     }
 }

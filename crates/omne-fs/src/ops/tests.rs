@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use policy_meta::WriteScope;
 
-#[cfg(any(not(feature = "glob"), not(feature = "grep")))]
 use crate::Error;
 
 use super::*;
@@ -54,6 +53,53 @@ fn context_grep_remains_callable_when_grep_feature_is_disabled() {
             message,
             "grep is not supported: crate feature 'grep' is disabled"
         ),
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn read_allows_env_files_when_policy_does_not_deny_them() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join(".env.local"), "TOKEN=demo\n").expect("write env file");
+
+    let mut policy = SandboxPolicy::single_root("root", dir.path(), WriteScope::ReadOnly);
+    policy.permissions.read = true;
+    policy.secrets.deny_globs.clear();
+    let ctx = Context::new(policy).expect("ctx");
+
+    let response = ctx
+        .read_file(ReadRequest {
+            root_id: "root".to_string(),
+            path: PathBuf::from(".env.local"),
+            start_line: None,
+            end_line: None,
+        })
+        .expect("read env file");
+
+    assert_eq!(response.content, "TOKEN=demo\n");
+}
+
+#[test]
+fn read_still_denies_env_files_when_deny_globs_match() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join(".env.local"), "TOKEN=demo\n").expect("write env file");
+
+    let mut policy = SandboxPolicy::single_root("root", dir.path(), WriteScope::ReadOnly);
+    policy.permissions.read = true;
+    policy.secrets.deny_globs = vec![".env*".to_string()];
+    let ctx = Context::new(policy).expect("ctx");
+
+    let err = ctx
+        .read_file(ReadRequest {
+            root_id: "root".to_string(),
+            path: PathBuf::from(".env.local"),
+            start_line: None,
+            end_line: None,
+        })
+        .expect_err("deny_globs should still block env file");
+
+    match err {
+        Error::SecretPathDenied(path) => assert_eq!(path, PathBuf::from(".env.local")),
         other => panic!("unexpected error: {other:?}"),
     }
 }

@@ -528,6 +528,7 @@ impl StagedAtomicDirectory {
     pub fn commit(mut self) -> Result<(), AtomicDirectoryError> {
         let staged_root = self.staged_root.as_ref().expect("staged directory missing");
         validate_staged_directory(staged_root.dir(), &self.staged_path)?;
+        sync_directory_tree(staged_root.dir(), &self.staged_path)?;
         let _ = self.staged_root.take();
         commit_replace_directory(
             &self.parent_root,
@@ -586,6 +587,49 @@ fn validate_staged_directory(
         "staged directory `{}` is not a directory",
         staged_path.display()
     )))
+}
+
+fn sync_directory_tree(directory: &Dir, path: &Path) -> Result<(), AtomicDirectoryError> {
+    for entry in directory
+        .entries()
+        .map_err(|err| AtomicDirectoryError::io_path("read_dir", path, err))?
+    {
+        let entry = entry.map_err(|err| AtomicDirectoryError::io_path("read_dir", path, err))?;
+        let entry_name = entry.file_name();
+        let entry_path = path.join(&entry_name);
+        let file_type = entry
+            .file_type()
+            .map_err(|err| AtomicDirectoryError::io_path("file_type", &entry_path, err))?;
+
+        if file_type.is_dir() {
+            let child = entry
+                .open_dir()
+                .map_err(|err| AtomicDirectoryError::io_path("open_dir", &entry_path, err))?;
+            sync_directory_tree(&child, &entry_path)?;
+            continue;
+        }
+
+        if file_type.is_file() {
+            let file = entry
+                .open()
+                .map_err(|err| AtomicDirectoryError::io_path("open", &entry_path, err))?;
+            file.sync_all()
+                .map_err(|err| AtomicDirectoryError::io_path("sync", &entry_path, err))?;
+            continue;
+        }
+
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        return Err(AtomicDirectoryError::Validation(format!(
+            "staged directory `{}` contains unsupported entry `{}`",
+            path.display(),
+            entry_path.display()
+        )));
+    }
+
+    sync_dir_handle(directory).map_err(|err| AtomicDirectoryError::io_path("sync", path, err))
 }
 
 fn commit_replace(
@@ -720,12 +764,22 @@ fn remove_backup_root(holder: RootDir) -> io::Result<()> {
 }
 
 #[cfg(all(not(windows), unix))]
-fn sync_root_directory(root: &RootDir) -> io::Result<()> {
-    match rustix::fs::fsync(root.dir()) {
+fn sync_dir_handle(dir: &Dir) -> io::Result<()> {
+    match rustix::fs::fsync(dir) {
         Ok(()) => Ok(()),
         Err(rustix::io::Errno::BADF) | Err(rustix::io::Errno::INVAL) => Ok(()),
         Err(err) => Err(io::Error::from(err)),
     }
+}
+
+#[cfg(not(all(not(windows), unix)))]
+fn sync_dir_handle(_dir: &Dir) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(all(not(windows), unix))]
+fn sync_root_directory(root: &RootDir) -> io::Result<()> {
+    sync_dir_handle(root.dir())
 }
 
 #[cfg(not(all(not(windows), unix)))]
@@ -736,10 +790,13 @@ fn sync_root_directory(_root: &RootDir) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Seek, SeekFrom, Write};
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     use super::{
         AtomicDirectoryOptions, AtomicWriteError, AtomicWriteOptions, stage_directory_atomically,
-        stage_file_atomically, stage_file_atomically_with_name, write_file_atomically,
+        stage_file_atomically, stage_file_atomically_with_name, sync_directory_tree,
+        write_file_atomically,
     };
 
     #[test]
@@ -1125,5 +1182,35 @@ mod tests {
         assert!(!super::is_macos_root_alias_component(
             std::path::Component::Normal("Users".as_ref())
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_directory_tree_skips_symlink_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("tree");
+        std::fs::create_dir_all(root.join("bin")).expect("mkdir");
+        std::fs::write(root.join("bin/tool"), b"demo").expect("write tool");
+        symlink("bin/tool", root.join("tool-link")).expect("create symlink");
+
+        let root_dir = crate::open_ambient_root(
+            &root,
+            "test tree",
+            crate::MissingRootPolicy::Error,
+            |_dir, component, full_path, err| {
+                std::io::Error::new(
+                    err.kind(),
+                    format!(
+                        "failed to open {} for {}: {err}",
+                        component.display(),
+                        full_path.display()
+                    ),
+                )
+            },
+        )
+        .expect("open tree")
+        .expect("tree exists");
+
+        sync_directory_tree(root_dir.dir(), &root).expect("sync tree with symlink");
     }
 }
