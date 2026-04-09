@@ -30,10 +30,10 @@
 
 1. Deny requests that claim `requested_isolation_source = policy_default` when their stored isolation no longer matches `policy.default_isolation`.
 2. Deny `none` isolation if forbidden.
-3. Deny if requested isolation exceeds host capability.
-4. Deny invalid relative `audit_log_path` values.
-5. Bind and validate `workspace_root`, `cwd`, and the executable path.
-6. Enforce explicit mutation declaration, startup-sensitive env denial, allowlisted mutating/non-mutating executable identities, and opaque launcher rules.
+3. Enforce explicit mutation declaration, allowlisted mutating/non-mutating executable identities, and opaque launcher rules.
+4. Deny if requested isolation exceeds host capability.
+5. Deny invalid `workspace_root`.
+6. Deny invalid `cwd`, then deny `cwd` outside workspace.
 7. Apply sandbox and execute.
 
 ## Notes
@@ -46,25 +46,15 @@
 - the gateway does not parse arbitrary tool-specific CLI syntax or infer arbitrary binary semantics from executable basenames. If a caller wants to authorize read-only direct executables such as `git` or `cargo`, that decision must be expressed through an explicit `non_mutating_program_allowlist` entry for the resolved executable path; multiplexing launcher/frontend families stay fail-closed because executable identity alone does not prove a read-only subcommand.
 - allowlist matching is executable-identity based for explicit paths; it is not binary provenance verification.
 - `execute()` still owns the simplest full-lifecycle path, but prepared execution is no longer audit-blind: `prepare_command()` records the preflight `prepared` / `prepare_error` state, and `PreparedChild::wait()` / `try_wait()` / drop finalization append the terminal execution record.
-- `GatewayPolicy::default()` keeps host-compatible isolation defaults for current shipped hosts, but it still enables mutation enforcement with empty allowlists. Use `GatewayPolicy::default_for_supported_isolation(...)` or `ExecGateway::new()` when you want the executable constructor baseline, and set `default_isolation` to `best_effort` or `strict` explicitly when you want fail-closed sandbox preference.
-- `GatewayPolicy::default_for_supported_isolation(...)`, and therefore `ExecGateway::new()` / `with_supported_isolation(...)`, use the same host-compatible isolation baseline but also disable mutation enforcement so default construction stays executable instead of behaving like an empty-allowlist deny-all policy. Re-enable `enforce_allowlisted_program_for_mutation` explicitly when you want that tighter gate.
-- `CapabilityReport` reports the configured `policy_default_isolation` and also
-  `policy_default_isolation_permitted`. The configured value remains host-compatible for
-  `ExecGateway::new()` / `with_supported_isolation(...)`; for caller-supplied policies, check the
-  boolean before building `ExecRequest::with_policy_default_isolation(...)` because the configured
-  default may still be rejected by the current host/policy isolation gates.
+- `GatewayPolicy::default()` is a host-compatible unsandboxed baseline for current shipped hosts, so it defaults to `allow_isolation_none=true` and `default_isolation=none`; if a caller wants fail-closed sandbox preference, it must set `default_isolation` to `best_effort` or `strict` explicitly.
 - Linux、macOS 和 Windows 当前都只报告 `None` 为受支持能力；如果 policy/default/request 仍要求 `best_effort` 或 `strict`，gateway 会按 `isolation_not_supported` fail-closed。
 
 ## Denial Reasons
 
 - `policy_default_isolation_mismatch`
 - `isolation_none_forbidden`
-- `relative_program_path_forbidden`
-- `program_path_invalid`
 - `mutation_requires_allowlisted_program`
 - `allowlisted_program_requires_declared_mutation`
-- `non_mutating_requires_allowlisted_program`
-- `startup_sensitive_env_forbidden`
 - `opaque_command_forbidden`
 - `isolation_not_supported`
 - `mutation_declaration_required`

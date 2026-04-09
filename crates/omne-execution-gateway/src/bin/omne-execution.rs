@@ -445,7 +445,6 @@ mod tests {
             omne_execution_gateway::CapabilityReport {
                 supported_isolation: ExecutionIsolation::BestEffort,
                 policy_default_isolation: ExecutionIsolation::BestEffort,
-                policy_default_isolation_permitted: true,
             },
             ExecutionOutcome {
                 event: event.clone(),

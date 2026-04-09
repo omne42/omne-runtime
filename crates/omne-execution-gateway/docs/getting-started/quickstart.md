@@ -35,9 +35,9 @@ assert_eq!(execution.event.decision, omne_execution_gateway::ExecDecision::Run);
 # Ok::<(), omne_execution_gateway::ExecError>(())
 ```
 
-This example uses `with_policy(...)` on purpose to show the policy surface explicitly. For a
-host-compatible executable baseline, `ExecGateway::new()` / `Default` now work too; switch back to
-an explicit policy when you want deny-by-default mutation enforcement.
+This example uses `with_policy(...)` on purpose. `ExecGateway::new()` / `Default` keep mutation
+enforcement enabled with empty allowlists, so they deny ordinary commands until you explicitly
+configure policy.
 
 ## 3. Check Host Capability
 
@@ -58,15 +58,12 @@ JSON mode example:
 ```json
 {
   "supported_isolation": "none",
-  "policy_default_isolation": "none",
-  "policy_default_isolation_permitted": true
+  "policy_default_isolation": "none"
 }
 ```
 
 If you pass `--policy ./policy.json`, `policy_default_isolation` reflects that file instead of the
-default in-memory policy. `policy_default_isolation_permitted` tells you whether that configured
-default is currently usable on this host/policy combination; unsupported defaults still fail closed
-at execution time.
+default in-memory policy.
 
 ## 4. Optional CLI Mode
 

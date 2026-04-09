@@ -65,7 +65,6 @@ pub struct ExecGateway {
 pub struct CapabilityReport {
     pub supported_isolation: ExecutionIsolation,
     pub policy_default_isolation: ExecutionIsolation,
-    pub policy_default_isolation_permitted: bool,
 }
 
 #[derive(Debug)]
@@ -213,12 +212,11 @@ impl Default for ExecGateway {
 }
 
 impl ExecGateway {
-    /// Construct a gateway with a host-compatible executable baseline.
+    /// Construct a gateway with host-compatible isolation defaults but fail-closed mutation policy.
     ///
-    /// `GatewayPolicy::default_for_supported_isolation(...)` keeps isolation aligned with host
-    /// capability and leaves mutation enforcement disabled, so default construction does not turn
-    /// `None`-only hosts into a near deny-all gateway. Callers that want strict mutation policy
-    /// must opt into it with an explicit policy.
+    /// `GatewayPolicy::default_for_supported_isolation(...)` still enables mutation enforcement
+    /// and starts with empty allowlists, so callers that expect commands to run must either supply
+    /// explicit allowlists or build a custom policy that disables mutation enforcement.
     pub fn new() -> Self {
         let supported_isolation = sandbox::detect_supported_isolation();
         Self::with_policy_and_supported_isolation(
@@ -243,8 +241,8 @@ impl ExecGateway {
         }
     }
 
-    /// Construct a gateway with the supplied host capability and the same executable baseline as
-    /// [`ExecGateway::new`].
+    /// Construct a gateway with the supplied host capability but the same fail-closed default
+    /// policy shape as [`ExecGateway::new`].
     pub fn with_supported_isolation(supported_isolation: ExecutionIsolation) -> Self {
         Self::with_policy_and_supported_isolation(
             GatewayPolicy::default_for_supported_isolation(supported_isolation),
@@ -256,10 +254,6 @@ impl ExecGateway {
         CapabilityReport {
             supported_isolation: self.supported_isolation,
             policy_default_isolation: self.policy.default_isolation,
-            policy_default_isolation_permitted: policy_default_isolation_permitted(
-                &self.policy,
-                self.supported_isolation,
-            ),
         }
     }
 
@@ -475,6 +469,15 @@ impl ExecGateway {
                                 ExecError::MutationDeclarationRequired,
                             ));
                         }
+                        if let Some(name) = first_startup_sensitive_env_name(&request.env) {
+                            return Err(self.deny_preflight(
+                                event,
+                                "startup_sensitive_env_forbidden",
+                                ExecError::PolicyDenied(format!(
+                                    "allowlisted execution forbids startup-sensitive environment variable `{name}`"
+                                )),
+                            ));
+                        }
                         if request_uses_opaque_command_launcher(&request.program, &bound_program) {
                             return Err(self.deny_preflight(
                                 event,
@@ -483,15 +486,6 @@ impl ExecGateway {
                                     "opaque command launchers cannot be authorized by policy"
                                         .to_string(),
                                 ),
-                            ));
-                        }
-                        if let Some(env_name) = first_startup_sensitive_env_name(&request.env) {
-                            return Err(self.deny_preflight(
-                                event,
-                                "startup_sensitive_env_forbidden",
-                                ExecError::PolicyDenied(format!(
-                                    "startup-sensitive environment variable `{env_name}` is forbidden when mutation enforcement is enabled"
-                                )),
                             ));
                         }
 
@@ -518,7 +512,7 @@ impl ExecGateway {
                                 ));
                             }
                         } else {
-                            if mutating_allowlisted && !non_mutating_allowlisted {
+                            if mutating_allowlisted {
                                 return Err(self.deny_preflight(
                                     event,
                                     "allowlisted_program_requires_declared_mutation",
@@ -619,18 +613,6 @@ impl ExecGateway {
 
         Ok(None)
     }
-}
-
-fn policy_default_isolation_permitted(
-    policy: &GatewayPolicy,
-    supported_isolation: ExecutionIsolation,
-) -> bool {
-    if matches!(policy.default_isolation, ExecutionIsolation::None) && !policy.allow_isolation_none
-    {
-        return false;
-    }
-
-    policy.default_isolation <= supported_isolation
 }
 
 fn uses_opaque_command_launcher(program: &OsStr) -> bool {
@@ -1516,16 +1498,6 @@ mod tests {
             .unwrap_or_else(|_| dir.path().to_path_buf())
     }
 
-    fn mutation_enforcing_gateway(supported_isolation: ExecutionIsolation) -> ExecGateway {
-        ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                enforce_allowlisted_program_for_mutation: true,
-                ..GatewayPolicy::default_for_supported_isolation(supported_isolation)
-            },
-            supported_isolation,
-        )
-    }
-
     #[cfg(unix)]
     fn exit_status_from_code(code: i32) -> ExitStatus {
         use std::os::unix::process::ExitStatusExt;
@@ -2277,7 +2249,6 @@ mod tests {
             report.policy_default_isolation,
             ExecutionIsolation::BestEffort
         );
-        assert!(report.policy_default_isolation_permitted);
     }
 
     #[test]
@@ -2286,58 +2257,6 @@ mod tests {
         let report = gateway.capability_report();
         assert_eq!(report.supported_isolation, ExecutionIsolation::None);
         assert_eq!(report.policy_default_isolation, ExecutionIsolation::None);
-        assert!(report.policy_default_isolation_permitted);
-        assert!(!gateway.policy.enforce_allowlisted_program_for_mutation);
-    }
-
-    #[test]
-    fn capability_report_marks_unsupported_policy_default_as_not_permitted() {
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: false,
-                enforce_allowlisted_program_for_mutation: false,
-                default_isolation: ExecutionIsolation::Strict,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::BestEffort,
-        );
-
-        let report = gateway.capability_report();
-        assert_eq!(report.supported_isolation, ExecutionIsolation::BestEffort);
-        assert_eq!(report.policy_default_isolation, ExecutionIsolation::Strict);
-        assert!(!report.policy_default_isolation_permitted);
-    }
-
-    #[test]
-    fn capability_report_marks_forbidden_none_policy_default_as_not_permitted() {
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                allow_isolation_none: false,
-                enforce_allowlisted_program_for_mutation: false,
-                default_isolation: ExecutionIsolation::None,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-
-        let report = gateway.capability_report();
-        assert_eq!(report.supported_isolation, ExecutionIsolation::None);
-        assert_eq!(report.policy_default_isolation, ExecutionIsolation::None);
-        assert!(!report.policy_default_isolation_permitted);
-    }
-
-    #[test]
-    fn capability_report_preserves_configured_policy_default() {
-        let gateway = ExecGateway::with_policy_and_supported_isolation(
-            GatewayPolicy {
-                default_isolation: ExecutionIsolation::Strict,
-                ..GatewayPolicy::default()
-            },
-            ExecutionIsolation::None,
-        );
-        let report = gateway.capability_report();
-        assert_eq!(report.supported_isolation, ExecutionIsolation::None);
-        assert_eq!(report.policy_default_isolation, ExecutionIsolation::Strict);
     }
 
     #[test]
@@ -2393,7 +2312,7 @@ mod tests {
 
     #[test]
     fn denies_mutation_for_non_allowlisted_program() {
-        let gateway = mutation_enforcing_gateway(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let program = non_allowlisted_program_path(&workspace);
         write_test_executable_placeholder(&program);
@@ -2415,7 +2334,7 @@ mod tests {
 
     #[test]
     fn requires_explicit_mutation_declaration_for_non_allowlisted_programs() {
-        let gateway = mutation_enforcing_gateway(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "echo",
@@ -2468,7 +2387,7 @@ mod tests {
 
     #[test]
     fn denies_non_mutating_for_non_allowlisted_program() {
-        let gateway = mutation_enforcing_gateway(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             resolved_non_mutating_program_path(),
@@ -2856,7 +2775,7 @@ mod tests {
 
     #[test]
     fn denies_opaque_command_launcher_without_allowlist() {
-        let gateway = mutation_enforcing_gateway(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             dummy_program(),
@@ -2889,7 +2808,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn denies_env_launcher_without_allowlist() {
-        let gateway = mutation_enforcing_gateway(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             "/usr/bin/env",
@@ -2991,7 +2910,7 @@ mod tests {
 
     #[test]
     fn denies_interpreter_launcher_without_allowlist() {
-        let gateway = mutation_enforcing_gateway(ExecutionIsolation::BestEffort);
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
         let request = ExecRequest::new(
             interpreter_program(),
