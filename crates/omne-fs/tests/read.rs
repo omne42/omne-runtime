@@ -79,18 +79,31 @@ fn read_redacts_matches() {
 }
 
 #[test]
-fn read_rejects_sensitive_env_variants() {
+fn read_allows_env_variants_when_policy_does_not_deny_them() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join(".env.local"), "SECRET=1\n").expect("write");
 
-    let ctx = Context::new(read_enabled_policy(dir.path(), WriteScope::ReadOnly)).expect("ctx");
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
+    policy.secrets.deny_globs.clear();
+    let ctx = Context::new(policy).expect("ctx");
+    let response = read_ok(&ctx, ".env.local", None, None);
+
+    assert_eq!(response.path, PathBuf::from(".env.local"));
+    assert_eq!(response.content, "SECRET=1\n");
+}
+
+#[test]
+fn read_denies_env_variants_when_deny_globs_match() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(".env.local"), "SECRET=1\n").expect("write");
+
+    let mut policy = read_enabled_policy(dir.path(), WriteScope::ReadOnly);
+    policy.secrets.deny_globs = vec![".env*".to_string()];
+    let ctx = Context::new(policy).expect("ctx");
     let err = read_err(&ctx, ".env.local", None, None);
     match err {
-        omne_fs::Error::NotPermitted(message) => {
-            assert!(
-                message.contains("env-specific tool"),
-                "unexpected message: {message}"
-            );
+        omne_fs::Error::SecretPathDenied(path) => {
+            assert_eq!(path, PathBuf::from(".env.local"));
         }
         other => panic!("unexpected error: {other:?}"),
     }
