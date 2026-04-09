@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `read` no longer hard-codes `.env*` refusal outside policy; direct reads now follow `secrets.deny_globs` as the single source of truth, with regression coverage for both allowed and denied `.env.local` paths.
 - CLI text input loading now opens files through the same ambient-root no-follow path walk used by
   `policy_io`, so ancestor symlink paths are rejected fail-closed instead of only checking the
   final path component.
