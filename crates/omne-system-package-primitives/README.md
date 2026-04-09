@@ -13,7 +13,8 @@ Low-level system package primitives shared across callers.
 
 - exact canonical package-manager recognition; non-canonical case changes or surrounding
   whitespace are rejected instead of being normalized implicitly
-- validated `SystemPackageName` parsing for package identifiers before recipe construction
+- validated `SystemPackageName` parsing for package identifiers before recipe construction,
+  preserving platform path-separator semantics instead of treating Unix `\\` as a separator
 - package-manager enum modeling
 - install recipe construction from validated package names using only the canonical install verb and
   package token; prompt suppression, cache policy, and similar workflow flags stay with callers

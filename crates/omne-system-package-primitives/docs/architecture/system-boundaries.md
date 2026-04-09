@@ -8,7 +8,7 @@
 
 - 只识别精确 canonical manager 名，例如 `apt-get`、`dnf`、`yum`、`apk`、`pacman`、`zypper`、`brew`；不隐式 `trim`、大小写归一化或接受别名。
 - 建模支持的包管理器集合。
-- 先把 package 解析成受约束的 `SystemPackageName`，拒绝空串、空白、控制字符、路径分隔符、`.`/`..` 和 option-looking token，再从 manager + package 构建安装 recipe。
+- 先把 package 解析成受约束的 `SystemPackageName`，拒绝空串、空白、控制字符、当前平台语义下的路径分隔符、`.`/`..` 和 option-looking token，再从 manager + package 构建安装 recipe。
 - install recipe 只保留 manager 的 canonical install verb 和 package token；`-y`、`--noconfirm`、`--non-interactive`、缓存策略或“只在缺失时安装”这类 workflow/prompt 策略不内置在 primitive 里。
 - 解析显式 OS 标识；已知 OS（如 `windows`）和未知 OS 字符串分开建模，避免调用方把两种情况混为一谈。
 - `OperatingSystem` 负责表达“这是哪个已知 OS”，默认 recipe 选择再单独决定“这个 OS 在本 crate 里是否有默认 system-package fallback”。
