@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::ExitStatus;
 
 use thiserror::Error;
 
@@ -58,17 +59,6 @@ pub enum ExecError {
         policy_default: ExecutionIsolation,
     },
 
-    #[error(
-        "prepared command does not match request identity: requested {requested_program:?} {requested_args:?}, actual {actual_program:?} {actual_args:?} ({detail})"
-    )]
-    PreparedCommandMismatch {
-        requested_program: String,
-        requested_args: Vec<String>,
-        actual_program: String,
-        actual_args: Vec<String>,
-        detail: String,
-    },
-
     #[error("sandbox backend rejected request: {0}")]
     Sandbox(String),
 
@@ -78,8 +68,20 @@ pub enum ExecError {
     #[error("audit log is unavailable at {path}: {detail}")]
     AuditLogUnavailable { path: PathBuf, detail: String },
 
+    #[error("audit log path is invalid: {path} ({detail})")]
+    AuditLogPathInvalid { path: PathBuf, detail: String },
+
     #[error("failed to write audit log at {path}: {detail}")]
     AuditLogWriteFailed { path: PathBuf, detail: String },
+
+    #[error(
+        "failed to write audit log at {path}: {detail} after the process already exited with {status}"
+    )]
+    AuditLogWriteFailedAfterExecutionSuccess {
+        path: PathBuf,
+        detail: String,
+        status: ExitStatus,
+    },
 
     #[error(
         "failed to write audit log at {path}: {detail} (original execution error: {execution_error})"

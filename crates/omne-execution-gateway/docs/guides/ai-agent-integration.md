@@ -20,10 +20,10 @@ agent plan
 - Either supply an explicit isolation enum or use `ExecRequest::with_policy_default_isolation(...)`.
 - Always call `with_declared_mutation(...)` intentionally, even for read-only generic external commands.
 - Keep `workspace_root` explicit and stable.
-- Use explicit executable paths for any mutating tool or intentionally allowlisted opaque launcher.
+- Use explicit executable paths for any mutating tool, and replace shell/interpreter launchers with a direct executable whenever possible.
 - Treat denial reasons as actionable control signals.
 - Persist `execution.event.requested_policy_meta` when you need a canonical cross-repo record of the requested isolation contract.
-- Avoid shell-style launchers such as `sh`, `cmd`, `powershell`, and `pwsh` unless policy explicitly allowlists them.
+- Avoid shell-style launchers and multiplexing frontends such as `sh`, `cmd`, `powershell`, `pwsh`, `python3.12`, `pip3.12`, and `nodejs`; the gateway rejects them even when they are allowlisted.
 - Current hosts only report `none` support. Treat `best_effort` / `strict` requests as deliberate fail-closed guards until a native sandbox backend is restored.
 
 ## Repair Mapping
@@ -36,7 +36,7 @@ agent plan
 | `cwd_invalid` | Fix missing, inaccessible, or non-directory working directory input before retrying. |
 | `cwd_outside_workspace` | Correct path under workspace root. |
 | `mutation_requires_allowlisted_program` | Route via a policy-allowlisted explicit executable path instead of a bare program name. |
-| `opaque_command_requires_allowlisted_program` | Replace shell-style launcher usage with a direct executable or explicitly allowlist that launcher's full path. |
+| `opaque_command_forbidden` | Replace shell/interpreter launcher usage with a more specific directly auditable executable. |
 | `isolation_none_forbidden` | Explicitly allow `none`, or defer execution until a supported native isolation backend exists. |
 
 ## Safe Defaults for Autonomous Runs

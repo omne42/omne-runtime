@@ -5,9 +5,9 @@ use std::process::ExitStatus;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
-use omne_fs_primitives::{
-    open_appendable_regular_file_in_ambient_root, validate_appendable_regular_file_in_ambient_root,
-};
+use omne_fs_primitives::open_appendable_regular_file_in_ambient_root;
+#[cfg(test)]
+use omne_fs_primitives::validate_appendable_regular_file_in_ambient_root;
 use serde::Serialize;
 
 use crate::audit::ExecEvent;
@@ -54,7 +54,7 @@ impl AuditLogger {
 
     #[cfg(test)]
     pub(crate) fn ensure_ready(&self) -> ExecResult<()> {
-        self.try_open_sink()
+        self.prepare_sink()
             .map(|_| ())
             .map_err(|err| ExecError::AuditLogUnavailable {
                 path: self.path.clone(),
@@ -70,8 +70,9 @@ impl AuditLogger {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_ready_without_side_effects(&self) -> ExecResult<()> {
-        validate_appendable_regular_file_in_ambient_root(&self.path, "audit log").map_err(|err| {
+        validate_appendable_regular_file_path(&self.path).map_err(|err| {
             ExecError::AuditLogUnavailable {
                 path: self.path.clone(),
                 detail: err.to_string(),
@@ -91,11 +92,11 @@ impl AuditLogger {
     fn try_open_sink(&self) -> Result<PreparedAuditSink, Box<dyn std::error::Error>> {
         let mut last_not_found = None;
         for attempt in 0..APPENDABLE_OPEN_NOT_FOUND_RETRIES {
-            match open_appendable_regular_file_in_ambient_root(&self.path, "audit log") {
+            match open_appendable_regular_file_nofollow(&self.path) {
                 Ok(file) => {
                     return Ok(PreparedAuditSink {
                         path: self.path.clone(),
-                        file: file.into_std(),
+                        file,
                     });
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -113,6 +114,26 @@ impl AuditLogger {
             .unwrap_or_else(|| std::io::Error::other("audit log open failed without an error"))
             .into())
     }
+}
+
+#[cfg(test)]
+fn validate_appendable_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    validate_absolute_audit_log_path(path)?;
+    validate_appendable_regular_file_in_ambient_root(path, "audit log").map_err(|err| err.into())
+}
+
+fn open_appendable_regular_file_nofollow(path: &Path) -> Result<std::fs::File, std::io::Error> {
+    validate_absolute_audit_log_path(path)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
+    open_appendable_regular_file_in_ambient_root(path, "audit log").map(|file| file.into_std())
+}
+
+fn validate_absolute_audit_log_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if path.is_absolute() {
+        return Ok(());
+    }
+
+    Err(format!("audit log path must be absolute: {}", path.display()).into())
 }
 
 impl PreparedAuditSink {
@@ -135,6 +156,22 @@ impl PreparedAuditSink {
         self.write_record(AuditRecord::from_execution(event, result))
     }
 
+    pub(crate) fn write_execution_error_record(
+        &mut self,
+        event: &ExecEvent,
+        error: &ExecError,
+    ) -> ExecResult<()> {
+        self.write_record(AuditRecord::from_execution_error(event, error))
+    }
+
+    pub(crate) fn write_detached_record(
+        &mut self,
+        event: &ExecEvent,
+        detail: &str,
+    ) -> ExecResult<()> {
+        self.write_record(AuditRecord::from_detached(event, detail))
+    }
+
     fn write_record(&mut self, record: AuditRecord) -> ExecResult<()> {
         self.try_write_record(record)
             .map_err(|err| ExecError::AuditLogWriteFailed {
@@ -152,9 +189,22 @@ impl PreparedAuditSink {
             .and_then(|_| writeln!(self.file, "{line}"))
             .and_then(|_| self.file.flush());
         let unlock_result = self.file.unlock();
-        write_result?;
-        unlock_result?;
-        Ok(())
+        finish_locked_write(write_result, unlock_result)
+    }
+}
+
+fn finish_locked_write(
+    write_result: std::io::Result<()>,
+    unlock_result: std::io::Result<()>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match (write_result, unlock_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(unlock_error)) => Err(unlock_error.into()),
+        (Err(write_error), Ok(())) => Err(write_error.into()),
+        (Err(write_error), Err(unlock_error)) => Err(std::io::Error::other(format!(
+            "audit log write failed: {write_error}; failed to release audit log lock: {unlock_error}"
+        ))
+        .into()),
     }
 }
 
@@ -182,6 +232,22 @@ impl AuditRecord {
             ts_unix_ms: now_unix_ms(),
             event: event.clone(),
             result: AuditResult::from_execution(result),
+        }
+    }
+
+    fn from_execution_error(event: &ExecEvent, error: &ExecError) -> Self {
+        Self {
+            ts_unix_ms: now_unix_ms(),
+            event: event.clone(),
+            result: AuditResult::from_execution_error(error),
+        }
+    }
+
+    fn from_detached(event: &ExecEvent, detail: &str) -> Self {
+        Self {
+            ts_unix_ms: now_unix_ms(),
+            event: event.clone(),
+            result: AuditResult::detached(detail),
         }
     }
 }
@@ -249,6 +315,35 @@ impl AuditResult {
                 success: None,
                 signal: None,
             },
+        }
+    }
+
+    fn from_execution_error(error: &ExecError) -> Self {
+        match error {
+            ExecError::Spawn(err) => Self {
+                status: "spawn_error",
+                error: Some(err.to_string()),
+                exit_code: None,
+                success: None,
+                signal: None,
+            },
+            other => Self {
+                status: "execution_error",
+                error: Some(other.to_string()),
+                exit_code: None,
+                success: None,
+                signal: None,
+            },
+        }
+    }
+
+    fn detached(detail: &str) -> Self {
+        Self {
+            status: "detached",
+            error: Some(detail.to_string()),
+            exit_code: None,
+            success: None,
+            signal: None,
         }
     }
 }
@@ -404,6 +499,43 @@ mod tests {
     }
 
     #[test]
+    fn validate_ready_without_side_effects_keeps_missing_parent_absent() {
+        let dir = tempdir().expect("tempdir");
+        let path = canonical_test_root(&dir)
+            .join("nested")
+            .join("audit")
+            .join("audit.jsonl");
+        let logger = AuditLogger::new(&path);
+
+        logger
+            .validate_ready_without_side_effects()
+            .expect("missing audit leaf should validate");
+
+        assert!(!path.exists(), "validation must not create the audit file");
+        assert!(
+            !path.parent().expect("audit parent").exists(),
+            "validation must not create parent directories"
+        );
+    }
+
+    #[test]
+    fn validate_ready_without_side_effects_rejects_relative_audit_path() {
+        let logger = AuditLogger::new(PathBuf::from("audit.jsonl"));
+
+        let err = logger
+            .validate_ready_without_side_effects()
+            .expect_err("relative audit path must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, detail } => {
+                assert_eq!(path, PathBuf::from("audit.jsonl"));
+                assert!(detail.contains("must be absolute"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
     fn ensure_ready_rejects_non_directory_parent() {
         let dir = tempdir().expect("tempdir");
         let parent_file = canonical_test_root(&dir).join("not-a-dir");
@@ -482,6 +614,128 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn ensure_ready_rejects_nonterminal_symlink_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_test_root(&dir);
+        let real_root = root.join("real-root");
+        fs::create_dir_all(real_root.join("deep").join("existing")).expect("create real tree");
+        let alias_root = root.join("alias-root");
+        symlink(&real_root, &alias_root).expect("create root symlink");
+        let audit_path = alias_root.join("deep").join("existing").join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .ensure_ready()
+            .expect_err("nonterminal symlink ancestor must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn ensure_ready_rejects_nonterminal_non_directory_ancestor() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_test_root(&dir);
+        let blocker = root.join("blocker");
+        fs::write(&blocker, "not a directory").expect("write blocker");
+        let audit_path = blocker.join("nested").join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .ensure_ready()
+            .expect_err("non-directory ancestor must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_ready_rejects_symlink_ancestor_even_when_nested_directory_exists() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_test_root(&dir);
+        let target_parent = root.join("real-parent");
+        fs::create_dir_all(target_parent.join("existing").join("nested"))
+            .expect("create nested target directories");
+        let symlink_parent = root.join("linked-parent");
+        symlink(&target_parent, &symlink_parent).expect("create parent symlink");
+        let audit_path = symlink_parent
+            .join("existing")
+            .join("nested")
+            .join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .ensure_ready()
+            .expect_err("audit path with deep symlink ancestor must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_ready_rejects_symlink_ancestor_even_when_nested_directory_exists() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_test_root(&dir);
+        let target_parent = root.join("real-parent");
+        fs::create_dir_all(target_parent.join("existing").join("nested"))
+            .expect("create nested target directories");
+        let symlink_parent = root.join("linked-parent");
+        symlink(&target_parent, &symlink_parent).expect("create parent symlink");
+        let audit_path = symlink_parent
+            .join("existing")
+            .join("nested")
+            .join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .validate_ready_without_side_effects()
+            .expect_err("validation must reject deep symlink ancestor");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, .. } => assert_eq!(path, audit_path),
+            other => panic!("unexpected error: {other}"),
+        }
+        assert!(
+            !audit_path.exists(),
+            "validation must not create the audit file"
+        );
+    }
+
+    #[test]
+    fn validate_ready_without_side_effects_keeps_missing_parent_directories_absent() {
+        let dir = tempdir().expect("tempdir");
+        let path = canonical_test_root(&dir)
+            .join("nested")
+            .join("audit")
+            .join("audit.jsonl");
+        let logger = AuditLogger::new(&path);
+
+        logger
+            .validate_ready_without_side_effects()
+            .expect("missing audit leaf should validate");
+
+        assert!(
+            !path.exists(),
+            "validation must not create the audit log file"
+        );
+        assert!(
+            !path.parent().expect("audit parent").exists(),
+            "validation must not create parent directories"
+        );
+    }
+
     #[test]
     fn write_prepare_record_surfaces_post_ready_write_failure() {
         let dir = tempdir().expect("tempdir");
@@ -502,6 +756,35 @@ mod tests {
             ExecError::AuditLogWriteFailed { path: err_path, .. } => assert_eq!(err_path, path),
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn finish_locked_write_returns_write_error_after_unlock_succeeds() {
+        let err = finish_locked_write(Err(std::io::Error::other("write failed")), Ok(()))
+            .expect_err("write failure should win");
+
+        assert!(err.to_string().contains("write failed"));
+    }
+
+    #[test]
+    fn finish_locked_write_surfaces_unlock_failure_after_successful_write() {
+        let err = finish_locked_write(Ok(()), Err(std::io::Error::other("unlock failed")))
+            .expect_err("unlock failure should be returned");
+
+        assert!(err.to_string().contains("unlock failed"));
+    }
+
+    #[test]
+    fn finish_locked_write_reports_both_write_and_unlock_failures() {
+        let err = finish_locked_write(
+            Err(std::io::Error::other("write failed")),
+            Err(std::io::Error::other("unlock failed")),
+        )
+        .expect_err("combined failure should be returned");
+
+        let message = err.to_string();
+        assert!(message.contains("write failed"));
+        assert!(message.contains("unlock failed"));
     }
 
     #[cfg(unix)]

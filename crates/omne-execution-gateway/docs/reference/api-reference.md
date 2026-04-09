@@ -29,21 +29,33 @@ ExecRequest::with_policy_default_isolation(program, args, cwd, policy_default_is
   .with_declared_mutation(bool)
 ```
 
-Fields:
+Public fields:
 
 - `program: OsString`
 - `args: Vec<OsString>`
+- `env: Vec<(OsString, OsString)>`
 - `cwd: PathBuf`
-- `required_isolation: policy_meta::ExecutionIsolation`
-- `requested_isolation_source: RequestedIsolationSource`
 - `workspace_root: PathBuf`
-- `declared_mutation: bool`
+
+Accessors / mutators:
+
+- `required_isolation() -> policy_meta::ExecutionIsolation`
+- `requested_isolation_source() -> RequestedIsolationSource`
+- `declared_mutation() -> bool`
+- `set_required_isolation(...)`
+- `with_required_isolation(...)`
+- `set_policy_default_isolation(...)`
+- `with_effective_policy_default_isolation(...)`
+- `set_declared_mutation(...)`
 
 `declared_mutation` is caller input. Use `with_policy_default_isolation(...)` when the caller is
 intentionally delegating isolation selection to `GatewayPolicy::default_isolation`.
 When `GatewayPolicy::enforce_allowlisted_program_for_mutation` remains enabled, callers must still
 finish request construction with `.with_declared_mutation(true/false)` before evaluation or
 execution; otherwise the gateway denies the request with `MutationDeclarationRequired`.
+The isolation and explicit-mutation fields are intentionally not directly writable anymore, so
+callers cannot desynchronize `requested_isolation_source` from the stored isolation or bypass the
+explicit-mutation marker by mutating raw struct fields after construction.
 
 ## RequestResolution
 
@@ -55,6 +67,7 @@ Fields:
 
 - `program: OsString`
 - `args: Vec<OsString>`
+- `env: Vec<(OsString, OsString)>`
 - `cwd: PathBuf`
 - `workspace_root: PathBuf`
 - `declared_mutation: bool`
@@ -69,9 +82,11 @@ Use it when you need the gateway's canonical pre-execution request view, includi
 policy-default provenance. When preflight reaches path validation, `program` / `cwd` /
 `workspace_root` mirror the authoritative validated view that also appears in `ExecEvent`. For
 bare command-name requests, `program` becomes the resolved absolute executable path that the
-gateway actually bound and will revalidate before spawn.
-Its JSON form also emits `program_exact` / `args_exact` so callers can reconstruct non-UTF-8
-OS strings exactly instead of depending on lossy display fields.
+gateway actually bound and will revalidate before spawn. For explicit absolute paths that arrive
+through a symlink alias, `program` likewise becomes the canonical real executable path that the
+gateway will actually pass to `spawn()`.
+Its JSON form also emits `program_exact` / `args_exact` / `env_exact` so callers can reconstruct
+non-UTF-8 OS strings exactly instead of depending on lossy display fields.
 
 ## ExecGateway Constructors
 
@@ -80,6 +95,11 @@ OS strings exactly instead of depending on lossy display fields.
 - `ExecGateway::with_supported_isolation(level)`
 - `ExecGateway::with_policy_and_supported_isolation(policy, level)`
 
+`ExecGateway::new()` and `ExecGateway::with_supported_isolation(...)` keep the same fail-closed
+default policy shape as `GatewayPolicy::default_for_supported_isolation(...)`: host-compatible
+`default_isolation`, but mutation enforcement still on and both allowlists empty. Callers that
+want commands to run must pass a custom policy or explicit allowlists.
+
 ## ExecGateway Methods
 
 - `capability_report()`
@@ -87,22 +107,27 @@ OS strings exactly instead of depending on lossy display fields.
 - `evaluate(&ExecRequest)`
 - `execute(&ExecRequest)`
 - `execute_status(&ExecRequest)`
-- `prepare_command(&ExecRequest, Command)`
+- `prepare_command(&ExecRequest)`
 
 `execute()` is the primary API because it preserves `ExecEvent` and sandbox metadata.
 `execute_status()` is a convenience helper that discards the event.
 `prepare_command()` now returns a `PreparedCommand` wrapper with `spawn()`, so validated callers
 cannot mutate program/args/cwd after preflight and silently bypass the gateway decision.
-When the request uses a bare command name, `execute()` resolves it to a concrete executable path
-before launch; `prepare_command()` likewise expects the caller-provided `Command` to already use
-that resolved executable path, and rejects unresolved bare-command `Command` values fail-closed.
+The prepared spawn is rebuilt entirely from the audited request instead of accepting a
+caller-supplied `Command`, so hidden process state cannot be smuggled across the gateway boundary.
+`execute()` and `prepare_command()` clear inherited process state before spawn and only apply the
+request's audited `env` entries.
 `execute()` and `PreparedCommand::spawn()` bind child `stdin/stdout/stderr` to null handles, so
 they are intentionally non-interactive and do not surface child output.
-`prepare_command()` only records preflight audit state; final exit auditing and runtime sandbox
-observation remain part of `execute()`, which still owns the complete child lifecycle.
+`prepare_command()` records the preflight audit state, and `PreparedChild::wait()` /
+`PreparedChild::try_wait()` / `PreparedChild` drop finalization append the authoritative execution
+record so prepared spawns no longer bypass final audit closure.
 `resolve_request()`, `evaluate()`, and `preflight()` stay side-effect free even when
-`audit_log_path` is configured; audit-sink creation happens only on `execute()` /
+`audit_log_path` is configured; the path must be absolute, and audit-sink creation happens only on `execute()` /
 `prepare_command()`.
+If the command already exits but the terminal audit write fails, `execute()` returns
+`AuditLogWriteFailedAfterExecutionSuccess { status, ... }` so callers can retain the authoritative
+child status instead of collapsing the outcome into an undifferentiated audit-write failure.
 
 ## CapabilityReport
 
@@ -116,8 +141,10 @@ Notable fields:
 
 - `program`
 - `args`
+- `env`
 - serialized `program_exact`
 - serialized `args_exact`
+- serialized `env_exact`
 - `requested_isolation`
 - `requested_policy_meta`
 - `supported_isolation`
@@ -141,6 +168,21 @@ Notable fields:
 - behavior notes:
   - `spawn()` reapplies validated `cwd` / `workspace_root` checks and binds child `stdin/stdout/stderr` to null handles before launching the child process
 
+## PreparedChild
+
+- helper methods:
+  - `id()`
+  - `stdin()`
+  - `stdout()`
+  - `stderr()`
+  - `sandbox_runtime()`
+  - `try_wait()`
+  - `wait()`
+  - `kill()`
+- behavior notes:
+  - `wait()` returns an `ExecutionOutcome`, including the final `ExecEvent` with any post-spawn `sandbox_runtime`
+  - dropping a `PreparedChild` without `wait()` / `try_wait()` still writes a terminal detached audit record when `audit_log_path` is configured
+
 ## GatewayPolicy
 
 Path: `omne_execution_gateway::GatewayPolicy`
@@ -161,10 +203,17 @@ check for requests that declare `declared_mutation = false`.
 - `WorkspaceRootInvalid { path }`
 - `CwdInvalid { cwd, detail }`
 - `CwdOutsideWorkspace { cwd, workspace_root }`
+- `RelativeProgramPath { program }`
+- `ProgramPathInvalid { path, detail }`
 - `ProgramLookupFailed { program, detail }`
 - `MutationDeclarationRequired`
+- `PathIdentityUnavailable { kind, path }`
+- `RequestPathChanged { kind, path, detail }`
 - `PolicyDefaultIsolationMismatch { requested, policy_default }`
-- `PreparedCommandMismatch { .. }`
 - `Sandbox(String)`
 - `PolicyDenied(String)`
+- `AuditLogUnavailable { path, detail }`
+- `AuditLogWriteFailed { path, detail }`
+- `AuditLogWriteFailedAfterExecutionSuccess { path, detail, status }`
+- `AuditLogWriteFailedAfterExecutionError { path, detail, execution_error }`
 - `Spawn(io::Error)`

@@ -35,6 +35,10 @@ assert_eq!(execution.event.decision, omne_execution_gateway::ExecDecision::Run);
 # Ok::<(), omne_execution_gateway::ExecError>(())
 ```
 
+This example uses `with_policy(...)` on purpose. `ExecGateway::new()` / `Default` keep mutation
+enforcement enabled with empty allowlists, so they deny ordinary commands until you explicitly
+configure policy.
+
 ## 3. Check Host Capability
 
 ```bash
@@ -70,6 +74,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 `omne-execution` prints one JSON result object with canonical nested `request_resolution` and `event`
 objects and the exit outcome.
 The request adapter rejects unknown JSON fields and requires an explicit `declared_mutation` field.
+When policy enables `audit_log_path`, that path must be absolute.
 
 Example fragment:
 
@@ -117,7 +122,7 @@ Example fragment:
 - requested `strict` above host support -> denied.
 - mutating request with non-allowlisted program -> denied (when policy enforcement is on).
 - request omitted `with_declared_mutation(...)` / `declared_mutation` -> denied as `mutation_declaration_required` (when policy enforcement is on).
-- shell-style launchers such as `sh`, `cmd`, and `pwsh` -> denied unless explicitly allowlisted.
-- known mutating tools such as `git`, `make`, `cargo`, `go`, package managers (`npm`, `pip`, `apt`, `dnf`, `yum`, `pacman`, `brew`) and core file-mutating utilities like `rm`, `mv`, `mkdir`, `touch`, `chmod`, or `ln` -> denied when declared non-mutating; to run them, declare mutation and use an allowlisted explicit path.
+- shell-style launchers and interpreters such as `sh`, `cmd`, `pwsh`, `python`, and `node` -> denied; use a more specific directly auditable executable instead.
+- non-mutating requests still need an explicit path from `non_mutating_program_allowlist`; if you want to authorize a read-only `git status` or `cargo metadata` path, make that decision explicitly in policy instead of relying on gateway basename heuristics.
 - `request_resolution` now reports the same validated canonical `cwd` / `workspace_root` view that appears in `event` when preflight reaches path validation.
 - `prepare_command` with a mismatched `Command` program/args -> denied.

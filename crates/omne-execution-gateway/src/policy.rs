@@ -1,8 +1,9 @@
+use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
-use omne_fs_primitives::read_utf8_regular_file_in_ambient_root;
+use omne_fs_primitives::{ReadUtf8Error, read_utf8_regular_file_in_ambient_root};
 use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
 
@@ -49,22 +50,31 @@ impl GatewayPolicy {
     }
 
     pub fn is_mutating_program_allowlisted(&self, program: &str) -> bool {
-        self.is_mutating_program_allowlisted_path(Path::new(program))
+        self.is_mutating_program_allowlisted_os(OsStr::new(program))
+    }
+
+    pub fn is_mutating_program_allowlisted_os(&self, program: &OsStr) -> bool {
+        self.is_program_allowlisted_os(&self.mutating_program_allowlist, program)
     }
 
     pub fn is_mutating_program_allowlisted_path(&self, program: &Path) -> bool {
-        self.is_program_allowlisted_path(&self.mutating_program_allowlist, program)
+        self.is_mutating_program_allowlisted_os(program.as_os_str())
     }
 
     pub fn is_non_mutating_program_allowlisted(&self, program: &str) -> bool {
-        self.is_non_mutating_program_allowlisted_path(Path::new(program))
+        self.is_non_mutating_program_allowlisted_os(OsStr::new(program))
+    }
+
+    pub fn is_non_mutating_program_allowlisted_os(&self, program: &OsStr) -> bool {
+        self.is_program_allowlisted_os(&self.non_mutating_program_allowlist, program)
     }
 
     pub fn is_non_mutating_program_allowlisted_path(&self, program: &Path) -> bool {
-        self.is_program_allowlisted_path(&self.non_mutating_program_allowlist, program)
+        self.is_non_mutating_program_allowlisted_os(program.as_os_str())
     }
 
-    fn is_program_allowlisted_path(&self, allowlist: &[String], program: &Path) -> bool {
+    fn is_program_allowlisted_os(&self, allowlist: &[String], program: &OsStr) -> bool {
+        let program = Path::new(program);
         if !is_explicit_program_path(program) {
             return false;
         }
@@ -74,34 +84,70 @@ impl GatewayPolicy {
     }
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
-        let content = read_utf8_regular_file_in_ambient_root(
-            path.as_ref(),
-            "policy file",
-            MAX_POLICY_JSON_BYTES,
-        )
-        .map_err(|err| match err {
-            omne_fs_primitives::ReadUtf8Error::Io(source) => source,
-            omne_fs_primitives::ReadUtf8Error::TooLarge { bytes, max_bytes } => io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("policy file exceeds size limit ({bytes} > {max_bytes} bytes)"),
-            ),
-            omne_fs_primitives::ReadUtf8Error::InvalidUtf8(source) => {
-                io::Error::new(io::ErrorKind::InvalidData, source.to_string())
-            }
-        })?;
+        let path = path.as_ref();
+        let content =
+            read_utf8_regular_file_in_ambient_root(path, "gateway policy", MAX_POLICY_JSON_BYTES)
+                .map_err(map_read_utf8_error)?;
         let policy = serde_json::from_str::<Self>(&content)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
         Ok(policy)
     }
 }
 
+fn map_read_utf8_error(err: ReadUtf8Error) -> io::Error {
+    match err {
+        ReadUtf8Error::Io(err) => err,
+        ReadUtf8Error::TooLarge { bytes, max_bytes } => io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("policy file exceeds size limit ({bytes} > {max_bytes} bytes)"),
+        ),
+        ReadUtf8Error::InvalidUtf8(err) => io::Error::new(io::ErrorKind::InvalidData, err),
+    }
+}
+
 fn is_explicit_program_path(program: impl AsRef<Path>) -> bool {
-    let program = program.as_ref();
-    program.is_absolute()
-        || program
-            .to_string_lossy()
-            .chars()
-            .any(|ch| ch == '/' || ch == '\\')
+    let program = program.as_ref().as_os_str();
+    let path = Path::new(program);
+    path.is_absolute() || os_str_has_path_separator(program) || has_windows_drive_prefix(path)
+}
+
+#[cfg(unix)]
+fn os_str_has_path_separator(value: &OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    value
+        .as_bytes()
+        .iter()
+        .any(|byte| matches!(byte, b'/' | b'\\'))
+}
+
+#[cfg(windows)]
+fn os_str_has_path_separator(value: &OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    value
+        .encode_wide()
+        .any(|unit| matches!(char::from_u32(u32::from(unit)), Some('/' | '\\')))
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn os_str_has_path_separator(value: &OsStr) -> bool {
+    value
+        .to_str()
+        .is_some_and(|text| text.chars().any(|ch| matches!(ch, '/' | '\\')))
+}
+
+#[cfg(windows)]
+fn has_windows_drive_prefix(path: &Path) -> bool {
+    matches!(
+        path.components().next(),
+        Some(std::path::Component::Prefix(_))
+    )
+}
+
+#[cfg(not(windows))]
+fn has_windows_drive_prefix(_path: &Path) -> bool {
+    false
 }
 
 #[cfg(windows)]
@@ -296,6 +342,13 @@ mod tests {
         assert!(!policy.is_non_mutating_program_allowlisted_path(&program));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_explicit_path_detection_keeps_separator_checks_native() {
+        let program = OsString::from_vec(vec![0x2f, 0x74, 0x6d, 0x70, 0x2f, 0x66, 0x6f, 0x80]);
+        assert!(is_explicit_program_path(program));
+    }
+
     #[cfg(windows)]
     #[test]
     fn bare_program_allowlist_does_not_match_windows_explicit_path_by_basename() {
@@ -436,5 +489,21 @@ mod tests {
 
         let err = GatewayPolicy::load_json(&socket_path).expect_err("socket should be rejected");
         assert_ne!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn load_json_rejects_missing_parent_side_effect_free() {
+        let dir = tempdir().expect("tempdir");
+        let path = canonical_temp_root(&dir)
+            .join("nested")
+            .join("configs")
+            .join("policy.json");
+
+        let err = GatewayPolicy::load_json(&path).expect_err("missing policy should fail");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(
+            !path.parent().expect("policy parent").exists(),
+            "load_json must not create parent directories"
+        );
     }
 }

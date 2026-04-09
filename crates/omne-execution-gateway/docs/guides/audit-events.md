@@ -25,11 +25,17 @@ The gateway exposes `ExecEvent` to describe decision outcomes.
 - `evaluate(&request)` for dry-run decision check.
 - `execute(&request)` for decision plus execution result.
 - `execute(&request).into_parts()` when tuple destructuring is preferred.
-- `prepare_command(&request, command)` for callers that need a spawn-only `PreparedCommand`; the gateway rejects the call if `command` program/args diverge from `request`, and `PreparedCommand::spawn()` revalidates bound `cwd` / `workspace_root` identities right before spawn.
+- `prepare_command(&request)` for callers that need a spawn-only `PreparedCommand`; the gateway derives the prepared spawn entirely from the audited request, and `PreparedCommand::spawn()` revalidates bound `cwd` / `workspace_root` identities right before spawn.
 
-`execute()` is the only path that owns the full child lifecycle and therefore emits the final
-execution audit record plus runtime sandbox observation. `prepare_command()` only writes the
-preflight `prepared` / `prepare_error` audit record before returning control to the caller.
+`resolve_request()`, `evaluate()`, and `preflight()` stay pure projections: they do not create
+audit directories/files, and audit-sink availability only fails closed once `execute()` or
+`prepare_command()` enters the side-effecting path.
+
+`execute()` owns the full child lifecycle and therefore emits the final execution audit record plus
+runtime sandbox observation. `prepare_command()` writes the preflight `prepared` /
+`prepare_error` audit record before returning control to the caller, and `PreparedChild::wait()` /
+`try_wait()` / drop finalization append the terminal execution audit record once the prepared child
+actually runs.
 
 ## JSONL Audit Sink
 
@@ -51,6 +57,7 @@ The field remains part of the event schema so future native backends can report 
 enforcement state without changing the audit contract.
 
 The audit sink itself is fail-closed: the gateway rejects symlinked audit files, special files,
-and paths that traverse existing symlinked parent directories.
+and paths that fail the shared descriptor-backed ambient-root no-follow checks, including
+symlinked parent directories.
 If the final audit write fails after a command has already failed for another reason, the surfaced
 audit error includes the original execution error summary so callers do not lose that context.

@@ -5,6 +5,7 @@ mod audit_log;
 mod error;
 mod gateway;
 mod os_serialization;
+pub mod path_guard;
 mod policy;
 mod sandbox;
 mod types;

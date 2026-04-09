@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus};
 
 use omne_execution_gateway::{
-    ExecEvent, ExecGateway, ExecRequest, ExecResult, GatewayPolicy, RequestResolution,
+    ExecError, ExecEvent, ExecGateway, ExecRequest, ExecResult, ExecutionOutcome, GatewayPolicy,
+    RequestResolution, RequestedIsolationSource, requested_policy_meta,
 };
 use omne_fs_primitives::{ReadUtf8Error, read_utf8_regular_file_in_ambient_root};
 use policy_meta::ExecutionIsolation;
@@ -101,9 +102,8 @@ fn run() -> Result<ExitCode, String> {
     let request_wire = load_request(&request_path)?;
     let request = build_exec_request(&policy, request_wire)?;
     let gateway = ExecGateway::with_policy(policy);
-    let request_resolution = gateway.resolve_request(&request);
     let execution = gateway.execute(&request);
-    let output = exec_output_from_result(request_resolution, execution.event, execution.result);
+    let output = exec_output_from_execution(&request, gateway.capability_report(), execution);
 
     println!(
         "{}",
@@ -111,7 +111,7 @@ fn run() -> Result<ExitCode, String> {
     );
 
     Ok(match output.exit_code {
-        Some(0) if output.signal.is_none() => ExitCode::SUCCESS,
+        Some(0) if output.signal.is_none() && output.error.is_none() => ExitCode::SUCCESS,
         Some(_) | None => ExitCode::FAILURE,
     })
 }
@@ -149,25 +149,25 @@ fn build_exec_request(
 }
 
 fn load_request(path: &Path) -> Result<ExecRequestWire, String> {
-    let content = read_utf8_regular_file_in_ambient_root(
-        path,
-        "request file",
-        MAX_REQUEST_JSON_BYTES,
-    )
-    .map_err(|err| match err {
-        ReadUtf8Error::Io(source) => {
-            format!("failed to read request {}: {source}", path.display())
-        }
-        ReadUtf8Error::TooLarge { bytes, max_bytes } => format!(
-            "failed to read request {}: request file exceeds size limit ({bytes} > {max_bytes} bytes)",
-            path.display()
-        ),
-        ReadUtf8Error::InvalidUtf8(source) => {
-            format!("failed to read request {}: {source}", path.display())
-        }
-    })?;
+    let content =
+        read_utf8_regular_file_in_ambient_root(path, "execution request", MAX_REQUEST_JSON_BYTES)
+            .map_err(map_read_utf8_error)
+            .map_err(|err| format!("failed to read request {}: {err}", path.display()))?;
     serde_json::from_str(&content)
         .map_err(|e| format!("invalid request json {}: {e}", path.display()))
+}
+
+fn map_read_utf8_error(err: ReadUtf8Error) -> std::io::Error {
+    match err {
+        ReadUtf8Error::Io(err) => err,
+        ReadUtf8Error::TooLarge { bytes, max_bytes } => std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("request file exceeds size limit ({bytes} > {max_bytes} bytes)"),
+        ),
+        ReadUtf8Error::InvalidUtf8(err) => {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, err)
+        }
+    }
 }
 
 fn exec_output_from_result(
@@ -184,6 +184,22 @@ fn exec_output_from_result(
             error: exit_status_signal(&status)
                 .map(|signal| format!("process terminated by signal {signal}")),
         },
+        Err(ExecError::AuditLogWriteFailedAfterExecutionSuccess {
+            path,
+            detail,
+            status,
+        }) => ExecOutput {
+            request_resolution,
+            event,
+            exit_code: status.code(),
+            signal: exit_status_signal(&status),
+            error: Some(format!(
+                "failed to write audit log at {}: {} after the process already exited with {}",
+                path.display(),
+                detail,
+                status
+            )),
+        },
         Err(err) => ExecOutput {
             request_resolution,
             event,
@@ -191,6 +207,40 @@ fn exec_output_from_result(
             signal: None,
             error: Some(err.to_string()),
         },
+    }
+}
+
+fn exec_output_from_execution(
+    request: &ExecRequest,
+    capability_report: omne_execution_gateway::CapabilityReport,
+    execution: ExecutionOutcome,
+) -> ExecOutput {
+    let (event, result) = execution.into_parts();
+    let request_resolution =
+        request_resolution_from_event(request, &event, capability_report.policy_default_isolation);
+    exec_output_from_result(request_resolution, event, result)
+}
+
+fn request_resolution_from_event(
+    request: &ExecRequest,
+    event: &ExecEvent,
+    policy_default_isolation: ExecutionIsolation,
+) -> RequestResolution {
+    RequestResolution {
+        program: event.program.clone(),
+        args: request.args.clone(),
+        env: event.env.clone(),
+        cwd: event.cwd.clone(),
+        workspace_root: event.workspace_root.clone(),
+        declared_mutation: request.declared_mutation(),
+        input_required_isolation: match request.requested_isolation_source() {
+            RequestedIsolationSource::Request => Some(request.required_isolation()),
+            RequestedIsolationSource::PolicyDefault => None,
+        },
+        requested_isolation: request.required_isolation(),
+        requested_isolation_source: request.requested_isolation_source(),
+        requested_policy_meta: requested_policy_meta(request.required_isolation()),
+        policy_default_isolation,
     }
 }
 
@@ -252,32 +302,41 @@ mod tests {
     }
 
     fn sample_request_resolution() -> RequestResolution {
+        let request = sample_request();
+        ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort)
+            .resolve_request(&request)
+    }
+
+    fn sample_request() -> ExecRequest {
         let workspace = sample_workspace();
-        let request = ExecRequest::new(
+        ExecRequest::new(
             "echo",
             vec!["hello"],
             &workspace,
             ExecutionIsolation::BestEffort,
             &workspace,
         )
-        .with_declared_mutation(false);
+        .with_declared_mutation(false)
+    }
+
+    #[cfg(unix)]
+    fn sample_policy_default_request_resolution() -> RequestResolution {
+        let request = sample_policy_default_request();
         ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort)
             .resolve_request(&request)
     }
 
     #[cfg(unix)]
-    fn sample_policy_default_request_resolution() -> RequestResolution {
+    fn sample_policy_default_request() -> ExecRequest {
         let workspace = sample_workspace();
-        let request = ExecRequest::with_policy_default_isolation(
+        ExecRequest::with_policy_default_isolation(
             "echo",
             vec!["hello"],
             &workspace,
             ExecutionIsolation::BestEffort,
             &workspace,
         )
-        .with_declared_mutation(false);
-        ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort)
-            .resolve_request(&request)
+        .with_declared_mutation(false)
     }
 
     #[test]
@@ -367,6 +426,106 @@ mod tests {
                 "declared_mutation": false,
                 "reason": null
             })
+        );
+    }
+
+    #[test]
+    fn exec_output_from_execution_uses_authoritative_event_snapshot() {
+        let request = sample_request();
+        let event = omne_execution_gateway::ExecEvent {
+            program: OsString::from("/tmp/canonical-echo"),
+            env: vec![(OsString::from("LANG"), OsString::from("C"))],
+            cwd: PathBuf::from("/tmp/canonical-cwd"),
+            workspace_root: PathBuf::from("/tmp/canonical-workspace"),
+            ..sample_event()
+        };
+
+        let output = exec_output_from_execution(
+            &request,
+            omne_execution_gateway::CapabilityReport {
+                supported_isolation: ExecutionIsolation::BestEffort,
+                policy_default_isolation: ExecutionIsolation::BestEffort,
+            },
+            ExecutionOutcome {
+                event: event.clone(),
+                result: Ok(success_exit_status()),
+            },
+        );
+
+        assert_eq!(output.event.program, event.program);
+        assert_eq!(output.request_resolution.program, event.program);
+        assert_eq!(output.request_resolution.env, event.env);
+        assert_eq!(output.request_resolution.cwd, event.cwd);
+        assert_eq!(
+            output.request_resolution.workspace_root,
+            event.workspace_root
+        );
+        assert_eq!(output.request_resolution.args, request.args);
+        assert_ne!(output.request_resolution.program, request.program);
+        assert!(output.error.is_none());
+    }
+
+    #[test]
+    fn exec_output_keeps_explicit_env_in_request_resolution_and_event() {
+        let workspace = sample_workspace();
+        let request = ExecRequest::new(
+            "echo",
+            vec!["hello"],
+            &workspace,
+            ExecutionIsolation::BestEffort,
+            &workspace,
+        )
+        .with_declared_mutation(false)
+        .with_env([(OsString::from("LANG"), OsString::from("C"))]);
+        let request_resolution =
+            ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort)
+                .resolve_request(&request);
+        let mut event = sample_event();
+        event.program = request_resolution.program.clone();
+        event.env = request_resolution.env.clone();
+
+        let output = exec_output_from_result(request_resolution, event, Ok(success_exit_status()));
+        let value = serde_json::to_value(&output).expect("serialize output");
+
+        assert_eq!(
+            value["request_resolution"]["env"],
+            serde_json::json!([{
+                "name": "LANG",
+                "value": "C"
+            }])
+        );
+        assert_eq!(
+            value["event"]["env"],
+            serde_json::json!([{
+                "name": "LANG",
+                "value": "C"
+            }])
+        );
+        assert_eq!(
+            value["request_resolution"]["env_exact"],
+            serde_json::json!([{
+                "name": {
+                    "encoding": "utf8",
+                    "value": "LANG"
+                },
+                "value": {
+                    "encoding": "utf8",
+                    "value": "C"
+                }
+            }])
+        );
+        assert_eq!(
+            value["event"]["env_exact"],
+            serde_json::json!([{
+                "name": {
+                    "encoding": "utf8",
+                    "value": "LANG"
+                },
+                "value": {
+                    "encoding": "utf8",
+                    "value": "C"
+                }
+            }])
         );
     }
 
@@ -470,7 +629,7 @@ mod tests {
         )
         .expect("build request");
 
-        assert!(request.declared_mutation);
+        assert!(request.declared_mutation());
         assert_eq!(
             request.env,
             vec![(
@@ -479,7 +638,7 @@ mod tests {
             )]
         );
         assert_eq!(
-            request.requested_isolation_source,
+            request.requested_isolation_source(),
             RequestedIsolationSource::PolicyDefault
         );
     }
@@ -627,7 +786,8 @@ mod tests {
         let err = load_request(&link).expect_err("symlink request should fail closed");
         assert!(
             err.contains("Too many levels of symbolic links")
-                || err.contains("target file must be a regular file"),
+                || err.contains("target file must be a regular file")
+                || err.contains("path is not a regular file"),
             "unexpected error: {err}"
         );
     }
@@ -654,7 +814,8 @@ mod tests {
                 || err.contains("failed to open file")
                 || err.contains("No such file")
                 || err.contains("target file must be a regular file")
-                || err.contains("must not traverse symlinks"),
+                || err.contains("must not traverse symlinks")
+                || err.contains("path must not traverse symlink or reparse-point ancestors"),
             "unexpected error: {err}"
         );
     }
@@ -670,7 +831,8 @@ mod tests {
         assert!(
             err.contains("No such device or address")
                 || err.contains("Operation not supported on socket")
-                || err.contains("target file must be a regular file"),
+                || err.contains("target file must be a regular file")
+                || err.contains("path is not a regular file"),
             "unexpected error: {err}"
         );
     }
@@ -689,6 +851,22 @@ mod tests {
             .args(["-c", "exit 1"])
             .status()
             .expect("run sh -c exit 1")
+    }
+
+    #[cfg(windows)]
+    fn success_exit_status() -> ExitStatus {
+        std::process::Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .status()
+            .expect("run cmd /C exit 0")
+    }
+
+    #[cfg(not(windows))]
+    fn success_exit_status() -> ExitStatus {
+        std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .status()
+            .expect("run sh -c exit 0")
     }
 
     #[cfg(unix)]
