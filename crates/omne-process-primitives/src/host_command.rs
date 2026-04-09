@@ -888,10 +888,17 @@ fn unix_process_is_non_root() -> bool {
 }
 
 fn has_path_separator(command: &OsStr) -> bool {
-    command
-        .to_string_lossy()
-        .chars()
-        .any(|ch| ch == '/' || ch == '\\')
+    command.to_string_lossy().chars().any(is_path_separator)
+}
+
+#[cfg(windows)]
+fn is_path_separator(ch: char) -> bool {
+    ch == '/' || ch == '\\'
+}
+
+#[cfg(not(windows))]
+fn is_path_separator(ch: char) -> bool {
+    ch == '/'
 }
 
 fn sudo_eligible_program(program: &OsStr) -> bool {
@@ -1525,6 +1532,13 @@ mod tests {
         let output = run_host_command(&request).expect("run direct command from request PATH");
         assert_eq!(output.execution, HostCommandExecution::Direct);
         assert!(output.output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_backslash_command_name_is_not_treated_as_explicit_path() {
+        assert!(!super::is_explicit_command_path(OsStr::new("demo\\tool")));
+        assert!(!super::has_path_separator(OsStr::new("demo\\tool")));
     }
 
     #[cfg(unix)]

@@ -60,7 +60,7 @@ pub struct ProcessTreeCleanup {
     #[cfg(windows)]
     windows_job: Option<win32job::Job>,
     #[cfg(windows)]
-    windows_process_id: Mutex<Option<u32>>,
+    windows_process_identity: Mutex<Option<WindowsProcessIdentity>>,
     #[cfg(unix)]
     unix_process_group: Option<UnixProcessGroupIdentity>,
 }
@@ -70,7 +70,7 @@ impl ProcessTreeCleanup {
     pub fn new(child: &tokio::process::Child) -> io::Result<Self> {
         Ok(Self {
             windows_job: maybe_attach_windows_kill_job(child)?,
-            windows_process_id: Mutex::new(child.id()),
+            windows_process_identity: Mutex::new(capture_windows_process_identity(child.id())),
         })
     }
 
@@ -85,7 +85,7 @@ impl ProcessTreeCleanup {
     #[cfg(windows)]
     pub fn start_termination(&mut self) -> CleanupDisposition {
         if self.windows_job.take().is_some() {
-            take_windows_process_id(&self.windows_process_id);
+            take_windows_process_identity(&self.windows_process_identity);
             CleanupDisposition::TreeTerminationInitiated
         } else {
             CleanupDisposition::DirectChildKillRequired
@@ -288,23 +288,34 @@ fn parse_proc_stat_u64(raw: Option<&str>, message: &'static str) -> io::Result<u
 #[cfg(all(not(windows), not(unix)))]
 fn kill_process_tree(_cleanup: &ProcessTreeCleanup) {}
 
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowsProcessIdentity {
+    pid: u32,
+    start_time: u64,
+}
+
 #[cfg(windows)]
 fn kill_process_tree(cleanup: &ProcessTreeCleanup) {
     kill_windows_process_tree(
         cleanup.windows_job.is_some(),
-        &cleanup.windows_process_id,
+        &cleanup.windows_process_identity,
         windows_taskkill_tree,
         kill_windows_remaining_process_tree,
     );
 }
 
 #[cfg(any(windows, test))]
-fn take_windows_process_id(process_id: &Mutex<Option<u32>>) -> Option<u32> {
-    lock_windows_process_id(process_id).take()
+fn take_windows_process_identity(
+    process_id: &Mutex<Option<WindowsProcessIdentity>>,
+) -> Option<WindowsProcessIdentity> {
+    lock_windows_process_identity(process_id).take()
 }
 
 #[cfg(any(windows, test))]
-fn lock_windows_process_id(process_id: &Mutex<Option<u32>>) -> MutexGuard<'_, Option<u32>> {
+fn lock_windows_process_identity(
+    process_id: &Mutex<Option<WindowsProcessIdentity>>,
+) -> MutexGuard<'_, Option<WindowsProcessIdentity>> {
     process_id
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -313,24 +324,24 @@ fn lock_windows_process_id(process_id: &Mutex<Option<u32>>) -> MutexGuard<'_, Op
 #[cfg(any(windows, test))]
 fn kill_windows_process_tree<F, G>(
     has_windows_job: bool,
-    process_id: &Mutex<Option<u32>>,
+    process_id: &Mutex<Option<WindowsProcessIdentity>>,
     taskkill_tree: F,
     fallback: G,
 ) where
-    F: FnOnce(u32) -> io::Result<()>,
-    G: FnOnce(u32) -> io::Result<()>,
+    F: FnOnce(WindowsProcessIdentity) -> io::Result<()>,
+    G: FnOnce(WindowsProcessIdentity) -> io::Result<()>,
 {
     if has_windows_job {
         return;
     }
 
-    let Some(pid) = *lock_windows_process_id(process_id) else {
+    let Some(identity) = *lock_windows_process_identity(process_id) else {
         return;
     };
 
-    let termination_result = taskkill_tree(pid).or_else(|_| fallback(pid));
+    let termination_result = taskkill_tree(identity).or_else(|_| fallback(identity));
     if termination_result.is_ok() {
-        take_windows_process_id(process_id);
+        take_windows_process_identity(process_id);
     }
 }
 
@@ -346,18 +357,26 @@ fn windows_taskkill_program() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("taskkill"))
 }
 
+#[cfg(any(windows, test))]
+fn process_identity_matches(
+    identity: WindowsProcessIdentity,
+    processes: impl IntoIterator<Item = WindowsProcessIdentity>,
+) -> bool {
+    processes.into_iter().any(|candidate| candidate == identity)
+}
+
 #[cfg(windows)]
-fn windows_taskkill_tree(pid: u32) -> io::Result<()> {
+fn windows_taskkill_tree(identity: WindowsProcessIdentity) -> io::Result<()> {
     let snapshot = windows_process_snapshot();
-    if !snapshot_contains_pid(&snapshot, pid) {
+    if !snapshot_contains_process_identity(&snapshot, identity) {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "root process already exited before taskkill",
+            "root process identity no longer matches before taskkill",
         ));
     }
 
     let status = std::process::Command::new(windows_taskkill_program())
-        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .args(["/T", "/F", "/PID", &identity.pid.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -367,21 +386,28 @@ fn windows_taskkill_tree(pid: u32) -> io::Result<()> {
     }
 
     Err(io::Error::other(format!(
-        "taskkill exited unsuccessfully for pid {pid}: {status}"
+        "taskkill exited unsuccessfully for pid {}: {status}",
+        identity.pid
     )))
 }
 
 #[cfg(windows)]
-fn kill_windows_remaining_process_tree(root_pid: u32) -> io::Result<()> {
+fn kill_windows_remaining_process_tree(identity: WindowsProcessIdentity) -> io::Result<()> {
     use sysinfo::Pid;
 
     let snapshot = windows_process_snapshot();
+    if !snapshot_contains_process_identity(&snapshot, identity) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "root process identity no longer matches before fallback cleanup",
+        ));
+    }
     let remaining_tree = collect_process_tree_pids(
         snapshot
             .processes()
             .iter()
             .map(|(pid, process)| (pid.as_u32(), process.parent().map(|parent| parent.as_u32()))),
-        root_pid,
+        identity.pid,
     );
 
     let mut root_kill_failed = false;
@@ -396,7 +422,8 @@ fn kill_windows_remaining_process_tree(root_pid: u32) -> io::Result<()> {
 
     if root_kill_failed {
         return Err(io::Error::other(format!(
-            "failed to terminate root process {root_pid} after taskkill failure"
+            "failed to terminate root process {} after taskkill failure",
+            identity.pid
         )));
     }
 
@@ -407,14 +434,34 @@ fn kill_windows_remaining_process_tree(root_pid: u32) -> io::Result<()> {
 fn windows_process_snapshot() -> sysinfo::System {
     use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 
-    System::new_with_specifics(RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()))
+    System::new_with_specifics(
+        RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
+    )
 }
 
 #[cfg(windows)]
-fn snapshot_contains_pid(snapshot: &sysinfo::System, pid: u32) -> bool {
+fn snapshot_contains_process_identity(
+    snapshot: &sysinfo::System,
+    identity: WindowsProcessIdentity,
+) -> bool {
     use sysinfo::Pid;
 
-    snapshot.process(Pid::from_u32(pid)).is_some()
+    snapshot
+        .process(Pid::from_u32(identity.pid))
+        .is_some_and(|process| process.start_time() == identity.start_time)
+}
+
+#[cfg(windows)]
+fn capture_windows_process_identity(pid: Option<u32>) -> Option<WindowsProcessIdentity> {
+    use sysinfo::Pid;
+
+    let pid = pid?;
+    let snapshot = windows_process_snapshot();
+    let process = snapshot.process(Pid::from_u32(pid))?;
+    Some(WindowsProcessIdentity {
+        pid,
+        start_time: process.start_time(),
+    })
 }
 
 #[cfg(any(windows, test))]
@@ -473,7 +520,10 @@ mod descendant_tests {
     use std::io;
     use std::sync::Mutex;
 
-    use super::{collect_descendant_pids, collect_process_tree_pids, kill_windows_process_tree};
+    use super::{
+        WindowsProcessIdentity, collect_descendant_pids, collect_process_tree_pids,
+        kill_windows_process_tree, process_identity_matches,
+    };
 
     #[test]
     fn collect_descendant_pids_returns_postorder_descendants_only() {
@@ -507,75 +557,117 @@ mod descendant_tests {
     }
 
     #[test]
+    fn process_identity_matches_requires_matching_pid_and_start_time() {
+        let identity = WindowsProcessIdentity {
+            pid: 42,
+            start_time: 100,
+        };
+
+        assert!(process_identity_matches(
+            identity,
+            [WindowsProcessIdentity {
+                pid: 42,
+                start_time: 100
+            }]
+        ));
+        assert!(!process_identity_matches(
+            identity,
+            [WindowsProcessIdentity {
+                pid: 42,
+                start_time: 101
+            }]
+        ));
+        assert!(!process_identity_matches(
+            identity,
+            [WindowsProcessIdentity {
+                pid: 43,
+                start_time: 100
+            }]
+        ));
+    }
+
+    #[test]
     fn windows_fallback_runs_when_taskkill_returns_error() {
-        let process_id = Mutex::new(Some(42));
+        let identity = WindowsProcessIdentity {
+            pid: 42,
+            start_time: 7,
+        };
+        let process_id = Mutex::new(Some(identity));
         let mut taskkill_attempts = Vec::new();
-        let mut fallback_pids = Vec::new();
+        let mut fallback_identities = Vec::new();
 
         kill_windows_process_tree(
             false,
             &process_id,
-            |pid| {
-                taskkill_attempts.push(pid);
+            |identity| {
+                taskkill_attempts.push(identity);
                 Err(io::Error::other("taskkill failed"))
             },
-            |pid| {
-                fallback_pids.push(pid);
+            |identity| {
+                fallback_identities.push(identity);
                 Ok(())
             },
         );
 
-        assert_eq!(taskkill_attempts, vec![42]);
-        assert_eq!(fallback_pids, vec![42]);
+        assert_eq!(taskkill_attempts, vec![identity]);
+        assert_eq!(fallback_identities, vec![identity]);
         assert_eq!(*process_id.lock().expect("lock pid"), None);
     }
 
     #[test]
     fn windows_fallback_skips_when_taskkill_succeeds() {
-        let process_id = Mutex::new(Some(42));
+        let identity = WindowsProcessIdentity {
+            pid: 42,
+            start_time: 7,
+        };
+        let process_id = Mutex::new(Some(identity));
         let mut taskkill_attempts = Vec::new();
-        let mut fallback_pids = Vec::new();
+        let mut fallback_identities = Vec::new();
 
         kill_windows_process_tree(
             false,
             &process_id,
-            |pid| {
-                taskkill_attempts.push(pid);
+            |identity| {
+                taskkill_attempts.push(identity);
                 Ok(())
             },
-            |pid| {
-                fallback_pids.push(pid);
+            |identity| {
+                fallback_identities.push(identity);
                 Ok(())
             },
         );
 
-        assert_eq!(taskkill_attempts, vec![42]);
-        assert!(fallback_pids.is_empty());
+        assert_eq!(taskkill_attempts, vec![identity]);
+        assert!(fallback_identities.is_empty());
         assert_eq!(*process_id.lock().expect("lock pid"), None);
     }
 
     #[test]
     fn windows_fallback_keeps_pid_when_root_termination_still_fails() {
-        let process_id = Mutex::new(Some(42));
+        let identity = WindowsProcessIdentity {
+            pid: 42,
+            start_time: 7,
+        };
+        let process_id = Mutex::new(Some(identity));
         let mut taskkill_attempts = Vec::new();
-        let mut fallback_pids = Vec::new();
+        let mut fallback_identities = Vec::new();
 
         kill_windows_process_tree(
             false,
             &process_id,
-            |pid| {
-                taskkill_attempts.push(pid);
+            |identity| {
+                taskkill_attempts.push(identity);
                 Err(io::Error::other("taskkill failed"))
             },
-            |pid| {
-                fallback_pids.push(pid);
+            |identity| {
+                fallback_identities.push(identity);
                 Err(io::Error::other("fallback failed"))
             },
         );
 
-        assert_eq!(taskkill_attempts, vec![42]);
-        assert_eq!(fallback_pids, vec![42]);
-        assert_eq!(*process_id.lock().expect("lock pid"), Some(42));
+        assert_eq!(taskkill_attempts, vec![identity]);
+        assert_eq!(fallback_identities, vec![identity]);
+        assert_eq!(*process_id.lock().expect("lock pid"), Some(identity));
     }
 }
 

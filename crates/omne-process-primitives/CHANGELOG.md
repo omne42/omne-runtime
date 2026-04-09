@@ -79,6 +79,11 @@
   back to loader-controlled implicit `PATH` search and accidentally run a different binary
 - make non-Linux Unix process-group cleanup fail closed by skipping `killpg` when the crate
   cannot revalidate the original leader lifetime with Linux-style evidence
+- stop treating `\` as a Unix path separator in command probes and host-command request parsing,
+  so legal Unix command names containing backslashes no longer get misclassified as explicit
+  paths
+- bind Windows fallback process-tree cleanup to the captured root `(pid, start_time)` identity,
+  so PID reuse cannot retarget post-`taskkill` fallback cleanup at an unrelated process tree
 - add regression coverage that keeps request-scoped `PATH` overrides on the direct bare-command
   path while separately pinning the trusted sudo/env/package-manager resolution path, so future
   refactors cannot merge those two trust boundaries back together
