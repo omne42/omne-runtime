@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- preserve platform path-separator semantics when validating `SystemPackageName`, so Unix package
+  identifiers containing `\` no longer fail as if they were explicit paths
 - require exact canonical package-manager names in `SystemPackageManager::parse`, so callers can no
   longer smuggle leading/trailing whitespace or case-normalized aliases past the primitive
 - make default system-package recipe selection fail closed for known-but-unsupported operating

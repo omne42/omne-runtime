@@ -26,7 +26,7 @@ impl SystemPackageName {
         if raw.chars().any(char::is_control) {
             return Err(SystemPackageNameError::ContainsControlCharacter);
         }
-        if raw.contains(['/', '\\']) {
+        if contains_package_name_path_separator(raw) {
             return Err(SystemPackageNameError::ContainsPathSeparator);
         }
         if matches!(raw, "." | "..") {
@@ -42,6 +42,14 @@ impl SystemPackageName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+fn contains_package_name_path_separator(raw: &str) -> bool {
+    raw.chars().any(is_package_name_path_separator)
+}
+
+const fn is_package_name_path_separator(ch: char) -> bool {
+    ch == '/' || (cfg!(windows) && ch == '\\')
 }
 
 impl AsRef<str> for SystemPackageName {
@@ -449,7 +457,7 @@ mod tests {
 
     #[test]
     fn try_install_recipe_rejects_invalid_package_names() {
-        let cases = [
+        let mut cases = vec![
             ("", SystemPackageNameError::Empty),
             (" git", SystemPackageNameError::SurroundingWhitespace),
             ("git tool", SystemPackageNameError::ContainsWhitespace),
@@ -463,6 +471,9 @@ mod tests {
             ("..", SystemPackageNameError::RelativePathReference),
             ("-y", SystemPackageNameError::LooksLikeOption),
         ];
+        if cfg!(windows) {
+            cases.push((r"..\git", SystemPackageNameError::ContainsPathSeparator));
+        }
 
         for (raw, expected) in cases {
             let err = SystemPackageManager::AptGet
@@ -485,6 +496,23 @@ mod tests {
             let package = SystemPackageName::new(raw).expect("package should be accepted");
             assert_eq!(package.as_str(), raw);
         }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn package_name_allows_backslash_on_unix() {
+        let package =
+            SystemPackageName::new(r"llvm\clang").expect("backslash is not a unix path separator");
+        assert_eq!(package.as_str(), r"llvm\clang");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn package_name_rejects_backslash_on_windows() {
+        assert_eq!(
+            SystemPackageName::new(r"llvm\clang"),
+            Err(SystemPackageNameError::ContainsPathSeparator)
+        );
     }
 
     #[test]
