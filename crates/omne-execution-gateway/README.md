@@ -29,13 +29,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `BestEffort` is a compatibility tier, not a strong sandbox guarantee.
 - Linux, macOS, and Windows currently do not expose a native `BestEffort` or `Strict` sandbox. Requests above `None` fail closed.
 - the in-memory `GatewayPolicy::default()` baseline now uses `allow_isolation_none = true` plus `default_isolation = none`, so a default `ExecGateway::new()` stays usable on today's `None`-only hosts; callers that want fail-closed sandbox preference must opt into `best_effort` or `strict` explicitly.
-- `ExecGateway::new()` / `Default` and `with_supported_isolation(...)` now use a host-compatible executable baseline: they keep isolation aligned with host capability and leave mutation enforcement off, so ordinary non-mutating commands can run without first seeding allowlists. Callers that want deny-by-default mutation policy must opt into it with an explicit `GatewayPolicy`.
-- `CapabilityReport` exposes both the configured `policy_default_isolation` and a derived
-  `policy_default_isolation_permitted` bit. For `ExecGateway::new()` /
-  `with_supported_isolation(...)` the configured default stays host-compatible via
-  `GatewayPolicy::default_for_supported_isolation(...)`; for caller-supplied policies it may still
-  exceed `supported_isolation`, in which case the report preserves the configured value but marks
-  it not permitted and the gateway continues to fail closed on such requests.
+- `ExecGateway::new()` / `Default` are still deny-by-default on mutation policy: mutation enforcement remains on and both allowlists start empty, so callers that actually want commands to run must either provide allowlists or build a policy with `enforce_allowlisted_program_for_mutation = false`.
 - Linux's previous native Landlock path is intentionally disabled until it can be reintroduced without relying on unsafe post-`fork` Rust execution.
 - when `enforce_allowlisted_program_for_mutation = true`, callers must always set `with_declared_mutation(...)` intentionally instead of relying on the constructor default.
 - `ExecRequest` keeps the isolation provenance and mutation-explicitness invariants inside its own
@@ -63,10 +57,6 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `ExecRequest` keeps `required_isolation`, `requested_isolation_source`, and `declared_mutation`
   behind constructors plus accessor/setter methods, so request provenance and explicit-mutation
   state cannot drift out of sync after construction.
-- `CapabilityReport` now separates the configured default from its current usability:
-  `policy_default_isolation` reports the configured policy value, while
-  `policy_default_isolation_permitted` tells callers whether a `policy_default` request using that
-  isolation would currently pass the gateway's isolation gates on this host/policy combination.
 - when `enforce_allowlisted_program_for_mutation = true`, request env is still audited, but startup-sensitive loader/interpreter/search-path overrides are denied fail-closed before preflight can authorize the execution.
 - the CLI request adapter also rejects unknown JSON fields fail-closed, and `program` / `args` / explicit env entries now accept either plain UTF-8 strings or the exact OS-string JSON object encoding used in gateway output.
 - if `audit_log_path` is configured, it must be an absolute path. `evaluate()` / `resolve_request()` / `preflight()` stay side-effect free; audit parent creation and appendability checks move to `execute()` / `prepare_command()` and reuse `omne-fs-primitives` descriptor-backed ambient-root no-follow helpers, so audited execution stays on the same ancestor-safe file boundary as policy/request file handling. The final record write stays bound to the appendable file handle opened during preparation instead of reopening the path again after execution.
@@ -120,9 +110,8 @@ assert_eq!(execution.event.decision, omne_execution_gateway::ExecDecision::Run);
 # Ok::<(), omne_execution_gateway::ExecError>(())
 ```
 
-Use `ExecGateway::new()` when a host-compatible executable baseline is acceptable. If you want
-deny-by-default mutation policy, construct the gateway with an explicit `GatewayPolicy` that keeps
-`enforce_allowlisted_program_for_mutation = true`.
+Use `ExecGateway::new()` only when you intentionally want that fail-closed default policy shape;
+it will not authorize ordinary commands until you add allowlists or disable mutation enforcement.
 
 ## Capability Check
 
@@ -132,9 +121,7 @@ cargo run --bin omne-execution-capability -- --json
 cargo run --bin omne-execution-capability -- --policy ./policy.json --json
 ```
 
-`--json` emits the raw capability fields directly for machine consumption, including both the
-configured `policy_default_isolation` and the derived
-`policy_default_isolation_permitted` boolean.
+`--json` emits the raw capability fields directly for machine consumption.
 `--policy` lets capability reporting reflect a specific `GatewayPolicy` file instead of defaults.
 
 ## CLI Adapter

@@ -2,14 +2,6 @@
 
 ## [Unreleased]
 
-- restore startup-sensitive env denial plus strict mutating/non-mutating allowlist enforcement
-  inside `prepare_request()`, so the runtime once again matches the documented fail-closed policy
-  contract and the gateway test suite
-- make `ExecGateway::new()` / `with_supported_isolation(...)` disable mutation enforcement in their host-compatible constructor baseline, so default gateways stop behaving like empty-allowlist deny-all instances
-- add `CapabilityReport::policy_default_isolation_permitted`, so capability surfaces keep the
-  configured `policy_default_isolation` while also stating whether that default is currently
-  usable on this host/policy combination; the README and policy/API docs now describe that split,
-  and regression coverage pins the behavior for caller-supplied policies
 - preserve `exit_code` / `signal` in `omne-execution` CLI output when the command already exited
   but the terminal audit write fails, so callers can distinguish "command ran, audit failed" from
   "command never produced a status"

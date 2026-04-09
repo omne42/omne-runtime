@@ -45,10 +45,8 @@ Accessors / mutators:
 - `set_required_isolation(...)`
 - `with_required_isolation(...)`
 - `set_policy_default_isolation(...)`
-- `with_policy_default_isolation(...)` constructor
-- `with_declared_mutation(...)`
+- `with_effective_policy_default_isolation(...)`
 - `set_declared_mutation(...)`
-- `with_env(...)`
 
 `declared_mutation` is caller input. Use `with_policy_default_isolation(...)` when the caller is
 intentionally delegating isolation selection to `GatewayPolicy::default_isolation`.
@@ -97,10 +95,10 @@ non-UTF-8 OS strings exactly instead of depending on lossy display fields.
 - `ExecGateway::with_supported_isolation(level)`
 - `ExecGateway::with_policy_and_supported_isolation(policy, level)`
 
-`ExecGateway::new()` and `ExecGateway::with_supported_isolation(...)` keep the same
-host-compatible executable baseline as `GatewayPolicy::default_for_supported_isolation(...)`:
-the default isolation matches host capability and mutation enforcement is disabled. Callers that
-want deny-by-default mutation policy must pass an explicit `GatewayPolicy`.
+`ExecGateway::new()` and `ExecGateway::with_supported_isolation(...)` keep the same fail-closed
+default policy shape as `GatewayPolicy::default_for_supported_isolation(...)`: host-compatible
+`default_isolation`, but mutation enforcement still on and both allowlists empty. Callers that
+want commands to run must pass a custom policy or explicit allowlists.
 
 ## ExecGateway Methods
 
@@ -136,15 +134,6 @@ child status instead of collapsing the outcome into an undifferentiated audit-wr
 - fields:
   - `supported_isolation`
   - `policy_default_isolation`
-  - `policy_default_isolation_permitted`
-
-`policy_default_isolation` reflects the gateway policy's configured default isolation.
-`policy_default_isolation_permitted` tells callers whether a `policy_default` request using that
-configured value would currently pass the gateway's isolation gates on this host/policy
-combination. For `ExecGateway::new()` / `with_supported_isolation(...)` this is already
-host-compatible via `GatewayPolicy::default_for_supported_isolation(...)`; caller-supplied
-policies may still report `policy_default_isolation_permitted = false`, and the gateway continues
-to fail closed on such requests.
 
 ## ExecEvent
 
