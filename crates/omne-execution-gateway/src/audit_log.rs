@@ -535,6 +535,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn ensure_ready_rejects_unnormalized_absolute_audit_path() {
         let dir = tempdir().expect("tempdir");
