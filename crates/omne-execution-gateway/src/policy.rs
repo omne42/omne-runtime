@@ -78,9 +78,9 @@ impl GatewayPolicy {
         if !is_explicit_program_path(program) {
             return false;
         }
-        allowlist
-            .iter()
-            .any(|item| is_explicit_program_path(item) && program_path_matches(item, program))
+        allowlist.iter().any(|item| {
+            is_absolute_allowlist_program_path(item) && program_path_matches(item, program)
+        })
     }
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
@@ -109,6 +109,10 @@ fn is_explicit_program_path(program: impl AsRef<Path>) -> bool {
     let program = program.as_ref().as_os_str();
     let path = Path::new(program);
     path.is_absolute() || os_str_has_path_separator(program) || has_windows_drive_prefix(program)
+}
+
+fn is_absolute_allowlist_program_path(program: impl AsRef<Path>) -> bool {
+    program.as_ref().is_absolute()
 }
 
 #[cfg(unix)]
@@ -276,6 +280,26 @@ mod tests {
             .expect("canonicalize tempdir root")
     }
 
+    #[cfg(unix)]
+    fn platform_allowlist_program_path(program_name: &str) -> String {
+        format!("/usr/local/bin/{program_name}")
+    }
+
+    #[cfg(windows)]
+    fn platform_allowlist_program_path(program_name: &str) -> String {
+        format!("C:\\tools\\{program_name}")
+    }
+
+    #[cfg(unix)]
+    fn platform_non_matching_program_path(program_name: &str) -> String {
+        format!("/tmp/{program_name}")
+    }
+
+    #[cfg(windows)]
+    fn platform_non_matching_program_path(program_name: &str) -> String {
+        format!("C:\\tmp\\{program_name}")
+    }
+
     #[test]
     fn default_policy_allows_none_and_enforces_mutation_allowlist() {
         let policy = GatewayPolicy::default();
@@ -314,24 +338,58 @@ mod tests {
 
     #[test]
     fn explicit_path_allowlist_requires_exact_path_match() {
+        let allowlisted_path = platform_allowlist_program_path("omne-fs");
+        let non_matching_path = platform_non_matching_program_path("omne-fs");
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec!["/usr/local/bin/omne-fs".to_string()],
+            mutating_program_allowlist: vec![allowlisted_path.clone()],
             ..GatewayPolicy::default()
         };
 
-        assert!(policy.is_mutating_program_allowlisted("/usr/local/bin/omne-fs"));
-        assert!(!policy.is_mutating_program_allowlisted("/tmp/omne-fs"));
+        assert!(policy.is_mutating_program_allowlisted(&allowlisted_path));
+        assert!(!policy.is_mutating_program_allowlisted(&non_matching_path));
     }
 
     #[test]
     fn explicit_path_non_mutating_allowlist_requires_exact_path_match() {
+        let allowlisted_path = platform_allowlist_program_path("echo");
+        let non_matching_path = platform_non_matching_program_path("echo");
         let policy = GatewayPolicy {
-            non_mutating_program_allowlist: vec!["/usr/local/bin/echo".to_string()],
+            non_mutating_program_allowlist: vec![allowlisted_path.clone()],
             ..GatewayPolicy::default()
         };
 
-        assert!(policy.is_non_mutating_program_allowlisted("/usr/local/bin/echo"));
-        assert!(!policy.is_non_mutating_program_allowlisted("/tmp/echo"));
+        assert!(policy.is_non_mutating_program_allowlisted(&allowlisted_path));
+        assert!(!policy.is_non_mutating_program_allowlisted(&non_matching_path));
+    }
+
+    #[test]
+    fn relative_allowlist_item_does_not_authorize_relative_request_path() {
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["./omne-fs".to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(!policy.is_mutating_program_allowlisted("./omne-fs"));
+    }
+
+    #[test]
+    fn relative_allowlist_item_does_not_authorize_absolute_request_path() {
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["bin/omne-fs".to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(!policy.is_mutating_program_allowlisted("/workspace/bin/omne-fs"));
+    }
+
+    #[test]
+    fn drive_relative_allowlist_item_does_not_authorize_drive_relative_request_path() {
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["C:tool.exe".to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(!policy.is_mutating_program_allowlisted("C:tool.exe"));
     }
 
     #[cfg(unix)]
