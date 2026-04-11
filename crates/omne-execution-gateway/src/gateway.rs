@@ -897,7 +897,11 @@ fn ascii_program_name_from_bytes(bytes: &[u8]) -> Option<String> {
 }
 
 fn strip_windows_exe_suffix_owned(value: String) -> String {
-    value.strip_suffix(".exe").unwrap_or(&value).to_string()
+    [".exe", ".cmd", ".bat", ".com"]
+        .iter()
+        .find_map(|suffix| value.strip_suffix(suffix))
+        .unwrap_or(&value)
+        .to_string()
 }
 
 fn first_startup_sensitive_env_name(env: &[(OsString, OsString)]) -> Option<String> {
@@ -2975,6 +2979,16 @@ mod tests {
     fn detects_env_as_opaque_command_launcher() {
         assert!(uses_opaque_command_launcher(OsStr::new("env")));
         assert!(uses_opaque_command_launcher(OsStr::new("/usr/bin/env")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detects_env_with_windows_executable_suffixes_as_opaque_command_launcher() {
+        assert!(uses_opaque_command_launcher(OsStr::new("env.exe")));
+        assert!(uses_opaque_command_launcher(OsStr::new(
+            r"C:\Windows\System32\env.cmd"
+        )));
+        assert!(uses_opaque_command_launcher(OsStr::new("env.bat")));
     }
 
     #[test]
