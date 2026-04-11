@@ -245,6 +245,11 @@ fn should_kill_linux_process_group(
 #[cfg(all(unix, target_os = "linux"))]
 fn read_linux_process_identity(pid: rustix::process::Pid) -> io::Result<LinuxProcessIdentity> {
     let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_pid()))?;
+    parse_linux_process_identity_stat(&stat)
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn parse_linux_process_identity_stat(stat: &str) -> io::Result<LinuxProcessIdentity> {
     let tail = stat
         .rsplit_once(") ")
         .map(|(_, tail)| tail)
@@ -714,7 +719,7 @@ mod tests {
         CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
         build_linux_process_group_identity, capture_linux_process_group_identity,
         configure_command_for_process_tree, ensure_unix_process_group_is_dedicated,
-        should_kill_linux_process_group,
+        parse_linux_process_identity_stat, should_kill_linux_process_group,
     };
     use rustix::process::{Pid, Signal, kill_process};
     use std::io;
@@ -891,6 +896,23 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("live Linux process-group leader identity")
+        );
+    }
+
+    #[test]
+    fn linux_process_identity_parser_uses_one_snapshot_even_with_parens_in_comm() {
+        let identity = parse_linux_process_identity_stat(
+            "4242 (worker ) name) S 1 4242 7 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 11",
+        )
+        .expect("parse proc stat");
+
+        assert_eq!(
+            identity,
+            LinuxProcessIdentity {
+                process_group_id: 4242,
+                session_id: 7,
+                start_ticks: 11,
+            }
         );
     }
 
