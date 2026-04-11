@@ -4011,8 +4011,10 @@ mod tests {
         };
         let workspace = tempdir().expect("create temp workspace");
         let workspace_root = canonical_test_root(&workspace);
-        let gateway =
-            ExecGateway::with_policy_and_supported_isolation(policy, host_supported_test_isolation());
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
         let program_v1 = workspace_root.join("tool-v1.sh");
         let program_v2 = workspace_root.join("tool-v2.sh");
         let alias = workspace_root.join("tool.sh");
@@ -4037,7 +4039,10 @@ mod tests {
         let outcome = prepared.spawn().expect("prepared spawn").wait();
         assert_eq!(outcome.event.program, program_v1);
         assert_eq!(
-            outcome.result.expect("prepared command should still run").code(),
+            outcome
+                .result
+                .expect("prepared command should still run")
+                .code(),
             Some(0)
         );
     }

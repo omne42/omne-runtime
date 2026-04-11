@@ -1087,7 +1087,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(leader_exited, "shell leader should exit before cleanup capture");
+        assert!(
+            leader_exited,
+            "shell leader should exit before cleanup capture"
+        );
 
         let mut cleanup = ProcessTreeCleanup::new(&child)?;
         assert_eq!(
