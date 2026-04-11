@@ -4001,6 +4001,49 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn prepared_command_keeps_bound_program_when_request_alias_rebinds_before_spawn() {
+        use std::os::unix::fs::symlink;
+
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let workspace = tempdir().expect("create temp workspace");
+        let workspace_root = canonical_test_root(&workspace);
+        let gateway =
+            ExecGateway::with_policy_and_supported_isolation(policy, host_supported_test_isolation());
+        let program_v1 = workspace_root.join("tool-v1.sh");
+        let program_v2 = workspace_root.join("tool-v2.sh");
+        let alias = workspace_root.join("tool.sh");
+        write_unix_shell_executable(&program_v1, "exit 0\n");
+        write_unix_shell_executable(&program_v2, "exit 42\n");
+        symlink(&program_v1, &alias).expect("create program alias");
+
+        let request = ExecRequest::new(
+            &alias,
+            Vec::<OsString>::new(),
+            &workspace_root,
+            host_supported_test_isolation(),
+            &workspace_root,
+        )
+        .with_declared_mutation(false);
+        let (_event, result) = gateway.prepare_command(&request);
+        let prepared = result.expect("prepare command");
+
+        fs::remove_file(&alias).expect("remove original alias");
+        symlink(&program_v2, &alias).expect("rebind alias to replacement");
+
+        let outcome = prepared.spawn().expect("prepared spawn").wait();
+        assert_eq!(outcome.event.program, program_v1);
+        assert_eq!(
+            outcome.result.expect("prepared command should still run").code(),
+            Some(0)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn prepare_command_rejects_symlink_cwd_ancestor() {
         use std::os::unix::fs::symlink;
 
