@@ -5,6 +5,9 @@
 - preserve `exit_code` / `signal` in `omne-execution` CLI output when the command already exited
   but the terminal audit write fails, so callers can distinguish "command ran, audit failed" from
   "command never produced a status"
+- reject allowlisted wrapper chains such as `timeout ... env ...`, and rebuild prepared spawn
+  commands only after final path revalidation, so non-mutating requests cannot smuggle opaque
+  launchers through argv indirection or hold a stale `Command` across the prepare-to-spawn window
 - stop treating runtime audit-sink availability as a preflight denial, so `resolve_request()` /
   `evaluate()` / `preflight()` stay pure projections while `execute()` / `prepare_command()`
   still fail closed before unaudited side effects

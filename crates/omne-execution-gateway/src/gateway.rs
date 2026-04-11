@@ -86,7 +86,7 @@ pub struct PreparedChild {
 #[derive(Debug)]
 #[must_use = "prepared commands must be spawned to apply validated cwd and sandbox state"]
 pub struct PreparedCommand {
-    command: Command,
+    args: Vec<OsString>,
     prepared: PreparedExecRequest,
     audit_sink: Option<PreparedAuditSink>,
 }
@@ -177,14 +177,18 @@ impl Drop for PreparedChild {
 
 impl PreparedCommand {
     pub fn current_dir(&self) -> Option<&Path> {
-        self.command.get_current_dir()
+        Some(self.prepared.resolved_paths.cwd.path.as_path())
     }
 
     pub fn spawn(mut self) -> ExecResult<PreparedChild> {
-        configure_noninteractive_stdio(&mut self.command);
         let event = self.prepared.event.clone();
-        let result = apply_prepared_request(&self.prepared, &mut self.command)
-            .and_then(|monitor| spawn_command_with_monitor(&mut self.command, monitor))
+        let result = revalidate_prepared_request(&self.prepared)
+            .and_then(|_| {
+                let mut command = build_prepared_spawn_command(&self.prepared, &self.args);
+                configure_noninteractive_stdio(&mut command);
+                apply_prepared_request(&self.prepared, &mut command)
+                    .and_then(|monitor| spawn_command_with_monitor(&mut command, monitor))
+            })
             .map(|(child, sandbox_runtime)| PreparedChild {
                 child,
                 sandbox_runtime,
@@ -285,17 +289,16 @@ impl ExecGateway {
         let (event, result, audit_sink) = match self.prepare_request(request) {
             Ok(prepared) => match self.prepare_audit_sink(&prepared.event) {
                 Ok(mut audit_sink) => {
-                    let mut command = Command::new(&prepared.bound_program.path);
-                    command.args(&request.args);
-                    configure_request_environment(&prepared.event.env, &mut command);
-                    configure_noninteractive_stdio(&mut command);
-                    let result =
+                    let result = revalidate_prepared_request(&prepared).and_then(|_| {
+                        let mut command = build_prepared_spawn_command(&prepared, &request.args);
+                        configure_noninteractive_stdio(&mut command);
                         apply_prepared_request(&prepared, &mut command).and_then(|monitor| {
                             let (mut child, sandbox_runtime) =
                                 spawn_command_with_monitor(&mut command, monitor)?;
                             let status = child.wait().map_err(ExecError::Spawn)?;
                             Ok((sandbox_runtime, status))
-                        });
+                        })
+                    });
                     match result {
                         Ok((sandbox_runtime, status)) => {
                             let mut event = prepared.event;
@@ -346,12 +349,11 @@ impl ExecGateway {
         let (event, result, audit_sink) = match self.prepare_request(request) {
             Ok(prepared) => match self.prepare_audit_sink(&prepared.event) {
                 Ok(mut audit_sink) => {
-                    let command = build_prepared_spawn_command(&prepared, &request.args);
                     let event = prepared.event.clone();
                     (
                         event,
                         Ok(PreparedCommand {
-                            command,
+                            args: request.args.clone(),
                             prepared,
                             audit_sink: None,
                         }),
@@ -478,7 +480,11 @@ impl ExecGateway {
                                 )),
                             ));
                         }
-                        if request_uses_opaque_command_launcher(&request.program, &bound_program) {
+                        if request_uses_opaque_command_launcher(
+                            &request.program,
+                            &request.args,
+                            &bound_program,
+                        ) {
                             return Err(self.deny_preflight(
                                 event,
                                 "opaque_command_forbidden",
@@ -700,14 +706,151 @@ fn matches_versioned_opaque_command_family(program: &str, family: &str) -> bool 
     suffix.is_empty() || suffix.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
 }
 
-fn request_uses_opaque_command_launcher(program: &OsStr, bound_program: &BoundProgram) -> bool {
-    if !is_explicit_program_path(program) {
-        return uses_opaque_command_launcher(program);
+fn request_uses_opaque_command_launcher(
+    program: &OsStr,
+    args: &[OsString],
+    bound_program: &BoundProgram,
+) -> bool {
+    if invocation_uses_opaque_command_launcher(program, args) {
+        return true;
     }
 
-    uses_opaque_command_launcher(program)
-        || uses_opaque_command_launcher(bound_program.path.as_os_str())
+    if !is_explicit_program_path(program) {
+        return false;
+    }
+
+    invocation_uses_opaque_command_launcher(bound_program.path.as_os_str(), args)
         || bound_program_matches_trusted_opaque_launcher(bound_program)
+}
+
+fn invocation_uses_opaque_command_launcher(program: &OsStr, args: &[OsString]) -> bool {
+    if uses_opaque_command_launcher(program) {
+        return true;
+    }
+
+    wrapped_subcommand(program, args).is_some_and(|(subcommand, remaining_args)| {
+        invocation_uses_opaque_command_launcher(subcommand, remaining_args)
+    })
+}
+
+fn wrapped_subcommand<'a>(
+    program: &OsStr,
+    args: &'a [OsString],
+) -> Option<(&'a OsStr, &'a [OsString])> {
+    let normalized = program_basename_ascii(program)?;
+    match normalized.as_str() {
+        "timeout" => timeout_subcommand(args),
+        "nice" => nice_subcommand(args),
+        "nohup" => passthrough_wrapper_subcommand(args),
+        "setsid" => setsid_subcommand(args),
+        "stdbuf" => stdbuf_subcommand(args),
+        _ => None,
+    }
+}
+
+fn passthrough_wrapper_subcommand(args: &[OsString]) -> Option<(&OsStr, &[OsString])> {
+    let (program, remaining) = args.split_first()?;
+    if program == "--" {
+        let (program, remaining) = remaining.split_first()?;
+        return Some((program.as_os_str(), remaining));
+    }
+    Some((program.as_os_str(), remaining))
+}
+
+fn timeout_subcommand(args: &[OsString]) -> Option<(&OsStr, &[OsString])> {
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        let text = arg.to_str()?;
+        if text == "--" {
+            index += 1;
+            break;
+        }
+        if !text.starts_with('-') || text == "-" {
+            break;
+        }
+        if matches!(text, "-k" | "--kill-after" | "-s" | "--signal") {
+            index += 2;
+            continue;
+        }
+        if text.starts_with("--kill-after=") || text.starts_with("--signal=") {
+            index += 1;
+            continue;
+        }
+        index += 1;
+    }
+
+    // `timeout` requires a duration before the delegated command.
+    let duration = args.get(index)?;
+    if duration == "--" {
+        index += 1;
+    } else {
+        index += 1;
+    }
+    let program = args.get(index)?;
+    Some((program.as_os_str(), &args[index + 1..]))
+}
+
+fn nice_subcommand(args: &[OsString]) -> Option<(&OsStr, &[OsString])> {
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        let text = arg.to_str()?;
+        if text == "--" {
+            index += 1;
+            break;
+        }
+        if !text.starts_with('-') || text == "-" {
+            break;
+        }
+        if matches!(text, "-n" | "--adjustment") {
+            index += 2;
+            continue;
+        }
+        if text.starts_with("--adjustment=") {
+            index += 1;
+            continue;
+        }
+        index += 1;
+    }
+    let program = args.get(index)?;
+    Some((program.as_os_str(), &args[index + 1..]))
+}
+
+fn setsid_subcommand(args: &[OsString]) -> Option<(&OsStr, &[OsString])> {
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        let text = arg.to_str()?;
+        if text == "--" {
+            index += 1;
+            break;
+        }
+        if !text.starts_with('-') || text == "-" {
+            break;
+        }
+        index += 1;
+    }
+    let program = args.get(index)?;
+    Some((program.as_os_str(), &args[index + 1..]))
+}
+
+fn stdbuf_subcommand(args: &[OsString]) -> Option<(&OsStr, &[OsString])> {
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        let text = arg.to_str()?;
+        if text == "--" {
+            index += 1;
+            break;
+        }
+        if !text.starts_with('-') || text == "-" {
+            break;
+        }
+        if matches!(text, "-i" | "-o" | "-e") {
+            index += 2;
+            continue;
+        }
+        index += 1;
+    }
+    let program = args.get(index)?;
+    Some((program.as_os_str(), &args[index + 1..]))
 }
 
 fn program_basename_ascii(program: &OsStr) -> Option<String> {
@@ -1173,12 +1316,16 @@ fn revalidate_bound_directory(bound: &BoundDirectory, kind: &'static str) -> Exe
     Ok(())
 }
 
+fn revalidate_prepared_request(prepared: &PreparedExecRequest) -> ExecResult<()> {
+    revalidate_bound_program(&prepared.bound_program)?;
+    revalidate_prepared_request_paths(&prepared.resolved_paths)?;
+    Ok(())
+}
+
 fn apply_prepared_request(
     prepared: &PreparedExecRequest,
     command: &mut Command,
 ) -> ExecResult<sandbox::SandboxMonitor> {
-    revalidate_bound_program(&prepared.bound_program)?;
-    revalidate_prepared_request_paths(&prepared.resolved_paths)?;
     configure_request_environment(&prepared.event.env, command);
     command.current_dir(&prepared.resolved_paths.cwd.path);
     sandbox::apply_sandbox(
@@ -1199,9 +1346,6 @@ fn spawn_command_with_monitor(
 fn build_prepared_spawn_command(prepared: &PreparedExecRequest, args: &[OsString]) -> Command {
     let mut command = Command::new(&prepared.bound_program.path);
     command.args(args);
-    configure_request_environment(&prepared.event.env, &mut command);
-    configure_noninteractive_stdio(&mut command);
-    command.current_dir(&prepared.resolved_paths.cwd.path);
     command
 }
 
@@ -2862,6 +3006,69 @@ mod tests {
         let event = gateway.evaluate(&request);
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
+    }
+
+    #[test]
+    fn denies_non_mutating_allowlisted_wrapper_that_delegates_to_env() {
+        let workspace = tempdir().expect("create temp workspace");
+        let wrapper = test_program_path(&workspace, "timeout");
+        let nested_env = test_program_path(&workspace, "env");
+        write_test_executable_placeholder(&wrapper);
+        write_test_executable_placeholder(&nested_env);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                non_mutating_program_allowlist: vec![wrapper.display().to_string()],
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &wrapper,
+            vec![
+                OsString::from("1"),
+                nested_env.into_os_string(),
+                OsString::from("printenv"),
+            ],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
+    }
+
+    #[test]
+    fn allows_non_mutating_allowlisted_wrapper_when_nested_command_is_not_opaque() {
+        let workspace = tempdir().expect("create temp workspace");
+        let wrapper = test_program_path(&workspace, "timeout");
+        let nested_tool = test_program_path(&workspace, "safe-tool");
+        write_test_executable_placeholder(&wrapper);
+        write_test_executable_placeholder(&nested_tool);
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                non_mutating_program_allowlist: vec![wrapper.display().to_string()],
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &wrapper,
+            vec![
+                OsString::from("1"),
+                nested_tool.into_os_string(),
+                OsString::from("--version"),
+            ],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
     }
 
     #[test]
