@@ -769,6 +769,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_request_rejects_unnormalized_absolute_input() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_temp_root(&dir);
+        let path = root.join("nested").join("..").join("request.json");
+
+        let err = load_request(&path).expect_err("unnormalized request path must fail");
+        assert!(
+            err.contains("normalized absolute path"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !root.join("nested").exists(),
+            "load_request must stay side-effect free for invalid paths"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn load_request_rejects_symlink_input() {

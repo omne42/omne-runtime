@@ -536,6 +536,30 @@ mod tests {
     }
 
     #[test]
+    fn ensure_ready_rejects_unnormalized_absolute_audit_path() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_test_root(&dir);
+        let audit_path = root.join("nested").join("..").join("audit.jsonl");
+        let logger = AuditLogger::new(&audit_path);
+
+        let err = logger
+            .ensure_ready()
+            .expect_err("unnormalized absolute audit path must fail");
+
+        match err {
+            ExecError::AuditLogUnavailable { path, detail } => {
+                assert_eq!(path, audit_path);
+                assert!(detail.contains("normalized absolute path"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert!(
+            !root.join("nested").exists(),
+            "invalid audit paths must not create parent directories"
+        );
+    }
+
+    #[test]
     fn ensure_ready_rejects_non_directory_parent() {
         let dir = tempdir().expect("tempdir");
         let parent_file = canonical_test_root(&dir).join("not-a-dir");

@@ -476,6 +476,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_json_rejects_unnormalized_absolute_input() {
+        let dir = tempdir().expect("tempdir");
+        let root = canonical_temp_root(&dir);
+        let path = root.join("nested").join("..").join("policy.json");
+
+        let err = GatewayPolicy::load_json(&path).expect_err("unnormalized policy path must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("normalized absolute path"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !root.join("nested").exists(),
+            "load_json must stay side-effect free for invalid paths"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn load_json_rejects_symlink_input() {
