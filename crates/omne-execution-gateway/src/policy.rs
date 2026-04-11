@@ -280,6 +280,26 @@ mod tests {
             .expect("canonicalize tempdir root")
     }
 
+    #[cfg(unix)]
+    fn platform_allowlist_program_path(program_name: &str) -> String {
+        format!("/usr/local/bin/{program_name}")
+    }
+
+    #[cfg(windows)]
+    fn platform_allowlist_program_path(program_name: &str) -> String {
+        format!("C:\\tools\\{program_name}")
+    }
+
+    #[cfg(unix)]
+    fn platform_non_matching_program_path(program_name: &str) -> String {
+        format!("/tmp/{program_name}")
+    }
+
+    #[cfg(windows)]
+    fn platform_non_matching_program_path(program_name: &str) -> String {
+        format!("C:\\tmp\\{program_name}")
+    }
+
     #[test]
     fn default_policy_allows_none_and_enforces_mutation_allowlist() {
         let policy = GatewayPolicy::default();
@@ -318,24 +338,28 @@ mod tests {
 
     #[test]
     fn explicit_path_allowlist_requires_exact_path_match() {
+        let allowlisted_path = platform_allowlist_program_path("omne-fs");
+        let non_matching_path = platform_non_matching_program_path("omne-fs");
         let policy = GatewayPolicy {
-            mutating_program_allowlist: vec!["/usr/local/bin/omne-fs".to_string()],
+            mutating_program_allowlist: vec![allowlisted_path.clone()],
             ..GatewayPolicy::default()
         };
 
-        assert!(policy.is_mutating_program_allowlisted("/usr/local/bin/omne-fs"));
-        assert!(!policy.is_mutating_program_allowlisted("/tmp/omne-fs"));
+        assert!(policy.is_mutating_program_allowlisted(&allowlisted_path));
+        assert!(!policy.is_mutating_program_allowlisted(&non_matching_path));
     }
 
     #[test]
     fn explicit_path_non_mutating_allowlist_requires_exact_path_match() {
+        let allowlisted_path = platform_allowlist_program_path("echo");
+        let non_matching_path = platform_non_matching_program_path("echo");
         let policy = GatewayPolicy {
-            non_mutating_program_allowlist: vec!["/usr/local/bin/echo".to_string()],
+            non_mutating_program_allowlist: vec![allowlisted_path.clone()],
             ..GatewayPolicy::default()
         };
 
-        assert!(policy.is_non_mutating_program_allowlisted("/usr/local/bin/echo"));
-        assert!(!policy.is_non_mutating_program_allowlisted("/tmp/echo"));
+        assert!(policy.is_non_mutating_program_allowlisted(&allowlisted_path));
+        assert!(!policy.is_non_mutating_program_allowlisted(&non_matching_path));
     }
 
     #[test]
