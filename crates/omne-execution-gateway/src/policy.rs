@@ -78,9 +78,9 @@ impl GatewayPolicy {
         if !is_explicit_program_path(program) {
             return false;
         }
-        allowlist
-            .iter()
-            .any(|item| is_absolute_allowlist_program_path(item) && program_path_matches(item, program))
+        allowlist.iter().any(|item| {
+            is_absolute_allowlist_program_path(item) && program_path_matches(item, program)
+        })
     }
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
