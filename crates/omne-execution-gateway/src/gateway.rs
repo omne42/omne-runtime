@@ -542,29 +542,9 @@ impl ExecGateway {
                         resolved_paths,
                     })
                 }
-                Err(err @ ExecError::RelativeProgramPath { .. }) => {
-                    Err(self.deny_preflight(event, "relative_program_path_forbidden", err))
-                }
-                Err(
-                    err @ ExecError::ProgramPathInvalid { .. }
-                    | err @ ExecError::ProgramLookupFailed { .. }
-                    | err @ ExecError::PathIdentityUnavailable { .. }
-                    | err @ ExecError::RequestPathChanged { .. },
-                ) => Err(self.deny_preflight(event, "program_path_invalid", err)),
-                Err(err) => unreachable!("bind_program_path returned unexpected error: {err}"),
+                Err(err) => Err(classify_bind_program_preflight_error(self, event, err)),
             },
-            Err(err @ ExecError::WorkspaceRootInvalid { .. }) => {
-                Err(self.deny_preflight(event, "workspace_root_invalid", err))
-            }
-            Err(err @ ExecError::CwdInvalid { .. }) => {
-                Err(self.deny_preflight(event, "cwd_invalid", err))
-            }
-            Err(
-                err @ ExecError::CwdOutsideWorkspace { .. }
-                | err @ ExecError::PathIdentityUnavailable { .. }
-                | err @ ExecError::RequestPathChanged { .. },
-            ) => Err(self.deny_preflight(event, "cwd_outside_workspace", err)),
-            Err(err) => unreachable!("resolve_request_paths returned unexpected error: {err}"),
+            Err(err) => Err(classify_request_path_preflight_error(self, event, err)),
         }
     }
 
@@ -612,6 +592,66 @@ impl ExecGateway {
         }
 
         Ok(None)
+    }
+}
+
+fn classify_bind_program_preflight_error(
+    gateway: &ExecGateway,
+    event: ExecEvent,
+    err: ExecError,
+) -> PreflightError {
+    match err {
+        err @ ExecError::RelativeProgramPath { .. } => {
+            gateway.deny_preflight(event, "relative_program_path_forbidden", err)
+        }
+        err @ ExecError::ProgramPathInvalid { .. }
+        | err @ ExecError::ProgramLookupFailed { .. }
+        | err @ ExecError::PathIdentityUnavailable { .. }
+        | err @ ExecError::RequestPathChanged { .. }
+        | err @ ExecError::WorkspaceRootInvalid { .. }
+        | err @ ExecError::CwdInvalid { .. }
+        | err @ ExecError::CwdOutsideWorkspace { .. }
+        | err @ ExecError::MutationDeclarationRequired
+        | err @ ExecError::PolicyDefaultIsolationMismatch { .. }
+        | err @ ExecError::PolicyDenied(_)
+        | err @ ExecError::IsolationNotSupported { .. }
+        | err @ ExecError::AuditLogUnavailable { .. }
+        | err @ ExecError::AuditLogPathInvalid { .. }
+        | err @ ExecError::AuditLogWriteFailed { .. }
+        | err @ ExecError::AuditLogWriteFailedAfterExecutionSuccess { .. }
+        | err @ ExecError::AuditLogWriteFailedAfterExecutionError { .. }
+        | err @ ExecError::Sandbox(_)
+        | err @ ExecError::Spawn(_) => gateway.deny_preflight(event, "program_path_invalid", err),
+    }
+}
+
+fn classify_request_path_preflight_error(
+    gateway: &ExecGateway,
+    event: ExecEvent,
+    err: ExecError,
+) -> PreflightError {
+    match err {
+        err @ ExecError::WorkspaceRootInvalid { .. } => {
+            gateway.deny_preflight(event, "workspace_root_invalid", err)
+        }
+        err @ ExecError::CwdInvalid { .. } => gateway.deny_preflight(event, "cwd_invalid", err),
+        err @ ExecError::CwdOutsideWorkspace { .. }
+        | err @ ExecError::PathIdentityUnavailable { .. }
+        | err @ ExecError::RequestPathChanged { .. }
+        | err @ ExecError::RelativeProgramPath { .. }
+        | err @ ExecError::ProgramPathInvalid { .. }
+        | err @ ExecError::ProgramLookupFailed { .. }
+        | err @ ExecError::MutationDeclarationRequired
+        | err @ ExecError::PolicyDefaultIsolationMismatch { .. }
+        | err @ ExecError::PolicyDenied(_)
+        | err @ ExecError::IsolationNotSupported { .. }
+        | err @ ExecError::AuditLogUnavailable { .. }
+        | err @ ExecError::AuditLogPathInvalid { .. }
+        | err @ ExecError::AuditLogWriteFailed { .. }
+        | err @ ExecError::AuditLogWriteFailedAfterExecutionSuccess { .. }
+        | err @ ExecError::AuditLogWriteFailedAfterExecutionError { .. }
+        | err @ ExecError::Sandbox(_)
+        | err @ ExecError::Spawn(_) => gateway.deny_preflight(event, "cwd_outside_workspace", err),
     }
 }
 
@@ -3543,6 +3583,73 @@ mod tests {
         );
         assert_eq!(cwd_event.decision, ExecDecision::Deny);
         assert_eq!(cwd_event.reason.as_deref(), Some("cwd_outside_workspace"));
+    }
+
+    #[test]
+    fn bind_program_error_classifier_fails_closed_for_unexpected_errors() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy::default(),
+            ExecutionIsolation::BestEffort,
+        );
+        let event = ExecEvent {
+            decision: ExecDecision::Run,
+            requested_isolation: ExecutionIsolation::BestEffort,
+            requested_policy_meta: requested_policy_meta(ExecutionIsolation::BestEffort),
+            supported_isolation: ExecutionIsolation::BestEffort,
+            program: OsString::from("tool"),
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: PathBuf::from("/tmp"),
+            workspace_root: PathBuf::from("/tmp"),
+            declared_mutation: false,
+            reason: None,
+            sandbox_runtime: None,
+        };
+
+        let err = classify_bind_program_preflight_error(
+            &gateway,
+            event,
+            ExecError::WorkspaceRootInvalid {
+                path: PathBuf::from("/tmp"),
+            },
+        );
+
+        assert_eq!(err.event.reason.as_deref(), Some("program_path_invalid"));
+        assert!(matches!(err.error, ExecError::WorkspaceRootInvalid { .. }));
+    }
+
+    #[test]
+    fn request_path_error_classifier_fails_closed_for_unexpected_errors() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy::default(),
+            ExecutionIsolation::BestEffort,
+        );
+        let event = ExecEvent {
+            decision: ExecDecision::Run,
+            requested_isolation: ExecutionIsolation::BestEffort,
+            requested_policy_meta: requested_policy_meta(ExecutionIsolation::BestEffort),
+            supported_isolation: ExecutionIsolation::BestEffort,
+            program: OsString::from("tool"),
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: PathBuf::from("/tmp"),
+            workspace_root: PathBuf::from("/tmp"),
+            declared_mutation: false,
+            reason: None,
+            sandbox_runtime: None,
+        };
+
+        let err = classify_request_path_preflight_error(
+            &gateway,
+            event,
+            ExecError::ProgramLookupFailed {
+                program: "tool".to_string(),
+                detail: "unexpected".to_string(),
+            },
+        );
+
+        assert_eq!(err.event.reason.as_deref(), Some("cwd_outside_workspace"));
+        assert!(matches!(err.error, ExecError::ProgramLookupFailed { .. }));
     }
 
     #[cfg(unix)]
