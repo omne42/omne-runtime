@@ -389,7 +389,9 @@ mod tests {
             Ok(_) => panic!("missing context must fail closed instead of succeeding"),
             Err(err) => err,
         };
-        assert!(matches!(err, Error::InvalidPath(message) if message.contains("missing parent identity snapshot")));
+        assert!(
+            matches!(err, Error::InvalidPath(message) if message.contains("missing parent identity snapshot"))
+        );
     }
 
     #[cfg(windows)]
