@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- extract Linux `/proc/<pid>/stat` leader parsing into a single-snapshot helper with direct
+  regression coverage, so process-tree cleanup keeps the fail-closed identity contract even when
+  the command name contains embedded `)` characters
+- add a combined regression test that resolves the full sudo launcher/env/target chain from
+  trusted standard locations in one step, so request-scoped `PATH` shadows cannot silently retarget
+  only part of the elevated execution path
 - reconstruct the sudo target environment from the same inherited-plus-request overlay model used
   by direct execution, including request-scoped env removals and same-name request env restores,
   so `HostCommandRequest.env` no longer changes meaning when a request crosses the privilege

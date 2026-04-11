@@ -1390,6 +1390,8 @@ mod tests {
     use super::is_explicit_relative_program_without_working_directory;
     #[cfg(unix)]
     use super::resolve_command_path_in_standard_locations_os;
+    #[cfg(unix)]
+    use super::resolve_execution_programs;
     use super::resolve_host_system_package_manager_path;
     #[cfg(unix)]
     use super::resolve_sudo_environment_cleaner_path;
@@ -1878,6 +1880,71 @@ mod tests {
                 .sudo_environment_cleaner
                 .clone()
                 .expect("trusted env path")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_execution_programs_pins_full_sudo_chain_to_trusted_locations() {
+        let Some(program_name) = available_privileged_package_manager_name() else {
+            return;
+        };
+        let Some(trusted_sudo) = resolve_sudo_path() else {
+            return;
+        };
+        let Some(trusted_env) = resolve_sudo_environment_cleaner_path() else {
+            return;
+        };
+        let trusted_target = resolve_host_system_package_manager_path(OsStr::new(program_name))
+            .expect("resolve trusted manager path");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let shadowed_sudo = write_test_command(temp.path(), "sudo");
+        let shadowed_env = write_test_command(temp.path(), "env");
+        let shadowed_target = write_test_command(temp.path(), program_name);
+        let env = vec![(
+            OsString::from("PATH"),
+            temp.path().as_os_str().to_os_string(),
+        )];
+        let request = HostCommandRequest {
+            program: OsStr::new(program_name),
+            args: &[],
+            env: &env,
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+
+        let resolved =
+            resolve_execution_programs(&request, HostCommandExecution::Sudo).expect("resolve");
+
+        assert_eq!(resolved.launcher, trusted_sudo);
+        assert_eq!(
+            resolved
+                .sudo_environment_cleaner
+                .as_deref()
+                .expect("trusted env cleaner"),
+            trusted_env.as_path()
+        );
+        assert_eq!(
+            resolved
+                .sudo_target
+                .as_deref()
+                .expect("trusted sudo target"),
+            trusted_target.as_path()
+        );
+        assert_ne!(resolved.launcher, shadowed_sudo);
+        assert_ne!(
+            resolved
+                .sudo_environment_cleaner
+                .as_deref()
+                .expect("trusted env cleaner"),
+            shadowed_env.as_path()
+        );
+        assert_ne!(
+            resolved
+                .sudo_target
+                .as_deref()
+                .expect("trusted sudo target"),
+            shadowed_target.as_path()
         );
     }
 
