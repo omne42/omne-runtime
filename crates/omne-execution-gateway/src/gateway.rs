@@ -780,12 +780,8 @@ fn timeout_subcommand(args: &[OsString]) -> Option<(&OsStr, &[OsString])> {
     }
 
     // `timeout` requires a duration before the delegated command.
-    let duration = args.get(index)?;
-    if duration == "--" {
-        index += 1;
-    } else {
-        index += 1;
-    }
+    let _duration = args.get(index)?;
+    index += 1;
     let program = args.get(index)?;
     Some((program.as_os_str(), &args[index + 1..]))
 }
