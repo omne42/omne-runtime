@@ -83,6 +83,14 @@ struct ParentVerificationContext<'a> {
     expected_meta: &'a super::super::io::DirectoryIdentity,
 }
 
+fn require_parent_verification_context<'a>(
+    parent_ctx: Option<&'a ParentVerificationContext<'a>>,
+) -> Result<&'a ParentVerificationContext<'a>> {
+    parent_ctx.ok_or_else(|| {
+        Error::InvalidPath("internal error: missing parent identity snapshot".to_string())
+    })
+}
+
 fn cleanup_created_dir(
     parent_ctx: &ParentVerificationContext<'_>,
     next: &Path,
@@ -259,9 +267,7 @@ pub(super) fn ensure_dir_under_root(
                         ));
                     }
                 };
-                let verified_parent_ctx = parent_ctx
-                    .as_ref()
-                    .expect("create_missing always populates parent verification context");
+                let verified_parent_ctx = require_parent_verification_context(parent_ctx.as_ref())?;
                 debug_assert!(std::ptr::eq(
                     verified_parent_ctx.expected_meta,
                     expected_parent_meta
@@ -372,10 +378,19 @@ mod tests {
     #[cfg(windows)]
     use std::{fs, path::Path};
 
+    use super::require_parent_verification_context;
     #[cfg(windows)]
     use super::{ParentVerificationContext, verify_parent_identity};
-    #[cfg(windows)]
     use crate::error::Error;
+
+    #[test]
+    fn missing_parent_verification_context_fails_closed() {
+        let err = match require_parent_verification_context(None) {
+            Ok(_) => panic!("missing context must fail closed instead of succeeding"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, Error::InvalidPath(message) if message.contains("missing parent identity snapshot")));
+    }
 
     #[cfg(windows)]
     #[test]
