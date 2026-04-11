@@ -464,6 +464,32 @@ impl ExecGateway {
                     event.program = bound_program.path.clone().into();
 
                     if self.policy.enforce_allowlisted_program_for_mutation {
+                        if request_uses_opaque_command_launcher(
+                            &request.program,
+                            &request.args,
+                            &bound_program,
+                        ) {
+                            return Err(self.deny_preflight(
+                                event,
+                                "opaque_command_forbidden",
+                                ExecError::PolicyDenied(
+                                    "opaque command launchers cannot be authorized by policy"
+                                    .to_string(),
+                                ),
+                            ));
+                        }
+                        let request_program_is_explicit =
+                            is_explicit_program_path(request.program.as_os_str());
+                        if !request_program_is_explicit {
+                            return Err(self.deny_preflight(
+                                event,
+                                "allowlisted_execution_requires_explicit_program_path",
+                                ExecError::PolicyDenied(
+                                    "mutation-controlled requests must use an explicit absolute program path"
+                                        .to_string(),
+                                ),
+                            ));
+                        }
                         if !request.declared_mutation_is_explicit() {
                             return Err(self.deny_preflight(
                                 event,
@@ -480,23 +506,6 @@ impl ExecGateway {
                                 )),
                             ));
                         }
-                        if request_uses_opaque_command_launcher(
-                            &request.program,
-                            &request.args,
-                            &bound_program,
-                        ) {
-                            return Err(self.deny_preflight(
-                                event,
-                                "opaque_command_forbidden",
-                                ExecError::PolicyDenied(
-                                    "opaque command launchers cannot be authorized by policy"
-                                        .to_string(),
-                                ),
-                            ));
-                        }
-
-                        let request_program_is_explicit =
-                            is_explicit_program_path(request.program.as_os_str());
                         let mutating_allowlisted = request_program_is_explicit
                             && self
                                 .policy
@@ -1099,7 +1108,7 @@ fn is_permitted_platform_root_alias(_: &Path) -> bool {
 
 fn explicit_path_like_os(program: &OsStr) -> bool {
     let path = Path::new(program);
-    path.is_absolute() || os_str_has_path_separator(program) || has_windows_drive_prefix(path)
+    path.is_absolute() || os_str_has_path_separator(program) || has_windows_drive_prefix(program)
 }
 
 #[cfg(unix)]
@@ -1128,16 +1137,62 @@ fn os_str_has_path_separator(value: &OsStr) -> bool {
         .is_some_and(|text| text.chars().any(|ch| matches!(ch, '/' | '\\')))
 }
 
-#[cfg(windows)]
-fn has_windows_drive_prefix(path: &Path) -> bool {
-    use std::path::Component;
-
-    matches!(path.components().next(), Some(Component::Prefix(_)))
+fn has_windows_drive_prefix(value: &OsStr) -> bool {
+    windows_drive_prefix_marker(value).is_some()
 }
 
-#[cfg(not(windows))]
-fn has_windows_drive_prefix(_path: &Path) -> bool {
-    false
+#[cfg(unix)]
+fn windows_drive_prefix_marker(value: &OsStr) -> Option<u8> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = value.as_bytes();
+    let drive = *bytes.first()?;
+    let colon = *bytes.get(1)?;
+    let third = bytes.get(2).copied();
+    if drive.is_ascii_alphabetic()
+        && colon == b':'
+        && third.is_none_or(|byte| !matches!(byte, b'/' | b'\\'))
+    {
+        Some(drive)
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn windows_drive_prefix_marker(value: &OsStr) -> Option<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut units = value.encode_wide();
+    let drive = units.next()?;
+    let colon = units.next()?;
+    let third = units.next();
+    let drive_char = char::from_u32(u32::from(drive))?;
+    if drive_char.is_ascii_alphabetic()
+        && colon == u16::from(b':')
+        && third.is_none_or(|unit| !matches!(char::from_u32(u32::from(unit)), Some('/' | '\\')))
+    {
+        Some(drive)
+    } else {
+        None
+    }
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn windows_drive_prefix_marker(value: &OsStr) -> Option<char> {
+    let text = value.to_string_lossy();
+    let mut chars = text.chars();
+    let drive = chars.next()?;
+    let colon = chars.next()?;
+    let third = chars.next();
+    if drive.is_ascii_alphabetic()
+        && colon == ':'
+        && third.is_none_or(|ch| !matches!(ch, '/' | '\\'))
+    {
+        Some(drive)
+    } else {
+        None
+    }
 }
 
 fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<BoundDirectory> {
@@ -1922,7 +1977,6 @@ mod tests {
         assert!(matches!(result, Err(ExecError::RelativeProgramPath { .. })));
     }
 
-    #[cfg(windows)]
     #[test]
     fn rejects_drive_relative_program_paths() {
         let policy = GatewayPolicy {
@@ -1952,7 +2006,6 @@ mod tests {
         assert!(matches!(result, Err(ExecError::RelativeProgramPath { .. })));
     }
 
-    #[cfg(windows)]
     #[test]
     fn rejects_drive_relative_program_paths_before_mutation_policy_checks() {
         let gateway = ExecGateway::with_supported_isolation(host_supported_test_isolation());
@@ -2517,12 +2570,14 @@ mod tests {
     }
 
     #[test]
-    fn requires_explicit_mutation_declaration_for_non_allowlisted_programs() {
+    fn requires_explicit_mutation_declaration_for_non_allowlisted_explicit_programs() {
         let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
         let workspace = tempdir().expect("create temp workspace");
+        let program = non_allowlisted_program_path(&workspace);
+        write_test_executable_placeholder(&program);
         let request = ExecRequest::new(
-            "echo",
-            vec!["hello"],
+            &program,
+            Vec::<OsString>::new(),
             workspace.path(),
             ExecutionIsolation::BestEffort,
             workspace.path(),
@@ -2538,6 +2593,27 @@ mod tests {
             result,
             Err(ExecError::MutationDeclarationRequired)
         ));
+    }
+
+    #[test]
+    fn denies_bare_programs_for_allowlisted_execution_even_without_mutation_declaration() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            non_mutating_program(),
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        );
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("allowlisted_execution_requires_explicit_program_path")
+        );
+        assert!(matches!(result, Err(ExecError::PolicyDenied(_))));
     }
 
     #[test]
@@ -2894,7 +2970,7 @@ mod tests {
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(
             event.reason.as_deref(),
-            Some("mutation_requires_allowlisted_program")
+            Some("allowlisted_execution_requires_explicit_program_path")
         );
     }
 
@@ -2923,7 +2999,7 @@ mod tests {
         assert_eq!(event.decision, ExecDecision::Deny);
         assert_eq!(
             event.reason.as_deref(),
-            Some("non_mutating_requires_allowlisted_program")
+            Some("allowlisted_execution_requires_explicit_program_path")
         );
     }
 

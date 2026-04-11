@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- make Windows drive-relative tokens such as `C:tool.exe` fail closed as explicit relative paths
+  on every host, and reject mutation-controlled bare commands before consulting
+  `declared_mutation`, so cross-platform preflight cannot drift back into bare-command lookup or
+  caller-self-reported mutation classification
 - preserve `exit_code` / `signal` in `omne-execution` CLI output when the command already exited
   but the terminal audit write fails, so callers can distinguish "command ran, audit failed" from
   "command never produced a status"

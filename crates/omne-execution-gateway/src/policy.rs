@@ -108,7 +108,7 @@ fn map_read_utf8_error(err: ReadUtf8Error) -> io::Error {
 fn is_explicit_program_path(program: impl AsRef<Path>) -> bool {
     let program = program.as_ref().as_os_str();
     let path = Path::new(program);
-    path.is_absolute() || os_str_has_path_separator(program) || has_windows_drive_prefix(path)
+    path.is_absolute() || os_str_has_path_separator(program) || has_windows_drive_prefix(program)
 }
 
 #[cfg(unix)]
@@ -137,17 +137,62 @@ fn os_str_has_path_separator(value: &OsStr) -> bool {
         .is_some_and(|text| text.chars().any(|ch| matches!(ch, '/' | '\\')))
 }
 
-#[cfg(windows)]
-fn has_windows_drive_prefix(path: &Path) -> bool {
-    matches!(
-        path.components().next(),
-        Some(std::path::Component::Prefix(_))
-    )
+fn has_windows_drive_prefix(value: &OsStr) -> bool {
+    windows_drive_prefix_marker(value).is_some()
 }
 
-#[cfg(not(windows))]
-fn has_windows_drive_prefix(_path: &Path) -> bool {
-    false
+#[cfg(unix)]
+fn windows_drive_prefix_marker(value: &OsStr) -> Option<u8> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = value.as_bytes();
+    let drive = *bytes.first()?;
+    let colon = *bytes.get(1)?;
+    let third = bytes.get(2).copied();
+    if drive.is_ascii_alphabetic()
+        && colon == b':'
+        && third.is_none_or(|byte| !matches!(byte, b'/' | b'\\'))
+    {
+        Some(drive)
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn windows_drive_prefix_marker(value: &OsStr) -> Option<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut units = value.encode_wide();
+    let drive = units.next()?;
+    let colon = units.next()?;
+    let third = units.next();
+    let drive_char = char::from_u32(u32::from(drive))?;
+    if drive_char.is_ascii_alphabetic()
+        && colon == u16::from(b':')
+        && third.is_none_or(|unit| !matches!(char::from_u32(u32::from(unit)), Some('/' | '\\')))
+    {
+        Some(drive)
+    } else {
+        None
+    }
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn windows_drive_prefix_marker(value: &OsStr) -> Option<char> {
+    let text = value.to_string_lossy();
+    let mut chars = text.chars();
+    let drive = chars.next()?;
+    let colon = chars.next()?;
+    let third = chars.next();
+    if drive.is_ascii_alphabetic()
+        && colon == ':'
+        && third.is_none_or(|ch| !matches!(ch, '/' | '\\'))
+    {
+        Some(drive)
+    } else {
+        None
+    }
 }
 
 #[cfg(windows)]
@@ -347,6 +392,11 @@ mod tests {
     fn non_utf8_explicit_path_detection_keeps_separator_checks_native() {
         let program = OsString::from_vec(vec![0x2f, 0x74, 0x6d, 0x70, 0x2f, 0x66, 0x6f, 0x80]);
         assert!(is_explicit_program_path(program));
+    }
+
+    #[test]
+    fn drive_relative_programs_are_treated_as_explicit_paths() {
+        assert!(is_explicit_program_path("C:tool.exe"));
     }
 
     #[cfg(windows)]
