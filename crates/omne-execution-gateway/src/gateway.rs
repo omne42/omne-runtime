@@ -474,7 +474,7 @@ impl ExecGateway {
                                 "opaque_command_forbidden",
                                 ExecError::PolicyDenied(
                                     "opaque command launchers cannot be authorized by policy"
-                                    .to_string(),
+                                        .to_string(),
                                 ),
                             ));
                         }
