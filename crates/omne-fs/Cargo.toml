@@ -17,7 +17,7 @@ serde = { version = "1", features = ["derive"] }
 same-file = "1"
 tempfile = "3"
 thiserror = "1"
-policy-meta = { path = "../../../omne_foundation/crates/policy-meta" }
+policy-meta = { version = "0.1.0", git = "https://github.com/omne42/omne_foundation.git", rev = "7de481c4f3f78ca36ad56b0cdd09dc0043f5d441" }
 toml = { version = "0.8", optional = true }
 serde_json = { version = "1", optional = true }
 walkdir = { version = "2", optional = true }

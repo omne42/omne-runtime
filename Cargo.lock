@@ -761,6 +761,7 @@ dependencies = [
 [[package]]
 name = "http-kit"
 version = "0.1.0"
+source = "git+https://github.com/omne42/omne_foundation.git?rev=7de481c4f3f78ca36ad56b0cdd09dc0043f5d441#7de481c4f3f78ca36ad56b0cdd09dc0043f5d441"
 dependencies = [
  "reqwest",
  "serde",
@@ -1392,6 +1393,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "policy-meta"
 version = "0.1.0"
+source = "git+https://github.com/omne42/omne_foundation.git?rev=7de481c4f3f78ca36ad56b0cdd09dc0043f5d441#7de481c4f3f78ca36ad56b0cdd09dc0043f5d441"
 dependencies = [
  "schemars",
  "serde",

@@ -47,8 +47,8 @@ workspace 根必须具备：
 ## 机械校验
 
 - 运行 `../scripts/check-docs-system.sh` 检查 workspace members 对应的文档骨架、README 入口、`AGENTS.md` 长度，以及文档系统范围内残留的 git conflict marker。
-- 运行任何 workspace 级 Rust gate 之前，先确认 sibling `../omne_foundation/` checkout
-  存在；如果缺失，应由 gate 入口直接报清楚前置条件，而不是把问题留给 Cargo path
-  dependency 报错。
+- 运行任何 workspace 级 Rust gate 之前，先确认网络和 Cargo git 获取能力可用，
+  因为跨仓 foundation 依赖通过 canonical git source pin 拉取；gate 入口不应再把
+  sibling checkout 当作前置条件。
 - 文档变更至少运行一次该脚本。
 - 如涉及代码行为变化，再补对应 crate 的测试或 workspace 测试。
