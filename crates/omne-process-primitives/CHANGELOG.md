@@ -32,6 +32,9 @@
 - execute the full sudo wrapper chain via trusted absolute `sudo`, `env -i`, and target-command
   paths, so sudo `secure_path` or `PATH` shadowing cannot turn a validated command into a
   different elevated executable at runtime
+- add symmetric stderr overflow regressions for fast-fail and continuously-writing commands, plus
+  malformed-Linux-identity coverage for `pgid=0`, so the process-safety fixes stay fail-closed on
+  both streams and reject impossible `/proc` snapshots
 - fail Linux process-tree cleanup capture closed when the leader identity is already gone before
   `/proc` revalidation can complete, instead of silently arming a cleanup handle with no safe
   leader snapshot

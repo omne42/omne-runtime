@@ -888,6 +888,23 @@ mod tests {
     }
 
     #[test]
+    fn linux_capture_identity_rejects_invalid_zero_process_group_id() {
+        let leader_pid = Pid::from_raw(4242).expect("leader pid must be non-zero");
+        let err = build_linux_process_group_identity(
+            leader_pid,
+            LinuxProcessIdentity {
+                process_group_id: 0,
+                session_id: 7,
+                start_ticks: 11,
+            },
+        )
+        .expect_err("zero pgid must fail closed");
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("invalid proc group id"));
+    }
+
+    #[test]
     fn linux_capture_fails_closed_when_leader_identity_is_already_gone() {
         let impossible_pid = Pid::from_raw(999_999).expect("pid must be non-zero");
         let err = capture_linux_process_group_identity(impossible_pid)
