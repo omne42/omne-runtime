@@ -1051,6 +1051,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cleanup_created_after_leader_exit_still_fails_closed_once_the_leader_is_reaped()
+    -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let shell_pid_file = dir.path().join("shell.pid");
+        let bg_pid_file = dir.path().join("background.pid");
+        let script = format!(
+            "echo $$ > '{shell}'; sleep 30 & echo $! > '{background}'; exit 0",
+            shell = shell_pid_file.display(),
+            background = bg_pid_file.display()
+        );
+
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_command_for_process_tree(&mut command);
+
+        let mut child = command.spawn()?;
+        let shell_pid = wait_for_pid(&shell_pid_file)
+            .await
+            .expect("shell pid file should be written");
+        let bg_pid = wait_for_pid(&bg_pid_file)
+            .await
+            .expect("background pid file should be written");
+
+        let mut leader_exited = false;
+        for _ in 0..300 {
+            if process_terminated_or_zombie(shell_pid) {
+                leader_exited = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            leader_exited,
+            "shell leader should exit before cleanup capture"
+        );
+
+        let mut cleanup = ProcessTreeCleanup::new(&child)?;
+        assert_eq!(
+            cleanup.start_termination(),
+            CleanupDisposition::DirectChildKillRequired
+        );
+
+        let _ = child.wait().await;
+        cleanup.kill_tree();
+
+        assert!(
+            !process_terminated_or_zombie(bg_pid),
+            "cleanup must still fail closed after the exited leader has been reaped"
+        );
+
+        let _ = kill_process(
+            Pid::from_raw(bg_pid as i32).expect("background pid should fit i32"),
+            Signal::KILL,
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn cleanup_rejects_child_without_dedicated_process_group() -> io::Result<()> {
         let mut command = tokio::process::Command::new("sh");
         command

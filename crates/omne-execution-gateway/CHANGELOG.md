@@ -39,6 +39,9 @@
 - bind every prepared executable to both file identity and a preflight content fingerprint, so
   even non-allowlisted requests fail closed if the same inode is rewritten between preflight and
   final spawn
+- add regression coverage proving `prepare_command()` keeps spawning the canonical executable bound
+  during preflight even if the caller's symlink alias is rebound before `spawn()`, so alias-path
+  swaps cannot reopen the prepare-to-spawn identity window
 - add regression coverage proving `prepare_command()` also keeps writing through the prepared
   audit sink after the on-disk audit path is rebound mid-execution, so the terminal record cannot
   be redirected or lost after preflight succeeds

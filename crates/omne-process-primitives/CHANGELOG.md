@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- add a runtime regression that creates `ProcessTreeCleanup` after the Linux leader has already
+  exited but before it is reaped, so later cleanup stays fail-closed once the leader identity is
+  gone instead of trusting the historical PGID
 - extract Linux `/proc/<pid>/stat` leader parsing into a single-snapshot helper with direct
   regression coverage, so process-tree cleanup keeps the fail-closed identity contract even when
   the command name contains embedded `)` characters
