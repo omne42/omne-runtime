@@ -216,8 +216,7 @@ pub fn detect_host_platform() -> Option<HostPlatform> {
 }
 
 pub fn detect_host_target_triple() -> Option<&'static str> {
-    detect_host_platform()
-        .and_then(try_detect_host_target_triple_from_platform)
+    detect_host_platform().and_then(try_detect_host_target_triple_from_platform)
 }
 
 fn try_detect_host_target_triple_from_platform(
@@ -394,8 +393,8 @@ mod tests {
         HostArchitecture, HostLinuxLibc, HostOperatingSystem, HostPlatformTargetTripleError,
         TargetTripleError, detect_host_target_triple, executable_suffix_for_target,
         host_platform_from_parts, resolve_home_dir_with, resolve_target_triple,
-        try_detect_host_target_triple_from_platform,
-        try_executable_suffix_for_target, try_resolve_target_triple,
+        try_detect_host_target_triple_from_platform, try_executable_suffix_for_target,
+        try_resolve_target_triple,
     };
 
     #[test]
@@ -462,7 +461,10 @@ mod tests {
     #[test]
     fn detect_host_target_triple_from_platform_fails_closed_when_linux_libc_is_unknown() {
         let host_platform = host_platform_from_parts("linux", "x86_64", None).expect("linux");
-        assert_eq!(try_detect_host_target_triple_from_platform(host_platform), None);
+        assert_eq!(
+            try_detect_host_target_triple_from_platform(host_platform),
+            None
+        );
     }
 
     #[test]
@@ -685,7 +687,10 @@ mod tests {
         let linux_libc = super::detect_host_linux_libc_with_proc_maps(&|| Some(String::new()));
         let host_platform =
             host_platform_from_parts("linux", "x86_64", linux_libc).expect("linux platform");
-        assert_eq!(try_detect_host_target_triple_from_platform(host_platform), None);
+        assert_eq!(
+            try_detect_host_target_triple_from_platform(host_platform),
+            None
+        );
     }
 
     #[cfg(target_os = "linux")]
