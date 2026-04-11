@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- add regression coverage proving audit-log, policy, and CLI request file inputs also reject
+  unnormalized absolute paths before any filesystem side effects, so `.` / `..` lexical variants
+  cannot quietly reopen ancestor traversal around the shared no-follow file boundary
 - make Windows drive-relative tokens such as `C:tool.exe` fail closed as explicit relative paths
   on every host, and reject mutation-controlled bare commands before consulting
   `declared_mutation`, so cross-platform preflight cannot drift back into bare-command lookup or
