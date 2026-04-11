@@ -3,6 +3,28 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+resolve_cargo() {
+  if [[ -n "${CARGO:-}" ]]; then
+    printf '%s\n' "$CARGO"
+    return 0
+  fi
+
+  if command -v cargo >/dev/null 2>&1; then
+    command -v cargo
+    return 0
+  fi
+
+  if [[ -x "${HOME:-}/.cargo/bin/cargo" ]]; then
+    printf '%s\n' "${HOME}/.cargo/bin/cargo"
+    return 0
+  fi
+
+  echo "cargo executable not found; set PATH or CARGO before running scripts/check-docs-system.sh" >&2
+  exit 1
+}
+
+cargo_bin="$(resolve_cargo)"
+
 require_file() {
   local path="$1"
   if [[ ! -f "$path" ]]; then
@@ -87,21 +109,30 @@ check_crate_docs() {
 }
 
 workspace_member_list() {
-  cargo metadata --manifest-path "$root/Cargo.toml" --format-version 1 --no-deps | \
-    python3 -c '
+  local metadata_file
+  metadata_file="$(mktemp)"
+  "$cargo_bin" metadata \
+    --manifest-path "$root/Cargo.toml" \
+    --format-version 1 \
+    --no-deps >"$metadata_file"
+
+  python3 -c '
 import json
 from pathlib import Path
 import sys
 
 root = Path(sys.argv[1]).resolve()
-metadata = json.load(sys.stdin)
+metadata_path = Path(sys.argv[2]).resolve()
+with metadata_path.open("r", encoding="utf-8") as fh:
+    metadata = json.load(fh)
 workspace_members = set(metadata["workspace_members"])
 for package in metadata["packages"]:
     if package["id"] not in workspace_members:
         continue
     manifest_path = Path(package["manifest_path"]).resolve()
     print(manifest_path.parent.relative_to(root))
-' "$root"
+' "$root" "$metadata_file"
+  rm -f "$metadata_file"
 }
 
 workspace_boundary_dir() {
