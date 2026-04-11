@@ -46,8 +46,8 @@ When `program` matches `mutating_program_allowlist`, the gateway requires
 When `declared_mutation = false`, the request must likewise use an explicit path from
 `non_mutating_program_allowlist`; unknown tools can no longer self-label as read-only and bypass
 the mutation boundary.
-Bare program names are denied fail-closed for mutation authorization, even if a same-name string
-appears in either allowlist.
+Bare program names are denied fail-closed for mutation authorization before the gateway consults
+`declared_mutation`, even if a same-name string appears in either allowlist.
 For ordinary execution, bare program names are resolved to an absolute executable path during
 preflight; if lookup cannot be bound to a concrete executable, the request fails closed instead of
 passing an unresolved name through to `spawn()`.
