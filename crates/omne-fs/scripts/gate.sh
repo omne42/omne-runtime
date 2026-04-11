@@ -30,14 +30,6 @@ if [[ ! -f "$repo_root/Cargo.toml" ]]; then
   exit 1
 fi
 
-foundation_root="$(cd "$repo_root/.." && pwd -P)/omne_foundation"
-if [[ ! -f "$foundation_root/Cargo.toml" ]]; then
-  echo "gate: missing sibling foundation checkout at $foundation_root" >&2
-  echo "gate: omne-runtime workspace members use path dependencies like ../omne_foundation/crates/http-kit and ../omne_foundation/crates/policy-meta" >&2
-  echo "gate: clone or add the sibling checkout before running Rust gates." >&2
-  exit 1
-fi
-
 echo "gate: rust (fmt/check/clippy/test)" >&2
 (
   cd "$repo_root"

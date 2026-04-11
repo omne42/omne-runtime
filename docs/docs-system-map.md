@@ -13,7 +13,8 @@
 - `README.md` 负责外部概览和最小入口。
 - `AGENTS.md` 只做短地图，不承载完整事实。
 - `docs/` 才是受版本控制的事实记录系统。
-- workspace Rust 验证依赖 sibling `../omne_foundation` checkout；这不是“隐式本机前提”，而是当前构建图的一部分。
+- workspace Rust 验证依赖 manifests 中固定的 `omne_foundation` canonical git source pin；
+  这不是“隐式本机前提”，而是当前构建图的一部分。
 - 每个 crate 都必须有自己的 `docs/docs-system-map.md`、`docs/architecture/system-boundaries.md`、`docs/architecture/source-layout.md`。
 - `site/`、`target/` 这类生成物不能当作事实来源。
 

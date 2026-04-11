@@ -1,8 +1,8 @@
 # omne-runtime
 
-Umbrella repository and Cargo workspace for Omne host/runtime crates. This workspace is not
-standalone at build time: some members depend on sibling foundation crates from
-`../omne_foundation`.
+Umbrella repository and Cargo workspace for Omne host/runtime crates. This workspace resolves
+cross-repository foundation dependencies through canonical git source pins to
+`omne42/omne_foundation`.
 
 ## Layout
 
@@ -51,9 +51,9 @@ names mirror package names directly.
 
 - Shared CI and release automation live at the repository root under `.github/`.
 - Shared Cargo resolution is rooted at this workspace `Cargo.toml`.
-- Build/test commands assume the checkout layout used by CI: `omne-runtime/` and a sibling
-  `../omne_foundation/` checkout that provides path dependencies such as `http-kit` and
-  `policy-meta`.
+- Build/test commands fetch `http-kit` and `policy-meta` from the canonical
+  `omne42/omne_foundation` git source pin declared in member manifests; no sibling checkout is
+  required.
 - Generated build outputs are ignored via the root `.gitignore`; member crates do not carry
   their own repository-level ignore or workflow configuration.
 - We do not create a catch-all `platform` crate. Boundaries are capability-based:
@@ -68,6 +68,5 @@ names mirror package names directly.
 
 ```bash
 ./scripts/check-docs-system.sh
-test -f ../omne_foundation/Cargo.toml
 cargo test --workspace
 ```

@@ -5,7 +5,7 @@
 ```toml
 [dependencies]
 omne-execution-gateway = { path = "../omne-execution-gateway" }
-policy-meta = { path = "../../omne_foundation/crates/policy-meta" }
+policy-meta = { version = "0.1.0", git = "https://github.com/omne42/omne_foundation.git", rev = "7de481c4f3f78ca36ad56b0cdd09dc0043f5d441" }
 ```
 
 ## 2. Minimal Rust Example
