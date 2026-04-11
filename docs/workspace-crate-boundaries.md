@@ -69,7 +69,8 @@ package 名保持一致。
 - 当前 workspace 的构建图跨仓库引用 `omne_foundation` 的 canonical git source pin：
   `omne-artifact-install-primitives` 复用 `http-kit`，`omne-fs` 和
   `omne-execution-gateway` 复用 `policy-meta`。因此 `omne-runtime` 仍是 runtime
-  workspace 的事实来源，但不再依赖 sibling checkout 才能闭环本地 `cargo test --workspace`。
+  workspace 的事实来源，但不再依赖 sibling checkout 才能闭环本地
+  `cargo test --workspace --all-features`。
 - `omne-artifact-install-primitives` 负责 artifact 候选下载执行与安装管道，
   但不持有 release metadata 或候选顺序策略。
 - `omne-archive-primitives` 负责 archive/compression 格式读取与条目提取，

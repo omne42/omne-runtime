@@ -53,7 +53,7 @@ names mirror package names directly.
 - Shared Cargo resolution is rooted at this workspace `Cargo.toml`.
 - Build/test commands fetch `http-kit` and `policy-meta` from the canonical
   `omne42/omne_foundation` git source pin declared in member manifests; no sibling checkout is
-  required.
+  required, including CI and release workflows.
 - Generated build outputs are ignored via the root `.gitignore`; member crates do not carry
   their own repository-level ignore or workflow configuration.
 - We do not create a catch-all `platform` crate. Boundaries are capability-based:
@@ -68,5 +68,5 @@ names mirror package names directly.
 
 ```bash
 ./scripts/check-docs-system.sh
-cargo test --workspace
+cargo test --workspace --all-features
 ```

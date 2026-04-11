@@ -93,12 +93,6 @@ jobs:
         with:
           path: omne-runtime
 
-      - name: Checkout foundation
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          repository: omne42/omne_foundation
-          path: omne_foundation
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
