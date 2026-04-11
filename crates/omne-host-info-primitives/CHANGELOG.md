@@ -31,3 +31,5 @@
 - add checked target-triple and executable-suffix helpers that return structured errors for blank
   or unsupported triples, while making the legacy compatibility wrappers fail closed instead of
   forwarding unsupported inputs or misclassifying unknown triples as Windows targets
+- pin direct regression coverage showing Linux hosts with unknown libc keep returning no detected
+  host target triple instead of silently reviving a `*-unknown-linux-gnu` fallback
