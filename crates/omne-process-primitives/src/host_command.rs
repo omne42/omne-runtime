@@ -2260,6 +2260,37 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn run_host_command_fails_fast_when_stderr_exceeds_limit_before_exit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_oversized_stderr_then_sleep_command(temp.path(), "very-loud-slow");
+        let args = Vec::new();
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &args,
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let started = Instant::now();
+        let err = run_host_command(&request).expect_err("oversized stderr should fail");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "capture overflow should terminate the child instead of waiting for normal exit"
+        );
+        match err {
+            HostCommandError::CaptureFailed { source, .. } => {
+                assert!(
+                    source.to_string().contains("stderr exceeded capture limit"),
+                    "unexpected error: {source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn run_host_command_rejects_continuous_stdout_with_capture_error_instead_of_hanging() {
         let temp = tempfile::tempdir().expect("tempdir");
         let command_path = write_continuous_stdout_command(temp.path(), "stdout-forever");
@@ -2406,6 +2437,43 @@ mod tests {
             HostCommandError::CaptureFailed { source, .. } => {
                 assert!(
                     source.to_string().contains("stderr exceeded capture limit"),
+                    "unexpected error: {source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_host_command_rejects_continuous_stderr_with_capture_error_instead_of_hanging() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command_path = write_continuous_stderr_command(temp.path(), "stderr-forever");
+        let request = HostCommandRequest {
+            program: command_path.as_os_str(),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+
+        let started = Instant::now();
+        let err = run_host_command_with_capture_options(
+            &request,
+            HostCommandRunOptions::new(),
+            HostCommandCaptureOptions::new().with_capture_limit_bytes_per_stream(1024),
+        )
+        .expect_err("continuous stderr should hit the capture limit");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "continuous stderr must return a capture error instead of hanging"
+        );
+        match err {
+            HostCommandError::CaptureFailed { source, .. } => {
+                assert!(
+                    source
+                        .to_string()
+                        .contains("stderr exceeded capture limit of 1024 bytes"),
                     "unexpected error: {source}"
                 );
             }
@@ -3488,11 +3556,28 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn write_oversized_stderr_then_sleep_command(dir: &Path, name: &str) -> PathBuf {
+        let payload_path = dir.join(format!("{name}.payload"));
+        std::fs::write(&payload_path, vec![b'x'; 8 * 1024 * 1024 + 1]).expect("write payload");
+        let payload = shell_quote_path(&payload_path);
+        write_shell_executable(dir, name, &format!("cat {payload} >&2\nsleep 5\n"))
+    }
+
+    #[cfg(unix)]
     fn write_continuous_stdout_command(dir: &Path, name: &str) -> PathBuf {
         write_shell_executable(
             dir,
             name,
             "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done\n",
+        )
+    }
+
+    #[cfg(unix)]
+    fn write_continuous_stderr_command(dir: &Path, name: &str) -> PathBuf {
+        write_shell_executable(
+            dir,
+            name,
+            "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' >&2; done\n",
         )
     }
 
