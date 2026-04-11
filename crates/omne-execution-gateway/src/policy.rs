@@ -476,6 +476,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn load_json_rejects_unnormalized_absolute_input() {
         let dir = tempdir().expect("tempdir");
