@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI text input loading now opens files through the same ambient-root no-follow path walk used by
   `policy_io`, so ancestor symlink paths are rejected fail-closed instead of only checking the
   final path component.
+- Removed the stale empty `git-permissions` Cargo feature declaration now that the fallback code is
+  gone, so crate metadata no longer advertises a non-existent PATH-sensitive authorization path.
 - stop routing `edit` / `delete` through the undocumented `git-permissions` runtime fallback, so
   `omne-fs` no longer changes write authorization semantics through an optional Cargo feature or
   carries VCS subprocess policy inside the generic filesystem boundary
