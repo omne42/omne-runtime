@@ -80,7 +80,7 @@ impl GatewayPolicy {
         }
         allowlist
             .iter()
-            .any(|item| is_explicit_program_path(item) && program_path_matches(item, program))
+            .any(|item| is_absolute_allowlist_program_path(item) && program_path_matches(item, program))
     }
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
@@ -109,6 +109,10 @@ fn is_explicit_program_path(program: impl AsRef<Path>) -> bool {
     let program = program.as_ref().as_os_str();
     let path = Path::new(program);
     path.is_absolute() || os_str_has_path_separator(program) || has_windows_drive_prefix(program)
+}
+
+fn is_absolute_allowlist_program_path(program: impl AsRef<Path>) -> bool {
+    program.as_ref().is_absolute()
 }
 
 #[cfg(unix)]
@@ -332,6 +336,36 @@ mod tests {
 
         assert!(policy.is_non_mutating_program_allowlisted("/usr/local/bin/echo"));
         assert!(!policy.is_non_mutating_program_allowlisted("/tmp/echo"));
+    }
+
+    #[test]
+    fn relative_allowlist_item_does_not_authorize_relative_request_path() {
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["./omne-fs".to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(!policy.is_mutating_program_allowlisted("./omne-fs"));
+    }
+
+    #[test]
+    fn relative_allowlist_item_does_not_authorize_absolute_request_path() {
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["bin/omne-fs".to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(!policy.is_mutating_program_allowlisted("/workspace/bin/omne-fs"));
+    }
+
+    #[test]
+    fn drive_relative_allowlist_item_does_not_authorize_drive_relative_request_path() {
+        let policy = GatewayPolicy {
+            mutating_program_allowlist: vec!["C:tool.exe".to_string()],
+            ..GatewayPolicy::default()
+        };
+
+        assert!(!policy.is_mutating_program_allowlisted("C:tool.exe"));
     }
 
     #[cfg(unix)]
