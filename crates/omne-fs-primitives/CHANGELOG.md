@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- make `overwrite_existing=false` use kernel-backed no-clobber rename semantics for staged atomic file/directory commits so destinations that appear before commit fail closed instead of being replaced
 - expose a structured rollback-failed error for atomic directory replacement, including the backup path that still holds the original directory when staged rename recovery cannot restore it
 - clean up staged directory trees when atomic directory replacement fails before the final rename, including backup-dir setup and existing-directory handoff errors
 - return explicit fail-closed errors instead of panicking when staged atomic file/directory handles were already consumed, and surface staged directory cleanup failures after failed directory swaps

@@ -1,6 +1,8 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
+#[cfg(all(unix, any(target_os = "android", target_os = "linux", target_os = "redox", target_vendor = "apple")))]
+use std::io::ErrorKind;
 #[cfg(target_os = "macos")]
 use std::path::Component;
 use std::path::{Path, PathBuf};
@@ -9,6 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;
+#[cfg(all(unix, any(target_os = "android", target_os = "linux", target_os = "redox", target_vendor = "apple")))]
+use rustix::fs::{RenameFlags, renameat_with};
 
 use crate::cap_root::open_parent_root_for_leaf_path;
 use crate::{
@@ -734,16 +738,7 @@ fn commit_replace(
             .rename(staged_leaf, parent_root.dir(), destination_leaf)
             .map_err(|err| AtomicWriteError::io_path("rename", destination, err))?;
     } else {
-        if parent_root.dir().symlink_metadata(destination_leaf).is_ok() {
-            return Err(AtomicWriteError::io_path(
-                "rename_noclobber",
-                destination,
-                io::Error::new(io::ErrorKind::AlreadyExists, "destination already exists"),
-            ));
-        }
-        parent_root
-            .dir()
-            .rename(staged_leaf, parent_root.dir(), destination_leaf)
+        rename_noreplace(parent_root.dir(), staged_leaf, destination_leaf)
             .map_err(|err| AtomicWriteError::io_path("rename_noclobber", destination, err))?;
     }
     sync_root_directory(parent_root)
@@ -834,10 +829,15 @@ where
         }
     }
 
-    if let Err(err) = parent_root
-        .dir()
-        .rename(staged_leaf, parent_root.dir(), destination_leaf)
-    {
+    let rename_result = if options.overwrite_existing {
+        parent_root
+            .dir()
+            .rename(staged_leaf, parent_root.dir(), destination_leaf)
+    } else {
+        rename_noreplace(parent_root.dir(), staged_leaf, destination_leaf)
+    };
+
+    if let Err(err) = rename_result {
         let staged_cleanup_path = parent_root.path().join(staged_leaf);
         let staged_cleanup_error = staged_cleanup(parent_root, staged_leaf).err();
         let restore_outcome = match backup_root.as_ref() {
@@ -909,6 +909,51 @@ fn remove_staged_directory(parent_root: &RootDir, staged_leaf: &Path) -> io::Res
     parent_root.dir().remove_dir_all(staged_leaf)
 }
 
+#[cfg(all(unix, any(target_os = "android", target_os = "linux", target_os = "redox", target_vendor = "apple")))]
+fn rename_noreplace(parent: &Dir, staged_leaf: &Path, destination_leaf: &Path) -> io::Result<()> {
+    renameat_with(
+        parent,
+        staged_leaf,
+        parent,
+        destination_leaf,
+        RenameFlags::NOREPLACE,
+    )
+    .map_err(|err| match err.kind() {
+        ErrorKind::AlreadyExists => io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "destination already exists",
+        ),
+        _ => io::Error::from(err),
+    })
+}
+
+#[cfg(windows)]
+fn rename_noreplace(parent: &Dir, staged_leaf: &Path, destination_leaf: &Path) -> io::Result<()> {
+    parent.rename(staged_leaf, parent, destination_leaf)
+}
+
+#[cfg(not(any(
+    windows,
+    all(
+        unix,
+        any(
+            target_os = "android",
+            target_os = "linux",
+            target_os = "redox",
+            target_vendor = "apple"
+        )
+    )
+)))]
+fn rename_noreplace(_parent: &Dir, _staged_leaf: &Path, destination_leaf: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "atomic no-clobber rename is unavailable for destination `{}` on this platform",
+            destination_leaf.display()
+        ),
+    ))
+}
+
 #[cfg(all(not(windows), unix))]
 fn sync_dir_handle(dir: &Dir) -> io::Result<()> {
     match rustix::fs::fsync(dir) {
@@ -930,6 +975,7 @@ fn sync_root_directory(_root: &RootDir) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
     use std::io::{Read, Seek, SeekFrom, Write};
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
@@ -986,6 +1032,36 @@ mod tests {
 
         let content = std::fs::read(&destination).expect("read destination");
         assert_eq!(content, b"new");
+    }
+
+    #[test]
+    fn staged_atomic_file_noclobber_fails_if_destination_appears_before_commit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tool");
+        let options = AtomicWriteOptions {
+            overwrite_existing: false,
+            require_non_empty: true,
+            ..AtomicWriteOptions::default()
+        };
+
+        let mut staged = stage_file_atomically(&destination, &options).expect("stage file");
+        staged.file_mut().write_all(b"new").expect("write staged");
+        std::fs::write(&destination, b"existing").expect("seed competing destination");
+
+        let err = staged.commit().expect_err("commit should fail closed");
+        match err {
+            AtomicWriteError::IoPath { op, path, source } => {
+                assert_eq!(op, "rename_noclobber");
+                assert_eq!(path, destination);
+                assert_eq!(source.kind(), io::ErrorKind::AlreadyExists);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        assert_eq!(
+            std::fs::read(&destination).expect("read existing destination"),
+            b"existing"
+        );
     }
 
     #[test]
@@ -1077,6 +1153,37 @@ mod tests {
             std::fs::read(destination.join("bin/tool")).expect("read staged file"),
             b"new"
         );
+    }
+
+    #[test]
+    fn staged_atomic_directory_noclobber_fails_if_destination_appears_before_commit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tree");
+        let options = AtomicDirectoryOptions {
+            overwrite_existing: false,
+            ..AtomicDirectoryOptions::default()
+        };
+
+        let staged = stage_directory_atomically(&destination, &options).expect("stage directory");
+        std::fs::write(staged.path().join("new.txt"), b"new").expect("write staged file");
+        std::fs::create_dir_all(&destination).expect("create competing destination");
+        std::fs::write(destination.join("existing.txt"), b"existing").expect("seed destination");
+
+        let err = staged.commit().expect_err("commit should fail closed");
+        match err {
+            super::AtomicDirectoryError::IoPath { op, path, source } => {
+                assert_eq!(op, "rename_staged");
+                assert_eq!(path, destination);
+                assert_eq!(source.kind(), io::ErrorKind::AlreadyExists);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        assert_eq!(
+            std::fs::read(destination.join("existing.txt")).expect("read existing destination"),
+            b"existing"
+        );
+        assert!(!destination.join("new.txt").exists());
     }
 
     #[test]
