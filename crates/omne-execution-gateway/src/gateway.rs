@@ -1827,22 +1827,21 @@ fn audit_error_already_reported<T>(result: &ExecResult<T>) -> bool {
 }
 
 fn event_for_post_preflight_error(mut event: ExecEvent, err: &ExecError) -> ExecEvent {
-    let Some(reason) = post_preflight_denial_reason(err) else {
-        return event;
-    };
+    let reason = post_preflight_denial_reason(err);
     event.decision = ExecDecision::Deny;
     event.reason = Some(reason.to_string());
     event
 }
 
-fn post_preflight_denial_reason(err: &ExecError) -> Option<&'static str> {
+fn post_preflight_denial_reason(err: &ExecError) -> &'static str {
     match err {
         ExecError::PathIdentityUnavailable {
             kind: "program", ..
         }
         | ExecError::RequestPathChanged {
             kind: "program", ..
-        } => Some("program_path_invalid"),
+        }
+        | ExecError::ProgramPathInvalid { .. } => "program_path_invalid",
         ExecError::CwdOutsideWorkspace { .. }
         | ExecError::PathIdentityUnavailable {
             kind: "cwd" | "workspace_root",
@@ -1851,8 +1850,10 @@ fn post_preflight_denial_reason(err: &ExecError) -> Option<&'static str> {
         | ExecError::RequestPathChanged {
             kind: "cwd" | "workspace_root",
             ..
-        } => Some("cwd_outside_workspace"),
-        _ => None,
+        } => "cwd_outside_workspace",
+        ExecError::Sandbox(_) => "sandbox_apply_failed",
+        ExecError::Spawn(_) => "spawn_failed",
+        _ => "post_preflight_execution_failed",
     }
 }
 
@@ -4251,6 +4252,31 @@ mod tests {
     }
 
     #[test]
+    fn post_preflight_spawn_errors_flip_event_to_deny() {
+        let event = ExecEvent {
+            decision: ExecDecision::Run,
+            requested_isolation: host_supported_test_isolation(),
+            requested_policy_meta: requested_policy_meta(host_supported_test_isolation()),
+            supported_isolation: host_supported_test_isolation(),
+            program: OsString::from("echo"),
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: PathBuf::from("."),
+            workspace_root: PathBuf::from("."),
+            declared_mutation: false,
+            reason: None,
+            sandbox_runtime: None,
+        };
+
+        let spawn_event = event_for_post_preflight_error(
+            event,
+            &ExecError::Spawn(std::io::Error::other("exec format error")),
+        );
+        assert_eq!(spawn_event.decision, ExecDecision::Deny);
+        assert_eq!(spawn_event.reason.as_deref(), Some("spawn_failed"));
+    }
+
+    #[test]
     fn bind_program_error_classifier_fails_closed_for_unexpected_errors() {
         let gateway = ExecGateway::with_policy_and_supported_isolation(
             GatewayPolicy::default(),
@@ -4664,6 +4690,41 @@ mod tests {
         assert_eq!(record["event"]["decision"], "deny");
         assert_eq!(record["event"]["reason"], "cwd_outside_workspace");
         assert_eq!(record["result"]["status"], "execution_error");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_spawn_failure_updates_event_to_deny() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("invalid-exec");
+        fs::write(&program, "not a script\n").expect("write invalid executable");
+        let mut permissions = fs::metadata(&program).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).expect("chmod invalid executable");
+
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("spawn_failed"));
+        assert!(matches!(result, Err(ExecError::Spawn(_))));
     }
 
     #[cfg(windows)]
