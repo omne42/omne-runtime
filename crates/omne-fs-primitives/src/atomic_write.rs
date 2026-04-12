@@ -952,7 +952,24 @@ fn rename_noreplace(parent: &Dir, staged_leaf: &Path, destination_leaf: &Path) -
 
 #[cfg(windows)]
 fn rename_noreplace(parent: &Dir, staged_leaf: &Path, destination_leaf: &Path) -> io::Result<()> {
-    parent.rename(staged_leaf, parent, destination_leaf)
+    match parent.symlink_metadata(destination_leaf) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "destination already exists",
+            ));
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    parent
+        .rename(staged_leaf, parent, destination_leaf)
+        .map_err(|err| match err.kind() {
+            io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty => {
+                io::Error::new(io::ErrorKind::AlreadyExists, "destination already exists")
+            }
+            _ => err,
+        })
 }
 
 #[cfg(not(any(
