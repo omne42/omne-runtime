@@ -1068,6 +1068,8 @@ mod tests {
         let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
             .expect("stage directory");
         std::fs::write(staged.path().join("new.txt"), b"new").expect("write staged file");
+        let mut staged = staged;
+        let _ = staged.staged_root.take();
 
         let err = super::commit_replace_directory_with_cleanup_hooks(
             &staged.parent_root,
@@ -1106,6 +1108,8 @@ mod tests {
         let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
             .expect("stage directory");
         std::fs::write(staged.path().join("new.txt"), b"new").expect("write staged file");
+        let mut staged = staged;
+        let _ = staged.staged_root.take();
 
         let err = super::commit_replace_directory_with_cleanup_hooks(
             &staged.parent_root,
