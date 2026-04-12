@@ -720,6 +720,7 @@ fn commit_replace_directory(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn commit_replace_directory_with_cleanup_hooks(
     parent_root: &RootDir,
     staged_leaf: &Path,
