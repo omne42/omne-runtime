@@ -1,8 +1,16 @@
 use std::fmt;
 use std::fs;
-use std::io::{self, Read, Write};
-#[cfg(all(unix, any(target_os = "android", target_os = "linux", target_os = "redox", target_vendor = "apple")))]
+#[cfg(all(
+    unix,
+    any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "redox",
+        target_vendor = "apple"
+    )
+))]
 use std::io::ErrorKind;
+use std::io::{self, Read, Write};
 #[cfg(target_os = "macos")]
 use std::path::Component;
 use std::path::{Path, PathBuf};
@@ -11,7 +19,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;
-#[cfg(all(unix, any(target_os = "android", target_os = "linux", target_os = "redox", target_vendor = "apple")))]
+#[cfg(all(
+    unix,
+    any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "redox",
+        target_vendor = "apple"
+    )
+))]
 use rustix::fs::{RenameFlags, renameat_with};
 
 use crate::cap_root::open_parent_root_for_leaf_path;
@@ -909,7 +925,15 @@ fn remove_staged_directory(parent_root: &RootDir, staged_leaf: &Path) -> io::Res
     parent_root.dir().remove_dir_all(staged_leaf)
 }
 
-#[cfg(all(unix, any(target_os = "android", target_os = "linux", target_os = "redox", target_vendor = "apple")))]
+#[cfg(all(
+    unix,
+    any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "redox",
+        target_vendor = "apple"
+    )
+))]
 fn rename_noreplace(parent: &Dir, staged_leaf: &Path, destination_leaf: &Path) -> io::Result<()> {
     renameat_with(
         parent,
@@ -919,10 +943,9 @@ fn rename_noreplace(parent: &Dir, staged_leaf: &Path, destination_leaf: &Path) -
         RenameFlags::NOREPLACE,
     )
     .map_err(|err| match err.kind() {
-        ErrorKind::AlreadyExists => io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "destination already exists",
-        ),
+        ErrorKind::AlreadyExists => {
+            io::Error::new(io::ErrorKind::AlreadyExists, "destination already exists")
+        }
         _ => io::Error::from(err),
     })
 }
