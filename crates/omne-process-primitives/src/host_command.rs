@@ -1402,6 +1402,9 @@ mod tests {
     #[cfg(unix)]
     use std::time::{Duration, Instant};
 
+    use super::ResolvedExecutionPrograms;
+    #[cfg(unix)]
+    use super::build_command_with_resolved_programs;
     #[cfg(unix)]
     use super::command_available_os;
     use super::command_exists_os;
@@ -1435,9 +1438,6 @@ mod tests {
         map_command_output_error, resolve_program_for_direct_spawn, run_host_command,
         run_host_recipe, select_execution_for_request_with_status, should_try_sudo_with_status,
     };
-    use super::ResolvedExecutionPrograms;
-    #[cfg(unix)]
-    use super::build_command_with_resolved_programs;
     use super::{capture_file_snapshot_len, create_output_capture_file, read_captured_output};
     #[cfg(unix)]
     use super::{run_host_command_with_options, run_host_recipe_with_options};
