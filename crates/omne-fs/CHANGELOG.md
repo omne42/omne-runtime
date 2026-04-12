@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `list_dir` now spends `limits.max_walk_entries` budget while enumerating direct children, so oversized directory scans fail closed as `truncated=true` instead of walking arbitrarily many entries before applying the existing result/response caps.
 - `create_parents` no longer relies on an internal `expect(...)` when parent-identity verification
   context is unexpectedly missing; the path now fails closed with an explicit `InvalidPath`
   error, and regression coverage locks that non-panicking behavior in place.

@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- expose a structured rollback-failed error for atomic directory replacement, including the backup path that still holds the original directory when staged rename recovery cannot restore it
 - clean up staged directory trees when atomic directory replacement fails before the final rename, including backup-dir setup and existing-directory handoff errors
 - return explicit fail-closed errors instead of panicking when staged atomic file/directory handles were already consumed, and surface staged directory cleanup failures after failed directory swaps
 - fsync staged directory trees before atomic replace so successful directory installs do not return before nested file content is durable
