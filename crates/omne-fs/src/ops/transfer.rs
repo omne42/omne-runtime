@@ -25,6 +25,10 @@ pub(super) struct PreparedTransferDestination {
     pub(super) path: PathBuf,
 }
 
+fn requested_transfer_destination_relative(paths: &ResolvedTransferPaths<'_>) -> PathBuf {
+    Path::new(&paths.to_parent_relative).join(Path::new(&paths.to_name))
+}
+
 pub(super) fn resolve_transfer_paths<'ctx>(
     ctx: &'ctx Context,
     root_id: &str,
@@ -121,6 +125,11 @@ pub(super) fn prepare_transfer_destination(
     root_id: &str,
     paths: &mut ResolvedTransferPaths<'_>,
 ) -> Result<PreparedTransferDestination> {
+    let requested_relative = requested_transfer_destination_relative(paths);
+    if ctx.redactor.is_path_denied(&requested_relative) {
+        return Err(Error::SecretPathDenied(requested_relative));
+    }
+
     if paths.to_parent.is_none() {
         paths.to_parent =
             Some(ctx.ensure_dir_under_root(root_id, &paths.to_parent_relative, true)?);

@@ -245,6 +245,28 @@ fn move_path_denies_secret_requested_destination_path() {
 }
 
 #[test]
+fn move_path_denies_secret_requested_destination_path_without_creating_parents() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("from.txt"), "source").expect("write");
+
+    let ctx = ctx_with_deny_glob(dir.path(), WriteScope::WorkspaceWrite);
+    let err = move_path(
+        &ctx,
+        MovePathRequest {
+            root_id: "root".to_string(),
+            from: PathBuf::from("from.txt"),
+            to: PathBuf::from("deny/nested/out.txt"),
+            overwrite: false,
+            create_parents: true,
+        },
+    )
+    .expect_err("move_path should reject denied requested destination before creating parents");
+    assert_secret_path_denied(err, PathBuf::from("deny").join("nested").join("out.txt"));
+    assert!(dir.path().join("from.txt").exists());
+    assert!(!dir.path().join("deny").exists());
+}
+
+#[test]
 #[cfg(any(unix, windows))]
 fn move_path_denies_after_canonicalization_through_symlink_parent() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -293,6 +315,28 @@ fn copy_file_denies_secret_requested_destination_path() {
     .expect_err("copy_file should reject denied requested destination");
     assert_secret_path_denied(err, PathBuf::from("deny").join("out.txt"));
     assert!(dir.path().join("from.txt").exists());
+}
+
+#[test]
+fn copy_file_denies_secret_requested_destination_path_without_creating_parents() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("from.txt"), "source").expect("write");
+
+    let ctx = ctx_with_deny_glob(dir.path(), WriteScope::WorkspaceWrite);
+    let err = copy_file(
+        &ctx,
+        CopyFileRequest {
+            root_id: "root".to_string(),
+            from: PathBuf::from("from.txt"),
+            to: PathBuf::from("deny/nested/out.txt"),
+            overwrite: false,
+            create_parents: true,
+        },
+    )
+    .expect_err("copy_file should reject denied requested destination before creating parents");
+    assert_secret_path_denied(err, PathBuf::from("deny").join("nested").join("out.txt"));
+    assert!(dir.path().join("from.txt").exists());
+    assert!(!dir.path().join("deny").exists());
 }
 
 #[test]
