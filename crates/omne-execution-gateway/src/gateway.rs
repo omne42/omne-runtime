@@ -5,13 +5,13 @@ use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, St
 use std::sync::OnceLock;
 
 #[cfg(target_os = "linux")]
+use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
+#[cfg(target_os = "linux")]
 use std::fs::File;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
-#[cfg(target_os = "linux")]
-use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 
 use crate::audit::{ExecDecision, ExecEvent, SandboxRuntimeObservation, requested_policy_meta};
 use crate::audit_log::{AuditLogger, PreparedAuditSink};
@@ -1307,11 +1307,8 @@ fn bind_absolute_program_path(requested_path: &Path) -> ExecResult<BoundProgram>
     })?;
     let content_fingerprint = fingerprint_program_contents(&canonical_path)?;
     #[cfg(target_os = "linux")]
-    let executable = bind_linux_program_executable(
-        &canonical_path,
-        &identity,
-        &content_fingerprint,
-    )?;
+    let executable =
+        bind_linux_program_executable(&canonical_path, &identity, &content_fingerprint)?;
     Ok(BoundProgram {
         path: canonical_path,
         identity,
@@ -1864,11 +1861,11 @@ fn run_test_before_spawn_hook_for(command: &Command) {
     let mut hook = test_before_spawn_hook_cell()
         .lock()
         .expect("lock pre-spawn hook");
-    let should_run = hook
-        .as_ref()
-        .is_some_and(|hook| hook.matches(command));
+    let should_run = hook.as_ref().is_some_and(|hook| hook.matches(command));
     if should_run {
-        hook.take().expect("matched pre-spawn hook must exist").run();
+        hook.take()
+            .expect("matched pre-spawn hook must exist")
+            .run();
     }
 }
 
