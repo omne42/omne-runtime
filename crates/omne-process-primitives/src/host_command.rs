@@ -1427,9 +1427,9 @@ mod tests {
     use super::should_try_sudo_for_request_with_status;
     use super::trusted_sudo_target_path_var;
     use super::{
-        HostCommandCaptureOptions, HostCommandError, HostCommandExecution, HostCommandRequest,
-        HostCommandRunOptions, HostCommandSudoMode, HostRecipeError, HostRecipeRequest,
-        build_command, build_command_with_options, command_available,
+        CommandOutputError, HostCommandCaptureOptions, HostCommandError, HostCommandExecution,
+        HostCommandRequest, HostCommandRunOptions, HostCommandSudoMode, HostRecipeError,
+        HostRecipeRequest, build_command, build_command_with_options, command_available,
         command_available_for_request, command_exists, command_exists_for_request,
         command_path_exists, default_recipe_sudo_mode_for_program, environment_assignment,
         map_command_output_error, resolve_program_for_direct_spawn, run_host_command,
