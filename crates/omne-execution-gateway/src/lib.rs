@@ -3,12 +3,12 @@
 use std::io;
 use std::path::Path;
 
+#[cfg(test)]
+use omne_fs_primitives::validate_appendable_regular_file_in_ambient_root;
 use omne_fs_primitives::{
     ReadUtf8Error, open_appendable_regular_file_in_ambient_root,
     read_utf8_regular_file_in_ambient_root,
 };
-#[cfg(test)]
-use omne_fs_primitives::validate_appendable_regular_file_in_ambient_root;
 
 mod audit;
 mod audit_log;
