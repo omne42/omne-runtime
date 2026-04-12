@@ -7,4 +7,5 @@
 - cap archive-wide entry scanning during binary extraction so malicious tar/zip files cannot force unbounded linear scans before the requested binary is found
 - require `archive_binary` to resolve to an exact archive-relative path instead of matching by suffix traversal order
 - fail closed when multiple `bin/<binary>` candidates exist without an exact hint, instead of picking the first match by archive traversal order
+- accept a top-level `bin/<binary>` archive layout during hintless auto-match, while still failing closed if that introduces ambiguity
 - export the default extracted-binary budget
