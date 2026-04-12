@@ -331,7 +331,7 @@ pub fn run_host_command_with_capture_options(
         options,
         capture_options,
     )
-    .map_err(|source| map_command_output_error(request, execution, source))?;
+    .map_err(|source| map_command_output_error(request, execution, &resolved_programs, source))?;
     Ok(HostCommandOutput { execution, output })
 }
 
@@ -1338,12 +1338,13 @@ enum WaitForChildError {
 fn map_command_output_error(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
+    resolved_programs: &ResolvedExecutionPrograms,
     source: CommandOutputError,
 ) -> HostCommandError {
     match source {
         CommandOutputError::Spawn(source)
             if source.kind() == io::ErrorKind::NotFound
-                && spawn_error_is_missing_program(request, execution) =>
+                && spawn_error_is_missing_program(request, execution, resolved_programs) =>
         {
             HostCommandError::CommandNotFound {
                 program: request.program.to_os_string(),
@@ -1371,14 +1372,15 @@ fn map_command_output_error(
 fn spawn_error_is_missing_program(
     request: &HostCommandRequest<'_>,
     execution: HostCommandExecution,
+    resolved_programs: &ResolvedExecutionPrograms,
 ) -> bool {
     match execution {
-        HostCommandExecution::Sudo => !is_explicit_command_path(request.program),
+        HostCommandExecution::Sudo => false,
         HostCommandExecution::Direct => {
             if !working_directory_can_spawn(request) {
                 return false;
             }
-            resolve_program_for_direct_command(request).is_none_or(|path| !path.exists())
+            !resolved_programs.launcher.exists()
         }
     }
 }
@@ -1430,7 +1432,8 @@ mod tests {
         build_command, build_command_with_options, command_available,
         command_available_for_request, command_exists, command_exists_for_request,
         command_path_exists, default_recipe_sudo_mode_for_program, environment_assignment,
-        resolve_program_for_direct_spawn, run_host_command, run_host_recipe,
+        map_command_output_error, resolve_program_for_direct_spawn, run_host_command,
+        run_host_recipe,
         select_execution_for_request_with_status, should_try_sudo_with_status,
     };
     #[cfg(unix)]
@@ -3459,6 +3462,64 @@ mod tests {
         let err = ensure_sudo_target_is_available(&request)
             .expect_err("missing relative sudo target must fail");
         assert!(matches!(err, HostCommandError::CommandNotFound { .. }));
+    }
+
+    #[test]
+    fn spawn_not_found_is_command_not_found_only_when_direct_launcher_is_missing() {
+        let request = HostCommandRequest {
+            program: OsStr::new("missing-tool"),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::Never,
+        };
+        let resolved_programs = ResolvedExecutionPrograms {
+            launcher: PathBuf::from("/definitely/missing-tool"),
+            sudo_environment_cleaner: None,
+            sudo_target: None,
+        };
+
+        let err = map_command_output_error(
+            &request,
+            HostCommandExecution::Direct,
+            &resolved_programs,
+            CommandOutputError::Spawn(io::Error::from(io::ErrorKind::NotFound)),
+        );
+
+        assert!(matches!(err, HostCommandError::CommandNotFound { .. }));
+    }
+
+    #[test]
+    fn spawn_not_found_from_sudo_launcher_stays_spawn_failed() {
+        let request = HostCommandRequest {
+            program: OsStr::new("apt-get"),
+            args: &[],
+            env: &[],
+            working_directory: None,
+            sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
+        };
+        let resolved_programs = ResolvedExecutionPrograms {
+            launcher: PathBuf::from("/trusted/bin/sudo"),
+            sudo_environment_cleaner: Some(PathBuf::from("/trusted/bin/env")),
+            sudo_target: Some(PathBuf::from("/trusted/bin/apt-get")),
+        };
+
+        let err = map_command_output_error(
+            &request,
+            HostCommandExecution::Sudo,
+            &resolved_programs,
+            CommandOutputError::Spawn(io::Error::from(io::ErrorKind::NotFound)),
+        );
+
+        match err {
+            HostCommandError::SpawnFailed {
+                execution, source, ..
+            } => {
+                assert_eq!(execution, HostCommandExecution::Sudo);
+                assert_eq!(source.kind(), io::ErrorKind::NotFound);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[cfg(unix)]

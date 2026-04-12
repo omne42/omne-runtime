@@ -28,6 +28,9 @@
 - make host-recipe regression tests pass an explicit `working_directory`, so concurrent tests that
   temporarily switch the process cwd cannot inject ambient `getcwd()` noise into stderr
   assertions
+- classify `spawn(...)=ENOENT` as `CommandNotFound` only for the already-resolved direct launcher
+  path, so missing `sudo`/`env` launchers or invalid working directories stay `SpawnFailed`
+  instead of being misreported as missing target commands
 - drop the built-in Unix `ExecutableFileBusy` retry loop from `run_host_command*`, so
   `omne-process-primitives` stops owning retry policy and surfaces the original spawn failure to
   callers
