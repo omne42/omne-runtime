@@ -463,14 +463,14 @@ impl ExecGateway {
                     event.workspace_root = resolved_paths.workspace_root.path.clone();
                     event.program = bound_program.path.clone().into();
 
-                    if self.policy.enforce_allowlisted_program_for_mutation {
-                        if let Err((reason, err)) = authorize_mutation_controlled_request(
+                    if self.policy.enforce_allowlisted_program_for_mutation
+                        && let Err((reason, err)) = authorize_mutation_controlled_request(
                             &self.policy,
                             request,
                             &bound_program,
-                        ) {
-                            return Err(self.deny_preflight(event, reason, err));
-                        }
+                        )
+                    {
+                        return Err(self.deny_preflight(event, reason, err));
                     }
 
                     Ok(PreparedExecRequest {
