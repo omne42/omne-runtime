@@ -929,7 +929,7 @@ fn normalize_archive_binary_hint(archive_binary_hint: Option<&str>) -> Option<St
 }
 
 fn is_binary_entry_match_without_hint(path: &str, binary_name: &str) -> bool {
-    path.ends_with(&format!("/bin/{binary_name}"))
+    path == format!("bin/{binary_name}") || path.ends_with(&format!("/bin/{binary_name}"))
 }
 
 #[cfg(test)]
@@ -972,6 +972,23 @@ mod tests {
         .expect("extract gh");
 
         assert_eq!(extracted.archive_path, "gh_9.9.9_linux_amd64/bin/gh");
+        assert_eq!(extracted.bytes, b"#!/bin/sh\necho gh\n");
+    }
+
+    #[test]
+    fn extracts_tar_gz_binary_from_top_level_bin_directory_without_hint() {
+        let archive = make_tar_gz_archive(&[("bin/gh", b"#!/bin/sh\necho gh\n".as_slice(), 0o755)]);
+        let extracted = extract_binary_from_archive(
+            "gh.tar.gz",
+            &archive,
+            &BinaryArchiveRequest {
+                binary_name: "gh",
+                archive_binary_hint: None,
+            },
+        )
+        .expect("extract top-level gh");
+
+        assert_eq!(extracted.archive_path, "bin/gh");
         assert_eq!(extracted.bytes, b"#!/bin/sh\necho gh\n");
     }
 
@@ -1068,6 +1085,26 @@ mod tests {
             },
         )
         .expect_err("ambiguous match should fail closed");
+
+        assert_ambiguous_binary_error(err, BinaryArchiveFormat::TarGz, "demo");
+    }
+
+    #[test]
+    fn top_level_and_nested_bin_matches_without_hint_fail_closed() {
+        let archive = make_tar_gz_archive(&[
+            ("bin/demo", b"top-level".as_slice(), 0o755),
+            ("demo-linux-x64/bin/demo", b"nested".as_slice(), 0o755),
+        ]);
+
+        let err = extract_binary_from_archive(
+            "demo.tar.gz",
+            &archive,
+            &BinaryArchiveRequest {
+                binary_name: "demo",
+                archive_binary_hint: None,
+            },
+        )
+        .expect_err("ambiguous top-level and nested matches should fail closed");
 
         assert_ambiguous_binary_error(err, BinaryArchiveFormat::TarGz, "demo");
     }
@@ -1439,8 +1476,16 @@ mod tests {
                 assert_eq!(actual_format, archive_format);
                 assert_eq!(actual_binary_name, binary_name);
                 assert_ne!(first_archive_path, second_archive_path);
-                assert!(first_archive_path.ends_with(&format!("/bin/{binary_name}")));
-                assert!(second_archive_path.ends_with(&format!("/bin/{binary_name}")));
+                let expected_suffix = format!("/bin/{binary_name}");
+                let expected_top_level = format!("bin/{binary_name}");
+                assert!(
+                    first_archive_path == expected_top_level
+                        || first_archive_path.ends_with(&expected_suffix)
+                );
+                assert!(
+                    second_archive_path == expected_top_level
+                        || second_archive_path.ends_with(&expected_suffix)
+                );
             }
             other => panic!("unexpected error: {other}"),
         }
