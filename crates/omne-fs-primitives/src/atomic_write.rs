@@ -1388,8 +1388,14 @@ mod tests {
         }
 
         assert!(expected_backup_path.join("old.txt").is_file());
-        assert!(!staged.path().exists(), "staged directory should still be cleaned up");
-        assert!(destination.is_file(), "restore blocker should remain in place");
+        assert!(
+            !staged.path().exists(),
+            "staged directory should still be cleaned up"
+        );
+        assert!(
+            destination.is_file(),
+            "restore blocker should remain in place"
+        );
     }
 
     #[cfg(unix)]
