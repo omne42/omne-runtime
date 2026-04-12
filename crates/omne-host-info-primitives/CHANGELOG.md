@@ -8,23 +8,10 @@
   them or letting callers treat the host as implicit `*-unknown-linux-gnu`
 - make host-platform target-triple mapping checked: Linux hosts with unknown libc now surface a
   dedicated error, while compatibility helpers fail closed by returning no host target triple
-- stop treating coarse distro markers such as `/etc/alpine-release` as Linux libc evidence; when
-  runtime mappings are unavailable the crate now falls back only to concrete loader markers, so
-  uncertain hosts fail closed instead of guessing a downloadable target triple
-- make Linux host libc detection fail closed when musl and glibc loader markers coexist, instead
-  of silently preferring musl and misclassifying ambiguous hosts
-- prefer the current process' Linux loader/libc mappings over coarse filesystem markers when
-  detecting `gnu` vs `musl`, so mixed-toolchain hosts stop selecting the wrong target triple just
-  because an unrelated loader file exists on disk
-- prefer `getconf` / `ldd` runtime evidence over musl/glibc loader file markers when detecting
-  Linux libc, so glibc hosts no longer regress to `*-unknown-linux-musl` just because a musl
-  loader file also exists on disk
-- keep current-process glibc evidence authoritative even when musl loader files are present on
-  disk, so mixed-toolchain hosts do not regress back to `*-unknown-linux-musl`
-- stop treating ambiguous current-process loader/libc evidence as "no evidence"; conflicting
-  glibc/musl process mappings now fail closed instead of falling back to filesystem markers
-- stop Linux host libc detection from executing ambient `getconf`/`ldd`, and fail closed instead
-  of defaulting unknown Linux hosts to `*-unknown-linux-gnu`
+- restrict Linux libc detection to current-process `/proc/self/maps` runtime evidence, so the
+  crate no longer executes ambient `getconf`/`ldd` or guesses from unrelated filesystem markers
+- make Linux host libc detection fail closed when current-process mappings contain both musl and
+  glibc markers, instead of silently preferring musl or reviving a filesystem fallback
 - keep ambiguous or unavailable Linux libc detection from producing any host platform / target
   triple at all, so callers cannot accidentally recover a GNU fallback after the primitive layer
   already failed closed

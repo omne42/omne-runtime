@@ -13,7 +13,7 @@ Low-level host platform and target-triple primitives shared across callers.
 
 - host OS and architecture detection
 - canonical host-platform mapping, including Linux hosts whose libc stays explicitly unknown when
-  direct runtime evidence and trusted absolute loader markers cannot distinguish `gnu` vs `musl`
+  current-process runtime mappings cannot distinguish `gnu` vs `musl`
 - canonical target-triple mapping for host platforms with known Linux libc, with checked host
   APIs that surface `LinuxLibcUnknown` instead of collapsing unknown Linux hosts into
   `*-unknown-linux-gnu`
