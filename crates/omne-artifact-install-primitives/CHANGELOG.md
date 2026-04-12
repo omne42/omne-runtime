@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- normalize archive-tree advisory lock roots for single-component relative destinations such as
+  `toolchain`, so the install path never hands an empty parent path to the ambient lock primitive
 - tighten archive-tree leaf materialization so regular files, symlinks, and hard links stage into
   unique handle-bound temp names before an in-directory rename; existing directory/symlink/special
   leaves now fail closed, and Unix hard-link extraction revalidates the staged inode against the

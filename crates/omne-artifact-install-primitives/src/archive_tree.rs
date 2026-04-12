@@ -210,10 +210,10 @@ fn map_archive_walk_error(
 fn lock_archive_tree_destination(
     destination: &Path,
 ) -> Result<omne_fs_primitives::AdvisoryLockGuard, ArtifactInstallError> {
-    let lock_root = destination.parent().unwrap_or_else(|| Path::new("."));
+    let lock_root = archive_tree_install_lock_root(destination);
     let lock_file = archive_tree_install_lock_file_name(destination);
     lock_advisory_file_in_ambient_root(
-        lock_root,
+        &lock_root,
         "archive tree install lock root",
         &lock_file,
         "archive tree install lock file",
@@ -224,6 +224,13 @@ fn lock_archive_tree_destination(
             destination.display()
         ))
     })
+}
+
+fn archive_tree_install_lock_root(destination: &Path) -> PathBuf {
+    match destination.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
 }
 
 fn archive_tree_install_lock_file_name(destination: &Path) -> PathBuf {
@@ -1247,8 +1254,7 @@ mod tests {
     use std::net::TcpListener;
     #[cfg(unix)]
     use std::os::unix::fs::FileTypeExt;
-    #[cfg(unix)]
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
@@ -1263,7 +1269,8 @@ mod tests {
 
     use super::{
         ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
-        download_and_install_archive_tree, install_archive_tree_from_reader_with_limits,
+        archive_tree_install_lock_root, download_and_install_archive_tree,
+        install_archive_tree_from_reader_with_limits,
     };
     #[cfg(unix)]
     use super::{
@@ -1781,6 +1788,17 @@ mod tests {
         assert_eq!(
             archive_tree_install_lock_file_name(&canonical),
             archive_tree_install_lock_file_name(&equivalent)
+        );
+    }
+
+    #[test]
+    fn archive_tree_install_lock_root_normalizes_single_component_relative_destination() {
+        let lock_root = archive_tree_install_lock_root(Path::new("toolchain"));
+
+        assert_eq!(lock_root, PathBuf::from("."));
+        assert!(
+            !lock_root.as_os_str().is_empty(),
+            "relative single-component destinations must not use an empty lock root"
         );
     }
 
