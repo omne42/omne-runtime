@@ -27,8 +27,8 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 {
   "program": "/usr/bin/echo",
   "args": ["hello-from-omne-execution"],
-  "cwd": ".",
-  "workspace_root": ".",
+  "cwd": "/absolute/workspace",
+  "workspace_root": "/absolute/workspace",
   "required_isolation": "none",
   "declared_mutation": false
 }
@@ -40,6 +40,7 @@ cargo run --bin omne-execution -- --policy ./policy.json --request ./request.jso
 Unknown request fields are rejected fail-closed instead of being ignored.
 `request.json` must be a bounded regular file; symlink, special-file, and oversized inputs are rejected fail-closed.
 `audit_log_path` must be absolute; relative paths are denied during preflight.
+`cwd` and `workspace_root` must also be absolute input paths; relative values are denied during preflight as `cwd_invalid` or `workspace_root_invalid`.
 `program`, each entry in `args`, and explicit `env.name` / `env.value` accept either a normal JSON string or the exact OS-string object form used in gateway output, for example `{ "encoding": "unix_bytes_hex", "value": "666f80" }` on Unix.
 When `program` matches `mutating_program_allowlist`, the gateway requires
 `declared_mutation = true`; declared mutations still must use an allowlisted explicit path.

@@ -37,6 +37,9 @@ Public fields:
 - `cwd: PathBuf`
 - `workspace_root: PathBuf`
 
+`cwd` and `workspace_root` are request inputs, but gateway preflight only accepts absolute paths.
+Relative values are denied fail-closed as `cwd_invalid` or `workspace_root_invalid`.
+
 Accessors / mutators:
 
 - `required_isolation() -> policy_meta::ExecutionIsolation`

@@ -17,7 +17,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - fail-closed if `program` is neither a bare command name nor an absolute path
 - explicit absolute `program` paths must already resolve to spawnable executables, are normalized to the canonical real executable path, and are revalidated immediately before spawn against both file identity and executable-content fingerprint; this removes caller-controlled alias paths from the final `spawn` call, rejects same-inode rewrites that keep the path stable, and narrows the remaining OS-level race to the last check versus `exec`
 - bare command names are resolved to a canonical absolute executable path during preflight, rebound as an executable identity, and rejected fail-closed if lookup cannot be bound
-- workspace boundary enforcement (`cwd` must stay inside `workspace_root`; `cwd` / `workspace_root` reject symlink or reparse-point ancestors before canonical binding, except for macOS root aliases such as `/var` and `/tmp`, and execution revalidates the bound directory identities before spawn)
+- workspace boundary enforcement (`cwd` and `workspace_root` must be absolute input paths; `cwd` must stay inside `workspace_root`; both reject symlink or reparse-point ancestors before canonical binding, except for macOS root aliases such as `/var` and `/tmp`, and execution revalidates the bound directory identities before spawn)
 - mutation enforcement requires both an explicit absolute program path and an explicit mutation declaration
 - fail-closed denial for shell-like, interpreter, and multiplexing frontend launchers such as `sh`, `cmd`, `pwsh`, `python3.12`, `pip3.12`, and `nodejs`; policy allowlists cannot authorize them because the gateway cannot bind arbitrary script or subcommand semantics to a stable executable identity, and explicit-path aliases are checked against the final bound executable identity instead of only the caller-visible basename
 - gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
@@ -51,7 +51,7 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - allowlist matching binds explicit paths to executable identity; it does not prove binary provenance or infer arbitrary binary semantics beyond the configured executable path.
 - JSON surfaces keep readable lossy `program` / `args` fields and also emit `program_exact` / `args_exact`, so audit consumers can reconstruct non-UTF-8 argv exactly instead of guessing from replacement characters.
 - `GatewayPolicy::load_json()` only accepts no-follow regular files and fail-closed ancestor directory walks via `omne-fs-primitives`, so symlinks/reparse points cannot silently stand in for trusted policy input.
-- `cwd` and `workspace_root` fail closed when their input path traverses a symlink or reparse-point ancestor, except for macOS system root aliases such as `/var` and `/tmp`, so request path validation does not silently re-authorize caller-controlled aliased directories during canonicalization.
+- `cwd` and `workspace_root` must be supplied as absolute input paths and fail closed when their input path traverses a symlink or reparse-point ancestor, except for macOS system root aliases such as `/var` and `/tmp`, so request path validation does not silently re-authorize caller-controlled aliased directories during canonicalization or inherit the gateway process `cwd`.
 - `ExecRequest` now carries explicit environment entries; `execute()` and `prepare_command()` clear inherited process state and apply only that audited environment before spawn.
 - that explicit `env` contract is preserved end-to-end across `ExecRequest`, `RequestResolution`, `ExecEvent`, and the CLI JSON adapter, so request/audit output cannot drift away from the real spawned environment.
 - `ExecRequest` keeps `required_isolation`, `requested_isolation_source`, and `declared_mutation`
@@ -98,9 +98,9 @@ let gateway = ExecGateway::with_policy(GatewayPolicy {
 let req = ExecRequest::new(
     "echo",
     vec!["hello"],
-    ".",
+    "/absolute/workspace",
     ExecutionIsolation::None,
-    ".",
+    "/absolute/workspace",
 )
 .with_declared_mutation(false);
 let execution = gateway.execute(&req);

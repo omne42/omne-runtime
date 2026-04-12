@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- require request `cwd` and `workspace_root` to be absolute input paths during preflight, keeping denial reasons stable as `cwd_invalid` and `workspace_root_invalid` instead of resolving relative directories against the gateway process `cwd`
 - expose `ExecError::completed_status()` / `command_completed_successfully()` plus matching
   `ExecutionOutcome` helpers, and document that audit persistence stays bound to the descriptor
   opened during preparation, so callers can distinguish "command already ran" from
