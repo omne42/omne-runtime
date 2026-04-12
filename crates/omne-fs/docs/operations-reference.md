@@ -14,7 +14,7 @@ All operations:
 Mutating operations additionally require:
 
 - corresponding permission flag,
-- root `write_scope = workspace_write`.
+- root `write_scope = workspace_write` or `full_access`.
 - when invoked via CLI, explicit confirmation flag `--confirm-mutating-ops`.
 
 ## `read`

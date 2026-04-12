@@ -10,7 +10,7 @@ descriptive only in `omne-fs` and is not consulted for enforcement.
 [[roots]]
 id = "workspace"
 path = "/abs/path"
-write_scope = "read_only" # or "workspace_write"
+write_scope = "read_only" # or "workspace_write" / "full_access"
 
 [permissions]
 read = true

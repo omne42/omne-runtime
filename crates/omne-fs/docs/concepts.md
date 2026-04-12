@@ -40,7 +40,7 @@ Each operation has a permission flag. For example:
 - `write` requires `permissions.write=true`
 - `move` requires `permissions.move=true`
 
-Mutating operations also require root `write_scope = workspace_write`.
+Mutating operations also require root `write_scope = workspace_write` or `full_access`.
 
 ## Deny and Redaction
 
