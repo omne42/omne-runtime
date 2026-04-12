@@ -398,11 +398,10 @@ mod tests {
 
     use super::{
         HostArchitecture, HostLinuxLibc, HostOperatingSystem, HostPlatform,
-        HostPlatformTargetTripleError,
-        TargetTripleError, detect_host_target_triple, executable_suffix_for_target,
-        host_platform_from_parts, resolve_home_dir_with, resolve_target_triple,
-        try_detect_host_target_triple_from_platform, try_executable_suffix_for_target,
-        try_resolve_target_triple,
+        HostPlatformTargetTripleError, TargetTripleError, detect_host_target_triple,
+        executable_suffix_for_target, host_platform_from_parts, resolve_home_dir_with,
+        resolve_target_triple, try_detect_host_target_triple_from_platform,
+        try_executable_suffix_for_target, try_resolve_target_triple,
     };
 
     #[test]
