@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -121,6 +121,94 @@ fn ensure_existing_target_writable(target: &Path, relative: &Path) -> Result<fs:
     super::io::ensure_regular_file_writable(target, relative).map(|meta| meta.permissions())
 }
 
+fn preview_parent_dir_under_root(
+    ctx: &Context,
+    root_id: &str,
+    requested_parent: &Path,
+    canonical_root: &Path,
+) -> Result<Option<PathBuf>> {
+    let mut current = canonical_root.to_path_buf();
+    let mut current_relative = PathBuf::new();
+    let mut components = requested_parent.components().peekable();
+    while let Some(component) = components.next() {
+        let segment = match component {
+            Component::CurDir => continue,
+            Component::Normal(segment) => segment,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(Error::InvalidPath(format!(
+                    "invalid path {}: unsupported parent directory reference",
+                    requested_parent.display()
+                )));
+            }
+        };
+        current_relative.push(segment);
+        let next = current.join(segment);
+        match fs::symlink_metadata(&next) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() || meta.is_dir() {
+                    current = next
+                        .canonicalize()
+                        .map_err(|err| Error::io_path("canonicalize", &current_relative, err))?;
+                    if !crate::path_utils::starts_with_case_insensitive_normalized(
+                        &current,
+                        canonical_root,
+                    ) {
+                        return Err(Error::OutsideRoot {
+                            root_id: root_id.to_string(),
+                            path: requested_parent.to_path_buf(),
+                        });
+                    }
+                    let canonical_relative =
+                        crate::path_utils::strip_prefix_case_insensitive_normalized(
+                            &current,
+                            canonical_root,
+                        )
+                        .ok_or_else(|| {
+                            Error::InvalidPath(format!(
+                                "failed to derive canonical parent path for {}",
+                                requested_parent.display()
+                            ))
+                        })?;
+                    ctx.reject_secret_path(canonical_relative)?;
+                    continue;
+                }
+                return Err(Error::InvalidPath(format!(
+                    "path component {} is not a directory",
+                    current_relative.display()
+                )));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                current.push(segment);
+                for remaining in components {
+                    if let Component::Normal(remaining) = remaining {
+                        current.push(remaining);
+                    }
+                }
+                let relative_parent = crate::path_utils::strip_prefix_case_insensitive_normalized(
+                    &current,
+                    canonical_root,
+                )
+                .ok_or_else(|| Error::OutsideRoot {
+                    root_id: root_id.to_string(),
+                    path: requested_parent.to_path_buf(),
+                })?;
+                return Ok(Some(relative_parent));
+            }
+            Err(err) => return Err(Error::io_path("symlink_metadata", &current_relative, err)),
+        }
+    }
+
+    let relative_parent = crate::path_utils::strip_prefix_case_insensitive_normalized(
+        &current,
+        canonical_root,
+    )
+    .ok_or_else(|| Error::OutsideRoot {
+        root_id: root_id.to_string(),
+        path: requested_parent.to_path_buf(),
+    })?;
+    Ok(Some(relative_parent))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WriteFileRequest {
     pub root_id: String,
@@ -170,6 +258,34 @@ pub fn write_file(ctx: &Context, request: WriteFileRequest) -> Result<WriteFileR
     )?;
 
     let requested_parent = requested_path.parent().unwrap_or_else(|| Path::new(""));
+    let requested_relative = requested_parent.join(file_name);
+    if ctx.redactor.is_path_denied(&requested_relative) {
+        return Err(Error::SecretPathDenied(requested_relative));
+    }
+
+    let preview_relative_parent = match ctx.ensure_dir_under_root(&request.root_id, requested_parent, false)
+    {
+        Ok(canonical_parent) => crate::path_utils::strip_prefix_case_insensitive_normalized(
+            &canonical_parent,
+            canonical_root,
+        )
+        .ok_or_else(|| Error::OutsideRoot {
+            root_id: request.root_id.clone(),
+            path: requested_path.clone(),
+        })?,
+        Err(Error::IoPath { source, .. })
+            if request.create_parents && source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            preview_parent_dir_under_root(ctx, &request.root_id, requested_parent, canonical_root)?
+                .ok_or_else(|| Error::InvalidPath("failed to preview parent directory".to_string()))?
+        }
+        Err(err) => return Err(err),
+    };
+    let preview_relative = preview_relative_parent.join(file_name);
+    if ctx.redactor.is_path_denied(&preview_relative) {
+        return Err(Error::SecretPathDenied(preview_relative));
+    }
+
     let canonical_parent =
         ctx.ensure_dir_under_root(&request.root_id, requested_parent, request.create_parents)?;
 
@@ -183,10 +299,6 @@ pub fn write_file(ctx: &Context, request: WriteFileRequest) -> Result<WriteFileR
     })?;
     let parent_identity = capture_parent_identity(&canonical_parent, &relative_parent)?;
     let relative = relative_parent.join(file_name);
-
-    if ctx.redactor.is_path_denied(&relative) {
-        return Err(Error::SecretPathDenied(relative));
-    }
 
     let target = canonical_parent.join(file_name);
     if !crate::path_utils::starts_with_case_insensitive_normalized(&target, canonical_root) {

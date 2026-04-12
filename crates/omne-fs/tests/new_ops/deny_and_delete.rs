@@ -102,6 +102,28 @@ fn mkdir_denies_secret_requested_path() {
 }
 
 #[test]
+fn mkdir_denied_secret_requested_path_does_not_create_parents() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let ctx = ctx_with_deny_glob(dir.path(), WriteScope::WorkspaceWrite);
+    let err = mkdir(
+        &ctx,
+        MkdirRequest {
+            root_id: "root".to_string(),
+            path: PathBuf::from("deny/new_dir"),
+            create_parents: true,
+            ignore_existing: false,
+        },
+    )
+    .expect_err("mkdir should reject denied requested path before creating parents");
+    assert_secret_path_denied(err, PathBuf::from("deny").join("new_dir"));
+    assert!(
+        !dir.path().join("deny").exists(),
+        "mkdir deny path must not create parent directories"
+    );
+}
+
+#[test]
 #[cfg(any(unix, windows))]
 fn mkdir_denies_after_canonicalization_through_symlink_parent() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -145,6 +167,29 @@ fn write_file_denies_secret_requested_path() {
     )
     .expect_err("write_file should reject denied requested path");
     assert_secret_path_denied(err, PathBuf::from("deny").join("new.txt"));
+}
+
+#[test]
+fn write_file_denied_secret_requested_path_does_not_create_parents() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let ctx = ctx_with_deny_glob(dir.path(), WriteScope::WorkspaceWrite);
+    let err = write_file(
+        &ctx,
+        WriteFileRequest {
+            root_id: "root".to_string(),
+            path: PathBuf::from("deny/new.txt"),
+            content: "x".to_string(),
+            overwrite: false,
+            create_parents: true,
+        },
+    )
+    .expect_err("write_file should reject denied requested path before creating parents");
+    assert_secret_path_denied(err, PathBuf::from("deny").join("new.txt"));
+    assert!(
+        !dir.path().join("deny").exists(),
+        "write deny path must not create parent directories"
+    );
 }
 
 #[test]
