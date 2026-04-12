@@ -252,16 +252,16 @@ fn redact_env(env: &[(OsString, OsString)]) -> Vec<(OsString, OsString)> {
 }
 
 fn redact_arg_inline(arg: &str) -> Option<String> {
-    if let Some((flag, _)) = split_flag_assignment(arg) {
-        if is_sensitive_flag_name(flag) {
-            return Some(format!("{flag}={REDACTED}"));
-        }
+    if let Some((flag, _)) = split_flag_assignment(arg)
+        && is_sensitive_flag_name(flag)
+    {
+        return Some(format!("{flag}={REDACTED}"));
     }
 
-    if let Some((name, _)) = split_env_assignment(arg) {
-        if is_sensitive_name(name) {
-            return Some(format!("{name}={REDACTED}"));
-        }
+    if let Some((name, _)) = split_env_assignment(arg)
+        && is_sensitive_name(name)
+    {
+        return Some(format!("{name}={REDACTED}"));
     }
 
     None
