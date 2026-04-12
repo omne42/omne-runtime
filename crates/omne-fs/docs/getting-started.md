@@ -32,7 +32,7 @@ cp policy.example.toml ./policy.toml
 Edit `policy.toml`:
 
 - Set `[[roots]]` `path` to an absolute directory.
-- Choose `write_scope` (`read_only` or `workspace_write`).
+- Choose `write_scope` (`read_only`, `workspace_write`, or `full_access`).
 - Enable only permissions you actually need.
 - Optional: add `[metadata.policy_meta]` only if you want to carry shared descriptive metadata for
   other tools. `omne-fs` does not use that section for enforcement.
