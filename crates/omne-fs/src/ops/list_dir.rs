@@ -371,11 +371,15 @@ fn relative_entry_path_for_deny<'a>(relative_dir: &Path, name: &'a OsStr) -> Cow
 fn is_list_dir_truncated(
     max_entries: usize,
     zero_limit_truncated: bool,
+    scan_budget_truncated: bool,
     response_budget_truncated: bool,
     matched_entries: usize,
     skipped_io_errors: u64,
     materialized_entries: usize,
 ) -> bool {
+    if scan_budget_truncated {
+        return true;
+    }
     if response_budget_truncated {
         return true;
     }
@@ -390,39 +394,63 @@ fn is_list_dir_truncated(
     hit_entry_limit || incomplete_due_to_io || incomplete_due_to_materialization
 }
 
-fn scan_count_only_entries_without_deny_globs(read_dir: fs::ReadDir) -> (bool, u64) {
+#[inline]
+fn consume_scan_budget(scanned_entries: &mut u64, max_walk_entries: u64) -> bool {
+    if *scanned_entries >= max_walk_entries {
+        return false;
+    }
+    *scanned_entries = scanned_entries.saturating_add(1);
+    true
+}
+
+fn scan_count_only_entries_without_deny_globs(
+    read_dir: fs::ReadDir,
+    max_walk_entries: u64,
+) -> (bool, u64, bool) {
     let mut skipped_io_errors: u64 = 0;
+    let mut scanned_entries: u64 = 0;
     for entry in read_dir {
+        if !consume_scan_budget(&mut scanned_entries, max_walk_entries) {
+            return (false, skipped_io_errors, true);
+        }
         match entry {
             Ok(_) => {
                 // With `max_entries=0`, callers only need to know whether any visible entry
                 // exists. Without deny rules, a successful `read_dir` entry is sufficient.
-                return (true, skipped_io_errors);
+                return (true, skipped_io_errors, false);
             }
             Err(_) => {
                 skipped_io_errors = skipped_io_errors.saturating_add(1);
             }
         }
     }
-    (false, skipped_io_errors)
+    (false, skipped_io_errors, false)
 }
 
 fn scan_count_only_entries(
     ctx: &Context,
     read_dir: fs::ReadDir,
+    max_walk_entries: u64,
     has_deny_globs: bool,
     relative_is_root: bool,
     relative_dir: &Path,
     mut deny_path_scratch: Option<&mut PathBuf>,
-) -> Result<(bool, u64)> {
+) -> Result<(bool, u64, bool)> {
     if !has_deny_globs {
-        return Ok(scan_count_only_entries_without_deny_globs(read_dir));
+        return Ok(scan_count_only_entries_without_deny_globs(
+            read_dir,
+            max_walk_entries,
+        ));
     }
 
     let mut zero_limit_truncated = false;
     let mut skipped_io_errors: u64 = 0;
+    let mut scanned_entries: u64 = 0;
 
     for entry in read_dir {
+        if !consume_scan_budget(&mut scanned_entries, max_walk_entries) {
+            return Ok((zero_limit_truncated, skipped_io_errors, true));
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(_) => {
@@ -448,7 +476,7 @@ fn scan_count_only_entries(
         }
     }
 
-    Ok((zero_limit_truncated, skipped_io_errors))
+    Ok((zero_limit_truncated, skipped_io_errors, false))
 }
 
 pub fn list_dir(ctx: &Context, request: ListDirRequest) -> Result<ListDirResponse> {
@@ -459,6 +487,7 @@ pub fn list_dir(ctx: &Context, request: ListDirRequest) -> Result<ListDirRespons
         .unwrap_or(ctx.policy.limits.max_results)
         .min(ctx.policy.limits.max_results);
     let max_entries = runtime_max_entries_cap(requested_max_entries);
+    let max_walk_entries = u64::try_from(ctx.policy.limits.max_walk_entries).unwrap_or(u64::MAX);
 
     let (dir, relative_dir, requested_path) =
         ctx.canonical_path_in_root(&request.root_id, &request.path)?;
@@ -481,9 +510,11 @@ pub fn list_dir(ctx: &Context, request: ListDirRequest) -> Result<ListDirRespons
     ensure_directory_identity_unchanged(&dir, &relative_dir, &meta)?;
 
     if max_entries == 0 {
-        let (zero_limit_truncated, skipped_io_errors) = scan_count_only_entries(
+        let (zero_limit_truncated, skipped_io_errors, scan_budget_truncated) =
+            scan_count_only_entries(
             ctx,
             read_dir,
+            max_walk_entries,
             has_deny_globs,
             relative_is_root,
             &relative_dir,
@@ -494,6 +525,7 @@ pub fn list_dir(ctx: &Context, request: ListDirRequest) -> Result<ListDirRespons
         let truncated = is_list_dir_truncated(
             max_entries,
             zero_limit_truncated,
+            scan_budget_truncated,
             false,
             0,
             skipped_io_errors,
@@ -511,8 +543,14 @@ pub fn list_dir(ctx: &Context, request: ListDirRequest) -> Result<ListDirRespons
     let mut heap = BinaryHeap::<Candidate>::with_capacity(initial_heap_capacity(max_entries));
     let mut matched_entries: usize = 0;
     let mut skipped_io_errors: u64 = 0;
+    let mut scanned_entries: u64 = 0;
+    let mut scan_budget_truncated = false;
 
     for entry in read_dir {
+        if !consume_scan_budget(&mut scanned_entries, max_walk_entries) {
+            scan_budget_truncated = true;
+            break;
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(_) => {
@@ -602,6 +640,7 @@ pub fn list_dir(ctx: &Context, request: ListDirRequest) -> Result<ListDirRespons
     let truncated = is_list_dir_truncated(
         max_entries,
         false,
+        scan_budget_truncated,
         response_budget_truncated,
         matched_entries,
         skipped_io_errors,
@@ -741,6 +780,7 @@ mod tests {
             capped,
             false,
             false,
+            false,
             capped.saturating_add(1),
             0,
             capped
@@ -812,34 +852,40 @@ mod tests {
 
     #[test]
     fn truncated_when_visible_entries_exceed_limit() {
-        assert!(is_list_dir_truncated(2, false, false, 3, 0, 2));
+        assert!(is_list_dir_truncated(2, false, false, false, 3, 0, 2));
     }
 
     #[test]
     fn not_truncated_when_within_limit_and_no_io_losses() {
-        assert!(!is_list_dir_truncated(3, false, false, 2, 0, 2));
+        assert!(!is_list_dir_truncated(3, false, false, false, 2, 0, 2));
     }
 
     #[test]
     fn truncated_when_metadata_losses_drop_entries_under_limit() {
-        assert!(is_list_dir_truncated(4, false, false, 2, 1, 1));
+        assert!(is_list_dir_truncated(4, false, false, false, 2, 1, 1));
     }
 
     #[test]
     fn truncated_when_read_dir_losses_occur_within_limit() {
-        assert!(is_list_dir_truncated(4, false, false, 2, 1, 2));
+        assert!(is_list_dir_truncated(4, false, false, false, 2, 1, 2));
     }
 
     #[test]
     fn truncated_when_response_budget_is_hit() {
-        assert!(is_list_dir_truncated(4, false, true, 2, 0, 2));
+        assert!(is_list_dir_truncated(4, false, false, true, 2, 0, 2));
+    }
+
+    #[test]
+    fn truncated_when_scan_budget_is_hit() {
+        assert!(is_list_dir_truncated(4, false, true, false, 2, 0, 2));
     }
 
     #[test]
     fn zero_max_entries_uses_zero_limit_flag() {
-        assert!(!is_list_dir_truncated(0, false, false, 0, 0, 0));
-        assert!(is_list_dir_truncated(0, true, false, 0, 0, 0));
-        assert!(is_list_dir_truncated(0, false, false, 0, 1, 0));
+        assert!(!is_list_dir_truncated(0, false, false, false, 0, 0, 0));
+        assert!(is_list_dir_truncated(0, true, false, false, 0, 0, 0));
+        assert!(is_list_dir_truncated(0, false, true, false, 0, 0, 0));
+        assert!(is_list_dir_truncated(0, false, false, false, 0, 1, 0));
     }
 
     #[test]
@@ -848,10 +894,11 @@ mod tests {
         std::fs::write(dir.path().join("visible.txt"), "x").expect("write");
         let read_dir = std::fs::read_dir(dir.path()).expect("read_dir");
 
-        let (zero_limit_truncated, skipped_io_errors) =
-            scan_count_only_entries_without_deny_globs(read_dir);
+        let (zero_limit_truncated, skipped_io_errors, scan_budget_truncated) =
+            scan_count_only_entries_without_deny_globs(read_dir, 1);
         assert!(zero_limit_truncated);
         assert_eq!(skipped_io_errors, 0);
+        assert!(!scan_budget_truncated);
     }
 
     #[test]
@@ -859,10 +906,24 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let read_dir = std::fs::read_dir(dir.path()).expect("read_dir");
 
-        let (zero_limit_truncated, skipped_io_errors) =
-            scan_count_only_entries_without_deny_globs(read_dir);
+        let (zero_limit_truncated, skipped_io_errors, scan_budget_truncated) =
+            scan_count_only_entries_without_deny_globs(read_dir, 1);
         assert!(!zero_limit_truncated);
         assert_eq!(skipped_io_errors, 0);
+        assert!(!scan_budget_truncated);
+    }
+
+    #[test]
+    fn count_only_scan_without_deny_globs_truncates_when_scan_budget_is_zero() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("visible.txt"), "x").expect("write");
+        let read_dir = std::fs::read_dir(dir.path()).expect("read_dir");
+
+        let (zero_limit_truncated, skipped_io_errors, scan_budget_truncated) =
+            scan_count_only_entries_without_deny_globs(read_dir, 0);
+        assert!(!zero_limit_truncated);
+        assert_eq!(skipped_io_errors, 0);
+        assert!(scan_budget_truncated);
     }
 
     #[test]

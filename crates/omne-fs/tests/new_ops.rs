@@ -166,6 +166,31 @@ fn list_dir_allows_zero_max_entries() {
 }
 
 #[test]
+fn list_dir_truncates_when_scan_budget_is_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("a.txt"), "a").expect("write");
+    std::fs::write(dir.path().join("b.txt"), "b").expect("write");
+
+    let mut policy = test_policy(dir.path(), WriteScope::ReadOnly);
+    policy.limits.max_walk_entries = 1;
+    policy.limits.max_walk_files = 1;
+    let ctx = Context::new(policy).expect("ctx");
+    let resp = list_dir(
+        &ctx,
+        ListDirRequest {
+            root_id: "root".to_string(),
+            path: PathBuf::from("."),
+            max_entries: Some(8),
+        },
+    )
+    .expect("list");
+
+    assert!(resp.truncated);
+    assert_eq!(resp.entries.len(), 1);
+    assert_eq!(resp.skipped_io_errors, 0);
+}
+
+#[test]
 fn stat_reports_file_metadata() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.txt"), "hi").expect("write");

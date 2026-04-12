@@ -40,6 +40,7 @@ Notes:
 
 - Lists direct children, sorted deterministically.
 - `max_entries` is capped by `limits.max_results` and an internal runtime cap (`100_000`) to bound retained top-k memory during very large directory scans.
+- Direct-child enumeration also consumes `limits.max_walk_entries`; if that scan budget is exhausted, the call stops early and reports `truncated=true`.
 - If either cap is hit, `truncated=true` indicates that more visible entries existed than were returned.
 - `max_entries=0` is valid and returns count-only style behavior with empty entries.
 

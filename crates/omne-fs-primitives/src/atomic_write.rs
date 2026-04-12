@@ -107,6 +107,14 @@ pub enum AtomicDirectoryError {
         path: PathBuf,
         source: io::Error,
     },
+    RollbackFailed {
+        op: &'static str,
+        path: PathBuf,
+        backup_path: PathBuf,
+        source: io::Error,
+        staged_cleanup_path: Option<PathBuf>,
+        staged_cleanup_source: Option<io::Error>,
+    },
     Validation(String),
 }
 
@@ -152,6 +160,24 @@ impl AtomicDirectoryError {
             source,
         }
     }
+
+    fn rollback_failed(
+        op: &'static str,
+        path: &Path,
+        backup_path: PathBuf,
+        source: io::Error,
+        staged_cleanup_path: Option<PathBuf>,
+        staged_cleanup_source: Option<io::Error>,
+    ) -> Self {
+        Self::RollbackFailed {
+            op,
+            path: path.to_path_buf(),
+            backup_path,
+            source,
+            staged_cleanup_path,
+            staged_cleanup_source,
+        }
+    }
 }
 
 impl fmt::Display for AtomicWriteError {
@@ -186,6 +212,31 @@ impl fmt::Display for AtomicDirectoryError {
                 "filesystem update committed but cleanup failed during {op} ({}): {source}",
                 path.display()
             ),
+            Self::RollbackFailed {
+                op,
+                path,
+                backup_path,
+                source,
+                staged_cleanup_path,
+                staged_cleanup_source,
+            } => {
+                write!(
+                    f,
+                    "atomic directory replace failed during {op} ({}); original directory remains recoverable at {}: {source}",
+                    path.display(),
+                    backup_path.display()
+                )?;
+                if let (Some(cleanup_path), Some(cleanup_source)) =
+                    (staged_cleanup_path, staged_cleanup_source)
+                {
+                    write!(
+                        f,
+                        "; cleanup staged directory `{}` failed: {cleanup_source}",
+                        cleanup_path.display()
+                    )?;
+                }
+                Ok(())
+            }
             Self::Validation(message) => write!(f, "{message}"),
         }
     }
@@ -205,7 +256,8 @@ impl std::error::Error for AtomicDirectoryError {
         match self {
             Self::IoPath { source, .. }
             | Self::CommittedButUnsynced { source, .. }
-            | Self::CommittedButCleanupFailed { source, .. } => Some(source),
+            | Self::CommittedButCleanupFailed { source, .. }
+            | Self::RollbackFailed { source, .. } => Some(source),
             Self::Validation(_) => None,
         }
     }
@@ -721,17 +773,28 @@ fn commit_replace_directory(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn commit_replace_directory_with_cleanup_hooks(
+fn commit_replace_directory_with_cleanup_hooks<
+    CreateBackupDir,
+    MoveExistingToBackup,
+    BackupRootCleanup,
+    StagedCleanup,
+>(
     parent_root: &RootDir,
     staged_leaf: &Path,
     destination_leaf: &Path,
     destination: &Path,
     options: &AtomicDirectoryOptions,
-    create_backup_dir: fn(&RootDir) -> io::Result<RootDir>,
-    move_existing_to_backup: fn(&RootDir, &Path, &RootDir) -> io::Result<()>,
-    backup_root_cleanup: fn(RootDir) -> io::Result<()>,
-    staged_cleanup: fn(&RootDir, &Path) -> io::Result<()>,
-) -> Result<(), AtomicDirectoryError> {
+    create_backup_dir: CreateBackupDir,
+    move_existing_to_backup: MoveExistingToBackup,
+    backup_root_cleanup: BackupRootCleanup,
+    staged_cleanup: StagedCleanup,
+) -> Result<(), AtomicDirectoryError>
+where
+    CreateBackupDir: Fn(&RootDir) -> io::Result<RootDir>,
+    MoveExistingToBackup: Fn(&RootDir, &Path, &RootDir) -> io::Result<()>,
+    BackupRootCleanup: Fn(RootDir) -> io::Result<()>,
+    StagedCleanup: Fn(&RootDir, &Path) -> io::Result<()>,
+{
     let mut backup_root = None;
 
     if options.overwrite_existing {
@@ -777,25 +840,34 @@ fn commit_replace_directory_with_cleanup_hooks(
         .dir()
         .rename(staged_leaf, parent_root.dir(), destination_leaf)
     {
+        let staged_cleanup_path = parent_root.path().join(staged_leaf);
         let staged_cleanup_error = staged_cleanup(parent_root, staged_leaf).err();
-        let restore_error = match backup_root.as_ref() {
-            Some(holder) => holder
-                .dir()
-                .rename(Path::new("previous"), parent_root.dir(), destination_leaf)
-                .err(),
+        let restore_outcome = match backup_root.as_ref() {
+            Some(holder) => {
+                let backup_path = holder.path().join("previous");
+                let restore_error = holder
+                    .dir()
+                    .rename(Path::new("previous"), parent_root.dir(), destination_leaf)
+                    .err();
+                Some((backup_path, restore_error))
+            }
             None => None,
         };
         let mut error = AtomicDirectoryError::io_path("rename_staged", destination, err);
+        if let Some((backup_path, Some(restore_error))) = restore_outcome {
+            return Err(AtomicDirectoryError::rollback_failed(
+                "restore_existing",
+                destination,
+                backup_path,
+                restore_error,
+                staged_cleanup_error.as_ref().map(|_| staged_cleanup_path),
+                staged_cleanup_error,
+            ));
+        }
         if let Some(staged_cleanup_error) = staged_cleanup_error {
             error = AtomicDirectoryError::Validation(format!(
                 "{error}; cleanup staged directory `{}` failed: {staged_cleanup_error}",
-                parent_root.path().join(staged_leaf).display()
-            ));
-        }
-        if let Some(restore_error) = restore_error {
-            error = AtomicDirectoryError::Validation(format!(
-                "{error}; restore existing directory `{}` failed: {restore_error}",
-                destination.display()
+                staged_cleanup_path.display()
             ));
         }
         return Err(error);
@@ -1252,6 +1324,72 @@ mod tests {
             "failing cleanup hook should leave staged tree behind"
         );
         assert!(blocker.is_file(), "rename blocker must remain in place");
+    }
+
+    #[test]
+    fn staged_atomic_directory_reports_recoverable_backup_path_when_restore_fails() {
+        use std::cell::RefCell;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tree");
+        std::fs::create_dir_all(&destination).expect("mkdir destination");
+        std::fs::write(destination.join("old.txt"), b"old").expect("seed file");
+
+        let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+            .expect("stage directory");
+        std::fs::write(staged.path().join("new.txt"), b"new").expect("write staged file");
+        let backup_holder =
+            super::create_backup_directory_in_root(&staged.parent_root).expect("backup holder");
+        let expected_backup_path = backup_holder.path().join("previous");
+        let backup_holder = RefCell::new(Some(backup_holder));
+
+        let err = super::commit_replace_directory_with_cleanup_hooks(
+            &staged.parent_root,
+            &staged.staged_leaf,
+            &staged.destination_leaf,
+            &destination,
+            &staged.options,
+            move |_| {
+                backup_holder
+                    .borrow_mut()
+                    .take()
+                    .ok_or_else(|| std::io::Error::other("backup holder already consumed"))
+            },
+            |parent_root, destination_leaf, holder| {
+                super::move_existing_directory_to_backup(parent_root, destination_leaf, holder)?;
+                std::fs::write(parent_root.path().join(destination_leaf), b"blocker")?;
+                Ok(())
+            },
+            super::remove_backup_root,
+            super::remove_staged_directory,
+        )
+        .expect_err("restore failure should expose backup path");
+
+        match err {
+            super::AtomicDirectoryError::RollbackFailed {
+                op,
+                path,
+                backup_path,
+                source,
+                staged_cleanup_path,
+                staged_cleanup_source,
+            } => {
+                assert_eq!(op, "restore_existing");
+                assert_eq!(path, destination);
+                assert_eq!(backup_path, expected_backup_path);
+                assert!(matches!(
+                    source.kind(),
+                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotADirectory
+                ));
+                assert!(staged_cleanup_path.is_none());
+                assert!(staged_cleanup_source.is_none());
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        assert!(expected_backup_path.join("old.txt").is_file());
+        assert!(!staged.path().exists(), "staged directory should still be cleaned up");
+        assert!(destination.is_file(), "restore blocker should remain in place");
     }
 
     #[cfg(unix)]
