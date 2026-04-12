@@ -3069,10 +3069,15 @@ mod tests {
 
     #[test]
     fn detects_versioned_and_variant_opaque_launchers() {
+        assert!(uses_opaque_command_launcher(OsStr::new("python311")));
         assert!(uses_opaque_command_launcher(OsStr::new("python3.12")));
+        assert!(uses_opaque_command_launcher(OsStr::new("pythonw3.11")));
+        assert!(uses_opaque_command_launcher(OsStr::new("pip311")));
         assert!(uses_opaque_command_launcher(OsStr::new("pip3.12")));
         assert!(uses_opaque_command_launcher(OsStr::new("nodejs")));
         assert!(!uses_opaque_command_launcher(OsStr::new("python-config")));
+        assert!(!uses_opaque_command_launcher(OsStr::new("pythonx3.11")));
+        assert!(!uses_opaque_command_launcher(OsStr::new("pip-tools")));
     }
 
     #[cfg(unix)]
@@ -3263,6 +3268,33 @@ mod tests {
     fn denies_versioned_python_launcher_when_explicitly_allowlisted_for_non_mutation() {
         let workspace = tempdir().expect("create temp workspace");
         let program = variant_opaque_program_path(&workspace, "python3.12");
+        write_test_executable_placeholder(&program);
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
+        let request = ExecRequest::new(
+            &program,
+            vec![interpreter_inline_flag(), "print('hello')"],
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("opaque_command_forbidden"));
+    }
+
+    #[test]
+    fn denies_versioned_pythonw_launcher_when_explicitly_allowlisted_for_non_mutation() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = variant_opaque_program_path(&workspace, "pythonw3.11");
         write_test_executable_placeholder(&program);
         let policy = GatewayPolicy {
             non_mutating_program_allowlist: vec![program.display().to_string()],

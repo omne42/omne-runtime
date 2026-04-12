@@ -7,9 +7,8 @@ use std::process::{ExitCode, ExitStatus};
 
 use omne_execution_gateway::{
     ExecError, ExecEvent, ExecGateway, ExecRequest, ExecResult, ExecutionOutcome, GatewayPolicy,
-    RequestResolution, RequestedIsolationSource, requested_policy_meta,
+    RequestResolution, RequestedIsolationSource, read_utf8_regular_file, requested_policy_meta,
 };
-use omne_fs_primitives::{ReadUtf8Error, read_utf8_regular_file_in_ambient_root};
 use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
 
@@ -149,25 +148,15 @@ fn build_exec_request(
 }
 
 fn load_request(path: &Path) -> Result<ExecRequestWire, String> {
-    let content =
-        read_utf8_regular_file_in_ambient_root(path, "execution request", MAX_REQUEST_JSON_BYTES)
-            .map_err(map_read_utf8_error)
-            .map_err(|err| format!("failed to read request {}: {err}", path.display()))?;
+    let content = read_utf8_regular_file(
+        path,
+        "execution request",
+        MAX_REQUEST_JSON_BYTES,
+        "request file",
+    )
+    .map_err(|err| format!("failed to read request {}: {err}", path.display()))?;
     serde_json::from_str(&content)
         .map_err(|e| format!("invalid request json {}: {e}", path.display()))
-}
-
-fn map_read_utf8_error(err: ReadUtf8Error) -> std::io::Error {
-    match err {
-        ReadUtf8Error::Io(err) => err,
-        ReadUtf8Error::TooLarge { bytes, max_bytes } => std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("request file exceeds size limit ({bytes} > {max_bytes} bytes)"),
-        ),
-        ReadUtf8Error::InvalidUtf8(err) => {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, err)
-        }
-    }
 }
 
 fn exec_output_from_result(

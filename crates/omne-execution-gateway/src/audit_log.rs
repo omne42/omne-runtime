@@ -5,13 +5,13 @@ use std::process::ExitStatus;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
-use omne_fs_primitives::open_appendable_regular_file_in_ambient_root;
-#[cfg(test)]
-use omne_fs_primitives::validate_appendable_regular_file_in_ambient_root;
 use serde::Serialize;
 
 use crate::audit::ExecEvent;
 use crate::error::{ExecError, ExecResult};
+use crate::open_appendable_regular_file;
+#[cfg(test)]
+use crate::validate_appendable_regular_file;
 
 const APPENDABLE_OPEN_NOT_FOUND_RETRIES: usize = 4;
 
@@ -118,22 +118,11 @@ impl AuditLogger {
 
 #[cfg(test)]
 fn validate_appendable_regular_file_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    validate_absolute_audit_log_path(path)?;
-    validate_appendable_regular_file_in_ambient_root(path, "audit log").map_err(|err| err.into())
+    validate_appendable_regular_file(path, "audit log").map_err(|err| err.into())
 }
 
 fn open_appendable_regular_file_nofollow(path: &Path) -> Result<std::fs::File, std::io::Error> {
-    validate_absolute_audit_log_path(path)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
-    open_appendable_regular_file_in_ambient_root(path, "audit log").map(|file| file.into_std())
-}
-
-fn validate_absolute_audit_log_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    if path.is_absolute() {
-        return Ok(());
-    }
-
-    Err(format!("audit log path must be absolute: {}", path.display()).into())
+    open_appendable_regular_file(path, "audit log")
 }
 
 impl PreparedAuditSink {

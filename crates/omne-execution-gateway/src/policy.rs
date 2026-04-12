@@ -3,9 +3,10 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
-use omne_fs_primitives::{ReadUtf8Error, read_utf8_regular_file_in_ambient_root};
 use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
+
+use crate::read_utf8_regular_file;
 
 const MAX_POLICY_JSON_BYTES: usize = 1024 * 1024;
 
@@ -85,23 +86,15 @@ impl GatewayPolicy {
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
         let path = path.as_ref();
-        let content =
-            read_utf8_regular_file_in_ambient_root(path, "gateway policy", MAX_POLICY_JSON_BYTES)
-                .map_err(map_read_utf8_error)?;
+        let content = read_utf8_regular_file(
+            path,
+            "gateway policy",
+            MAX_POLICY_JSON_BYTES,
+            "policy file",
+        )?;
         let policy = serde_json::from_str::<Self>(&content)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
         Ok(policy)
-    }
-}
-
-fn map_read_utf8_error(err: ReadUtf8Error) -> io::Error {
-    match err {
-        ReadUtf8Error::Io(err) => err,
-        ReadUtf8Error::TooLarge { bytes, max_bytes } => io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("policy file exceeds size limit ({bytes} > {max_bytes} bytes)"),
-        ),
-        ReadUtf8Error::InvalidUtf8(err) => io::Error::new(io::ErrorKind::InvalidData, err),
     }
 }
 

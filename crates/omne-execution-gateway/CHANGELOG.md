@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- route policy/request JSON reads plus audit-log sink validation through one crate-local
+  no-follow regular-file helper, and pin extra `python311` / `pythonw3.11` / `pip311` launcher
+  coverage so execution-gateway cannot quietly drift back into duplicated file-boundary logic or
+  miss versioned interpreter-family aliases in mutation gating
 - add regression coverage proving audit-log, policy, and CLI request file inputs also reject
   unnormalized absolute paths before any filesystem side effects, so `.` / `..` lexical variants
   cannot quietly reopen ancestor traversal around the shared no-follow file boundary
