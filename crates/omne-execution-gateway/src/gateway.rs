@@ -3318,7 +3318,10 @@ mod tests {
             }),
         };
 
-        assert_eq!(outcome.completed_status().and_then(ExitStatus::code), Some(0));
+        assert_eq!(
+            outcome.completed_status().and_then(ExitStatus::code),
+            Some(0)
+        );
         assert!(outcome.command_completed_successfully());
     }
 
