@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- require Windows command probes to honor `PATHEXT`, so plain files without an executable suffix are not reported as spawnable commands
 - add `std::process::Command` / PID-friendly process-tree configuration and cleanup entry points alongside the existing tokio-facing API, so callers can reuse the same Unix dedicated-process-group and Linux fail-closed cleanup semantics without binding their public boundary to `tokio::process`
 - require Linux process-tree cleanup capture to confirm the `/proc` identity is still parented by the current process (`ppid` check) so rapid PID reuse cannot arm cleanup against an unrelated process group
 - pin the elevated sudo target `PATH` to trusted standard directories instead of replaying request-controlled `PATH`, so auto-sudo package-manager runs cannot reintroduce caller-chosen root search paths after launcher/target resolution has already been hardened
