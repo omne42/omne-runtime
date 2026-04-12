@@ -111,9 +111,9 @@ pub enum AtomicDirectoryError {
         op: &'static str,
         path: PathBuf,
         backup_path: PathBuf,
-        source: io::Error,
+        source: Box<io::Error>,
         staged_cleanup_path: Option<PathBuf>,
-        staged_cleanup_source: Option<io::Error>,
+        staged_cleanup_source: Option<Box<io::Error>>,
     },
     Validation(String),
 }
@@ -173,9 +173,9 @@ impl AtomicDirectoryError {
             op,
             path: path.to_path_buf(),
             backup_path,
-            source,
+            source: Box::new(source),
             staged_cleanup_path,
-            staged_cleanup_source,
+            staged_cleanup_source: staged_cleanup_source.map(Box::new),
         }
     }
 }
@@ -256,8 +256,8 @@ impl std::error::Error for AtomicDirectoryError {
         match self {
             Self::IoPath { source, .. }
             | Self::CommittedButUnsynced { source, .. }
-            | Self::CommittedButCleanupFailed { source, .. }
-            | Self::RollbackFailed { source, .. } => Some(source),
+            | Self::CommittedButCleanupFailed { source, .. } => Some(source),
+            Self::RollbackFailed { source, .. } => Some(source.as_ref()),
             Self::Validation(_) => None,
         }
     }
