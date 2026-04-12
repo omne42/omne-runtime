@@ -14,7 +14,7 @@
 - 对宿主命令 request/recipe 维持 `OsStr` / `OsString` 边界，不把 argv/env 先强制收窄成 UTF-8 `String`。
 - 运行宿主机命令并捕获输出；捕获实现以临时文件为边界，因此 direct child 退出后不会再被继续持有 stdout/stderr 的后台后代进程永久卡住；当 stdout/stderr 超过上限且 direct child 仍在运行时，会先 best-effort 终止 child，并把 direct child 的 reap 放到后台完成，再返回超限错误，避免持续输出命令在超限路径上卡死。
 - 在调用方显式声明时，对宿主机命令执行应用 request-scoped env removal、hard timeout 和 per-stream capture limit；timeout 命中后会 best-effort 终止 direct child，并把已捕获的 bounded stdout/stderr 一并回传给上层。默认便利 API 仍保留 8 MiB/stream 的保守上限，但调用方可以显式收紧、放宽或关闭这个上限。
-- 当 request 显式提供 env 列表时，direct execution 仍保留既有的“继承 ambient env 后再叠加 request env”的模型；sudo 路径现在也会通过受信任的 `env -i` 包装器显式重建同一套 inherited-plus-request overlay，并继续应用 request-scoped env removal，避免同一个 request env contract 因是否触发 sudo 而漂移成两套语义。
+- 当 request 显式提供 env 列表时，direct execution 仍保留既有的“继承 ambient env 后再叠加 request env”的模型；sudo 路径会通过受信任的 `env -i` 包装器显式重建同一套 overlay，但会把 elevated target 的 `PATH` 固定为受信任标准目录并继续应用 request-scoped env removal，避免同一个 request env contract 因是否触发 sudo 而漂移成两套语义，同时不把 caller-controlled 搜索路径带进 root 侧。
 - 把“命令根本没能启动”与“命令已执行但输出采集失败”区分成不同错误面，避免把 capture-limit/读取失败错误错误归类成 `SpawnFailed`。
 - 把“命令超时被终止”与“命令启动失败/输出采集失败”继续分开建模，避免调用方只能从字符串猜测 timeout。
 - 对显式相对程序路径要求调用方显式提供 `working_directory` 作为解析基准；如果 request 没给这个基准，本 crate 会 fail closed，而不是偷偷退回调用方进程的 ambient cwd。
@@ -28,7 +28,7 @@
 - 如果 request 提供的 `working_directory` 本身缺失或不是目录，本 crate 也会保留原始
   `SpawnFailed`，不会因为相对程序路径在那个无效 cwd 下同样“找不到”就误报成
   `CommandNotFound`。
-- 当命中 `sudo` 路径时，提权链路会固定执行受信任标准目录里的 `sudo`、`env -i` 和目标命令绝对路径，并把 direct 路径同款的 inherited-plus-request overlay 环境显式重放给 elevated target；这样 request env 语义不会因为是否提权而静默消失，同时 command resolution 仍继续绑定在受信任的 control-plane 路径上，不依赖 `sudo` `secure_path` 或 ambient `PATH` 做 target 选择。
+- 当命中 `sudo` 路径时，提权链路会固定执行受信任标准目录里的 `sudo`、`env -i` 和目标命令绝对路径，并把 non-`PATH` 的 inherited-plus-request overlay 环境显式重放给 elevated target；`PATH` 本身则固定成受信任标准目录集合。这样 request env 语义不会因为是否提权而静默消失，同时 command resolution 和 root 侧后续 helper 搜索都继续绑定在受信任的 control-plane 路径上，不依赖 `sudo` `secure_path`、ambient `PATH` 或 request `PATH`。
 - `sudo` 可用性判定、`sudo` 可执行路径选择、提权边界里的 `env` scrubber 选择以及提权后的 bare target 解析都不使用 request 里显式覆盖的 `PATH`，也不信任 ambient `PATH` 里的 shadow binary；这些 control-plane 程序只会从受信任的标准安装目录解析。
 - 相对地，direct bare command 的解析仍会沿用 request 显式覆盖的 `PATH`；这条 direct-resolution 语义与 sudo control-plane 解析是两条不同的 trust boundary，回归测试会分别钉住，避免未来重构把两者重新混成同一条查找规则。
 - 对需要走 `IfNonRootSystemCommand` 的请求，如果当前进程是 non-root 但受信任标准目录里根本解析不到 `sudo`，本 crate 会在本地直接 fail closed，而不是静默退回 direct execution 把“缺少提权能力”伪装成目标命令自己的失败。
