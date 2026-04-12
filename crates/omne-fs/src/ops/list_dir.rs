@@ -512,14 +512,14 @@ pub fn list_dir(ctx: &Context, request: ListDirRequest) -> Result<ListDirRespons
     if max_entries == 0 {
         let (zero_limit_truncated, skipped_io_errors, scan_budget_truncated) =
             scan_count_only_entries(
-            ctx,
-            read_dir,
-            max_walk_entries,
-            has_deny_globs,
-            relative_is_root,
-            &relative_dir,
-            deny_path_scratch.as_mut(),
-        )?;
+                ctx,
+                read_dir,
+                max_walk_entries,
+                has_deny_globs,
+                relative_is_root,
+                &relative_dir,
+                deny_path_scratch.as_mut(),
+            )?;
         ensure_directory_identity_unchanged(&dir, &relative_dir, &meta)?;
 
         let truncated = is_list_dir_truncated(
