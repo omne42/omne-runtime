@@ -96,4 +96,76 @@ pub enum ExecError {
     Spawn(#[source] std::io::Error),
 }
 
+impl ExecError {
+    /// Returns the child status when execution already completed but persisting the terminal audit
+    /// record failed afterwards.
+    #[must_use]
+    pub fn completed_status(&self) -> Option<&ExitStatus> {
+        match self {
+            Self::AuditLogWriteFailedAfterExecutionSuccess { status, .. } => Some(status),
+            _ => None,
+        }
+    }
+
+    /// Returns whether the child already completed successfully before the audit write failed.
+    #[must_use]
+    pub fn command_completed_successfully(&self) -> bool {
+        self.completed_status().is_some_and(ExitStatus::success)
+    }
+}
+
 pub type ExecResult<T> = std::result::Result<T, ExecError>;
+
+#[cfg(test)]
+mod tests {
+    use super::ExecError;
+    use std::path::PathBuf;
+    use std::process::{Command, ExitStatus};
+
+    #[cfg(windows)]
+    fn exit_status_from_code(code: i32) -> ExitStatus {
+        Command::new("cmd")
+            .args(["/C", &format!("exit {code}")])
+            .status()
+            .expect("run cmd exit")
+    }
+
+    #[cfg(not(windows))]
+    fn exit_status_from_code(code: i32) -> ExitStatus {
+        Command::new("sh")
+            .args(["-c", &format!("exit {code}")])
+            .status()
+            .expect("run sh exit")
+    }
+
+    #[test]
+    fn completed_status_is_exposed_for_post_execution_audit_failures() {
+        let err = ExecError::AuditLogWriteFailedAfterExecutionSuccess {
+            path: PathBuf::from("audit.jsonl"),
+            detail: "disk full".to_string(),
+            status: exit_status_from_code(7),
+        };
+
+        assert_eq!(err.completed_status().and_then(ExitStatus::code), Some(7));
+        assert!(!err.command_completed_successfully());
+    }
+
+    #[test]
+    fn completed_status_is_absent_for_pre_execution_failures() {
+        let err = ExecError::PolicyDenied("denied".to_string());
+
+        assert!(err.completed_status().is_none());
+        assert!(!err.command_completed_successfully());
+    }
+
+    #[test]
+    fn command_completed_successfully_reports_zero_exit_status() {
+        let err = ExecError::AuditLogWriteFailedAfterExecutionSuccess {
+            path: PathBuf::from("audit.jsonl"),
+            detail: "disk full".to_string(),
+            status: exit_status_from_code(0),
+        };
+
+        assert!(err.command_completed_successfully());
+    }
+}

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- expose `ExecError::completed_status()` / `command_completed_successfully()` plus matching
+  `ExecutionOutcome` helpers, and document that audit persistence stays bound to the descriptor
+  opened during preparation, so callers can distinguish "command already ran" from
+  "command should be retried" without reopening the audit-path race window
 - keep mutation enforcement fail-closed for explicit unknown executables labeled
   `declared_mutation = false`, and pin regression coverage proving only explicit
   `non_mutating_program_allowlist` entries can authorize those read-only requests
