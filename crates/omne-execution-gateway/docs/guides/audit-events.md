@@ -59,5 +59,8 @@ enforcement state without changing the audit contract.
 The audit sink itself is fail-closed: the gateway rejects symlinked audit files, special files,
 and paths that fail the shared descriptor-backed ambient-root no-follow checks, including
 symlinked parent directories.
+That descriptor-backed open is the authoritative safety boundary for audit persistence; once
+preparation succeeds, the gateway keeps writing through the already-open file handle instead of
+reopening the path after execution.
 If the final audit write fails after a command has already failed for another reason, the surfaced
 audit error includes the original execution error summary so callers do not lose that context.

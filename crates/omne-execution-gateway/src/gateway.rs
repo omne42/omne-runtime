@@ -92,6 +92,21 @@ pub struct PreparedCommand {
 }
 
 impl ExecutionOutcome {
+    /// Returns the child status for both plain success and "audit write failed after success".
+    #[must_use]
+    pub fn completed_status(&self) -> Option<&ExitStatus> {
+        match &self.result {
+            Ok(status) => Some(status),
+            Err(err) => err.completed_status(),
+        }
+    }
+
+    /// Returns whether the child already completed successfully.
+    #[must_use]
+    pub fn command_completed_successfully(&self) -> bool {
+        self.completed_status().is_some_and(ExitStatus::success)
+    }
+
     pub fn into_parts(self) -> (ExecEvent, ExecResult<ExitStatus>) {
         (self.event, self.result)
     }
@@ -1748,6 +1763,20 @@ mod tests {
         ExitStatus::from_raw(code)
     }
 
+    fn sample_event(program: impl Into<OsString>) -> ExecEvent {
+        let workspace = tempdir().expect("create temp workspace");
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let request = ExecRequest::new(
+            program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+        gateway.evaluate(&request)
+    }
+
     #[cfg(unix)]
     #[test]
     fn opaque_launcher_detection_rejects_non_utf8_basename() {
@@ -3290,6 +3319,24 @@ mod tests {
             }
             other => panic!("unexpected result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn execution_outcome_completed_status_reports_post_execution_audit_failure() {
+        let outcome = ExecutionOutcome {
+            event: sample_event("echo"),
+            result: Err(ExecError::AuditLogWriteFailedAfterExecutionSuccess {
+                path: PathBuf::from("audit.jsonl"),
+                detail: "disk full".to_string(),
+                status: exit_status_from_code(0),
+            }),
+        };
+
+        assert_eq!(
+            outcome.completed_status().and_then(ExitStatus::code),
+            Some(0)
+        );
+        assert!(outcome.command_completed_successfully());
     }
 
     #[test]

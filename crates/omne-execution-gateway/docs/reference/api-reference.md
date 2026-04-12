@@ -128,6 +128,9 @@ record so prepared spawns no longer bypass final audit closure.
 If the command already exits but the terminal audit write fails, `execute()` returns
 `AuditLogWriteFailedAfterExecutionSuccess { status, ... }` so callers can retain the authoritative
 child status instead of collapsing the outcome into an undifferentiated audit-write failure.
+`ExecError::completed_status()` / `command_completed_successfully()` and the matching
+`ExecutionOutcome` helpers expose that "the command already ran" state without forcing every
+caller to pattern-match the audit-failure variant manually.
 
 ## CapabilityReport
 

@@ -90,6 +90,10 @@ impl AuditLogger {
     }
 
     fn try_open_sink(&self) -> Result<PreparedAuditSink, Box<dyn std::error::Error>> {
+        // The descriptor-backed open is the authoritative audit-path boundary. We intentionally do
+        // not rely on a separate path-only readiness check here; the returned handle is retained
+        // through the terminal write so ancestor or leaf path swaps after preparation cannot
+        // redirect the record to a different sink.
         let mut last_not_found = None;
         for attempt in 0..APPENDABLE_OPEN_NOT_FOUND_RETRIES {
             match open_appendable_regular_file_nofollow(&self.path) {
