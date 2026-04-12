@@ -1324,6 +1324,7 @@ mod tests {
         assert!(blocker.is_file(), "rename blocker must remain in place");
     }
 
+    #[cfg(unix)]
     #[test]
     fn staged_atomic_directory_reports_recoverable_backup_path_when_restore_fails() {
         use std::cell::RefCell;
