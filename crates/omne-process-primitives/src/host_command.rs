@@ -1423,7 +1423,6 @@ mod tests {
     use super::run_host_command_with_capture_options;
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
-    #[cfg(unix)]
     use super::trusted_sudo_target_path_var;
     use super::{
         HostCommandCaptureOptions, HostCommandError, HostCommandExecution, HostCommandRequest,
