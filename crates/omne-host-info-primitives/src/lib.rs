@@ -12,6 +12,8 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostOperatingSystem {
@@ -310,7 +312,17 @@ fn host_platform_from_parts(
 
 #[cfg(target_os = "linux")]
 fn detect_host_linux_libc() -> Option<HostLinuxLibc> {
-    detect_host_linux_libc_with_proc_maps(&|| std::fs::read_to_string("/proc/self/maps").ok())
+    detect_host_linux_libc_with(&|path| path.is_file(), &|program, args| {
+        Command::new(program)
+            .args(args)
+            .output()
+            .ok()
+            .map(|output| LinuxCommandOutput {
+                status_success: output.status.success(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            })
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -319,26 +331,60 @@ fn detect_host_linux_libc() -> Option<HostLinuxLibc> {
 }
 
 #[cfg(target_os = "linux")]
-fn detect_host_linux_libc_with_proc_maps<ProcMapsReader>(
-    proc_maps_reader: &ProcMapsReader,
-) -> Option<HostLinuxLibc>
-where
-    ProcMapsReader: Fn() -> Option<String>,
-{
-    proc_maps_reader()
-        .as_deref()
-        .map(detect_host_linux_libc_from_proc_maps)
-        .unwrap_or(LinuxLibcDetection::Unavailable)
-        .into_option()
+#[derive(Debug, Clone)]
+struct LinuxCommandOutput {
+    status_success: bool,
+    stdout: String,
+    stderr: String,
 }
 
 #[cfg(target_os = "linux")]
-fn detect_host_linux_libc_from_proc_maps(proc_maps: &str) -> LinuxLibcDetection {
-    let normalized = proc_maps.to_ascii_lowercase();
-    let musl_marker_present = normalized.contains("ld-musl-") || normalized.contains("libc.musl-");
-    let gnu_marker_present = normalized.contains("ld-linux-") || normalized.contains("libc.so.6");
+fn detect_host_linux_libc_with<PathExists, RunCommand>(
+    path_exists: &PathExists,
+    run_command: &RunCommand,
+) -> Option<HostLinuxLibc>
+where
+    PathExists: Fn(&std::path::Path) -> bool,
+    RunCommand: Fn(&str, &[&str]) -> Option<LinuxCommandOutput>,
+{
+    if let Some(output) = run_command("getconf", &["GNU_LIBC_VERSION"])
+        && output.status_success
+        && output.stdout.to_ascii_lowercase().contains("glibc")
+    {
+        return Some(HostLinuxLibc::Gnu);
+    }
 
-    classify_linux_libc_markers(musl_marker_present, gnu_marker_present)
+    if let Some(output) = run_command("ldd", &["--version"]) {
+        let combined = format!("{}\n{}", output.stdout, output.stderr).to_ascii_lowercase();
+        if combined.contains("musl") {
+            return Some(HostLinuxLibc::Musl);
+        }
+        if output.status_success && (combined.contains("glibc") || combined.contains("gnu libc")) {
+            return Some(HostLinuxLibc::Gnu);
+        }
+    }
+
+    let musl_marker_paths = [
+        "/lib/ld-musl-x86_64.so.1",
+        "/lib/ld-musl-aarch64.so.1",
+        "/lib64/ld-musl-x86_64.so.1",
+        "/lib64/ld-musl-aarch64.so.1",
+    ];
+    let gnu_marker_paths = [
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib/ld-linux-aarch64.so.1",
+        "/lib/ld-linux.so.2",
+    ];
+
+    classify_linux_libc_markers(
+        musl_marker_paths
+            .iter()
+            .any(|path| path_exists(std::path::Path::new(path))),
+        gnu_marker_paths
+            .iter()
+            .any(|path| path_exists(std::path::Path::new(path))),
+    )
+    .into_option()
 }
 
 #[cfg(target_os = "linux")]
@@ -391,10 +437,10 @@ mod tests {
 
     use super::{
         HostArchitecture, HostLinuxLibc, HostOperatingSystem, HostPlatformTargetTripleError,
-        TargetTripleError, detect_host_target_triple, executable_suffix_for_target,
-        host_platform_from_parts, resolve_home_dir_with, resolve_target_triple,
-        try_detect_host_target_triple_from_platform, try_executable_suffix_for_target,
-        try_resolve_target_triple,
+        LinuxCommandOutput, TargetTripleError, detect_host_target_triple,
+        executable_suffix_for_target, host_platform_from_parts, resolve_home_dir_with,
+        resolve_target_triple, try_detect_host_target_triple_from_platform,
+        try_executable_suffix_for_target, try_resolve_target_triple,
     };
 
     #[test]
@@ -609,56 +655,90 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_reads_glibc_from_current_process_maps() {
-        let proc_maps = "/lib64/ld-linux-x86-64.so.2\n/usr/lib64/libc.so.6\n";
+    fn detect_host_linux_libc_prefers_getconf_glibc_over_musl_file_markers() {
         assert_eq!(
-            super::detect_host_linux_libc_from_proc_maps(proc_maps),
-            super::LinuxLibcDetection::Detected(HostLinuxLibc::Gnu)
+            super::detect_host_linux_libc_with(
+                &|path| path == std::path::Path::new("/lib/ld-musl-x86_64.so.1"),
+                &|program, _args| match program {
+                    "getconf" => Some(LinuxCommandOutput {
+                        status_success: true,
+                        stdout: "glibc 2.39\n".to_string(),
+                        stderr: String::new(),
+                    }),
+                    "ldd" => None,
+                    _ => None,
+                }
+            ),
+            Some(HostLinuxLibc::Gnu)
         );
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_reads_musl_from_current_process_maps() {
-        let proc_maps = "/lib/ld-musl-x86_64.so.1\n/lib/libc.musl-x86_64.so.1\n";
+    fn detect_host_linux_libc_reads_musl_from_ldd_runtime_evidence() {
         assert_eq!(
-            super::detect_host_linux_libc_from_proc_maps(proc_maps),
-            super::LinuxLibcDetection::Detected(HostLinuxLibc::Musl)
+            super::detect_host_linux_libc_with(
+                &|_path| false,
+                &|program, _args| match program {
+                    "getconf" => Some(LinuxCommandOutput {
+                        status_success: false,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    }),
+                    "ldd" => Some(LinuxCommandOutput {
+                        status_success: true,
+                        stdout: "musl libc (x86_64)\n".to_string(),
+                        stderr: String::new(),
+                    }),
+                    _ => None,
+                }
+            ),
+            Some(HostLinuxLibc::Musl)
         );
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_fails_closed_for_ambiguous_process_maps() {
-        let proc_maps = "/lib64/ld-linux-x86-64.so.2\n/lib/ld-musl-x86_64.so.1\n";
+    fn detect_host_linux_libc_falls_back_to_musl_file_markers() {
         assert_eq!(
-            super::detect_host_linux_libc_from_proc_maps(proc_maps),
-            super::LinuxLibcDetection::Ambiguous
+            super::detect_host_linux_libc_with(
+                &|path| path == std::path::Path::new("/lib/ld-musl-x86_64.so.1"),
+                &|_program, _args| None
+            ),
+            Some(HostLinuxLibc::Musl)
         );
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_returns_none_without_process_map_evidence() {
-        let libc = super::detect_host_linux_libc_with_proc_maps(&|| None);
+    fn detect_host_linux_libc_fails_closed_for_conflicting_file_markers_without_runtime_evidence() {
+        let libc = super::detect_host_linux_libc_with(
+            &|path| {
+                path == std::path::Path::new("/lib/ld-musl-x86_64.so.1")
+                    || path == std::path::Path::new("/lib64/ld-linux-x86-64.so.2")
+            },
+            &|_program, _args| None,
+        );
         assert_eq!(libc, None);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_with_proc_maps_fails_closed_for_ambiguous_runtime_evidence() {
-        let libc = super::detect_host_linux_libc_with_proc_maps(&|| {
-            Some("/lib64/ld-linux-x86-64.so.2\n/lib/ld-musl-x86_64.so.1\n".to_string())
-        });
+    fn detect_host_linux_libc_returns_none_without_runtime_or_marker_evidence() {
+        let libc = super::detect_host_linux_libc_with(&|_path| false, &|_program, _args| None);
         assert_eq!(libc, None);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_host_platform_fails_closed_after_ambiguous_process_maps() {
-        let linux_libc = super::detect_host_linux_libc_with_proc_maps(&|| {
-            Some("/lib64/ld-linux-x86-64.so.2\n/lib/ld-musl-x86_64.so.1\n".to_string())
-        });
+    fn linux_host_platform_fails_closed_after_conflicting_file_markers() {
+        let linux_libc = super::detect_host_linux_libc_with(
+            &|path| {
+                path == std::path::Path::new("/lib/ld-musl-x86_64.so.1")
+                    || path == std::path::Path::new("/lib64/ld-linux-x86-64.so.2")
+            },
+            &|_program, _args| None,
+        );
         let host_platform =
             host_platform_from_parts("linux", "x86_64", linux_libc).expect("linux platform");
         assert_eq!(host_platform.linux_libc(), None);
@@ -667,39 +747,38 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_uses_process_maps_when_available() {
-        let libc = super::detect_host_linux_libc_with_proc_maps(&|| {
-            Some("/lib64/ld-linux-x86-64.so.2\n/usr/lib64/libc.so.6\n".to_string())
-        });
+    fn detect_host_linux_libc_uses_ldd_glibc_when_getconf_is_unavailable() {
+        let libc = super::detect_host_linux_libc_with(
+            &|_path| false,
+            &|program, _args| match program {
+                "getconf" => None,
+                "ldd" => Some(LinuxCommandOutput {
+                    status_success: true,
+                    stdout: "ldd (GNU libc) 2.39\n".to_string(),
+                    stderr: String::new(),
+                }),
+                _ => None,
+            },
+        );
         assert_eq!(libc, Some(HostLinuxLibc::Gnu));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn detect_host_linux_libc_does_not_treat_proc_maps_absence_as_guessable_host() {
-        let libc = super::detect_host_linux_libc_with_proc_maps(&|| Some(String::new()));
-        assert_eq!(libc, None);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
     fn detect_host_target_triple_stays_none_without_linux_libc_evidence() {
-        let linux_libc = super::detect_host_linux_libc_with_proc_maps(&|| Some(String::new()));
+        let linux_libc = super::detect_host_linux_libc_with(&|_path| false, &|_program, _args| {
+            Some(LinuxCommandOutput {
+                status_success: false,
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        });
         let host_platform =
             host_platform_from_parts("linux", "x86_64", linux_libc).expect("linux platform");
         assert_eq!(
             try_detect_host_target_triple_from_platform(host_platform),
             None
         );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn detect_host_linux_libc_fails_closed_for_musl_markers_on_glibc_maps_conflict() {
-        let libc = super::detect_host_linux_libc_with_proc_maps(&|| {
-            Some("/lib64/ld-linux-x86-64.so.2\n/lib/libc.musl-x86_64.so.1\n".to_string())
-        });
-        assert_eq!(libc, None);
     }
 
     #[cfg(target_os = "linux")]

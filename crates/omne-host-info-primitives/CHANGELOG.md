@@ -16,6 +16,9 @@
 - prefer the current process' Linux loader/libc mappings over coarse filesystem markers when
   detecting `gnu` vs `musl`, so mixed-toolchain hosts stop selecting the wrong target triple just
   because an unrelated loader file exists on disk
+- prefer `getconf` / `ldd` runtime evidence over musl/glibc loader file markers when detecting
+  Linux libc, so glibc hosts no longer regress to `*-unknown-linux-musl` just because a musl
+  loader file also exists on disk
 - keep current-process glibc evidence authoritative even when musl loader files are present on
   disk, so mixed-toolchain hosts do not regress back to `*-unknown-linux-musl`
 - stop treating ambiguous current-process loader/libc evidence as "no evidence"; conflicting
