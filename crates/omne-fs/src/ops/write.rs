@@ -198,14 +198,12 @@ fn preview_parent_dir_under_root(
         }
     }
 
-    let relative_parent = crate::path_utils::strip_prefix_case_insensitive_normalized(
-        &current,
-        canonical_root,
-    )
-    .ok_or_else(|| Error::OutsideRoot {
-        root_id: root_id.to_string(),
-        path: requested_parent.to_path_buf(),
-    })?;
+    let relative_parent =
+        crate::path_utils::strip_prefix_case_insensitive_normalized(&current, canonical_root)
+            .ok_or_else(|| Error::OutsideRoot {
+                root_id: root_id.to_string(),
+                path: requested_parent.to_path_buf(),
+            })?;
     Ok(Some(relative_parent))
 }
 
@@ -263,24 +261,29 @@ pub fn write_file(ctx: &Context, request: WriteFileRequest) -> Result<WriteFileR
         return Err(Error::SecretPathDenied(requested_relative));
     }
 
-    let preview_relative_parent = match ctx.ensure_dir_under_root(&request.root_id, requested_parent, false)
-    {
-        Ok(canonical_parent) => crate::path_utils::strip_prefix_case_insensitive_normalized(
-            &canonical_parent,
-            canonical_root,
-        )
-        .ok_or_else(|| Error::OutsideRoot {
-            root_id: request.root_id.clone(),
-            path: requested_path.clone(),
-        })?,
-        Err(Error::IoPath { source, .. })
-            if request.create_parents && source.kind() == std::io::ErrorKind::NotFound =>
-        {
-            preview_parent_dir_under_root(ctx, &request.root_id, requested_parent, canonical_root)?
+    let preview_relative_parent =
+        match ctx.ensure_dir_under_root(&request.root_id, requested_parent, false) {
+            Ok(canonical_parent) => crate::path_utils::strip_prefix_case_insensitive_normalized(
+                &canonical_parent,
+                canonical_root,
+            )
+            .ok_or_else(|| Error::OutsideRoot {
+                root_id: request.root_id.clone(),
+                path: requested_path.clone(),
+            })?,
+            Err(Error::IoPath { source, .. })
+                if request.create_parents && source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                preview_parent_dir_under_root(
+                    ctx,
+                    &request.root_id,
+                    requested_parent,
+                    canonical_root,
+                )?
                 .ok_or_else(|| Error::InvalidPath("failed to preview parent directory".to_string()))?
-        }
-        Err(err) => return Err(err),
-    };
+            }
+            Err(err) => return Err(err),
+        };
     let preview_relative = preview_relative_parent.join(file_name);
     if ctx.redactor.is_path_denied(&preview_relative) {
         return Err(Error::SecretPathDenied(preview_relative));

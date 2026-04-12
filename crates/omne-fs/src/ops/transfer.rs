@@ -196,32 +196,35 @@ pub(super) fn prepare_transfer_destination(
         return Err(Error::SecretPathDenied(requested_relative));
     }
 
-    let preview_relative_parent = match ctx.ensure_dir_under_root(root_id, &paths.to_parent_relative, false)
-    {
-        Ok(canonical_parent) => crate::path_utils::strip_prefix_case_insensitive_normalized(
-            &canonical_parent,
-            paths.canonical_root,
-        )
-        .ok_or_else(|| Error::OutsideRoot {
-            root_id: root_id.to_string(),
-            path: paths.requested_to.clone(),
-        })?,
-        Err(Error::IoPath { source, .. })
-            if paths.to_parent.is_none() && source.kind() == std::io::ErrorKind::NotFound =>
-        {
-            let preview_parent =
-                preview_parent_dir_under_root(root_id, &paths.to_parent_relative, paths.canonical_root)?;
-            crate::path_utils::strip_prefix_case_insensitive_normalized(
-                &preview_parent,
+    let preview_relative_parent =
+        match ctx.ensure_dir_under_root(root_id, &paths.to_parent_relative, false) {
+            Ok(canonical_parent) => crate::path_utils::strip_prefix_case_insensitive_normalized(
+                &canonical_parent,
                 paths.canonical_root,
             )
             .ok_or_else(|| Error::OutsideRoot {
                 root_id: root_id.to_string(),
                 path: paths.requested_to.clone(),
-            })?
-        }
-        Err(err) => return Err(err),
-    };
+            })?,
+            Err(Error::IoPath { source, .. })
+                if paths.to_parent.is_none() && source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                let preview_parent = preview_parent_dir_under_root(
+                    root_id,
+                    &paths.to_parent_relative,
+                    paths.canonical_root,
+                )?;
+                crate::path_utils::strip_prefix_case_insensitive_normalized(
+                    &preview_parent,
+                    paths.canonical_root,
+                )
+                .ok_or_else(|| Error::OutsideRoot {
+                    root_id: root_id.to_string(),
+                    path: paths.requested_to.clone(),
+                })?
+            }
+            Err(err) => return Err(err),
+        };
     let preview_relative = preview_relative_parent.join(Path::new(&paths.to_name));
     if ctx.redactor.is_path_denied(&preview_relative) {
         return Err(Error::SecretPathDenied(preview_relative));
