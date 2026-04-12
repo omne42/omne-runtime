@@ -713,6 +713,8 @@ fn commit_replace_directory(
         destination_leaf,
         destination,
         options,
+        create_backup_directory_in_root,
+        move_existing_directory_to_backup,
         remove_backup_root,
         remove_staged_directory,
     )
@@ -724,6 +726,8 @@ fn commit_replace_directory_with_cleanup_hooks(
     destination_leaf: &Path,
     destination: &Path,
     options: &AtomicDirectoryOptions,
+    create_backup_dir: fn(&RootDir) -> io::Result<RootDir>,
+    move_existing_to_backup: fn(&RootDir, &Path, &RootDir) -> io::Result<()>,
     backup_root_cleanup: fn(RootDir) -> io::Result<()>,
     staged_cleanup: fn(&RootDir, &Path) -> io::Result<()>,
 ) -> Result<(), AtomicDirectoryError> {
@@ -734,6 +738,7 @@ fn commit_replace_directory_with_cleanup_hooks(
             Ok(metadata) => Some(metadata),
             Err(err) if err.kind() == io::ErrorKind::NotFound => None,
             Err(err) => {
+                let _ = staged_cleanup(parent_root, staged_leaf);
                 return Err(AtomicDirectoryError::io_path(
                     "symlink_metadata",
                     destination,
@@ -744,21 +749,25 @@ fn commit_replace_directory_with_cleanup_hooks(
 
         if let Some(metadata) = destination_metadata {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                let _ = staged_cleanup(parent_root, staged_leaf);
                 return Err(AtomicDirectoryError::Validation(format!(
                     "directory destination `{}` must be an existing directory or absent",
                     destination.display()
                 )));
             }
-            let (_, holder) = create_staged_directory_in_root(parent_root, ".directory-backup-")
-                .map_err(|err| {
-                    AtomicDirectoryError::io_path("create_backup_dir", destination, err)
-                })?;
-            parent_root
-                .dir()
-                .rename(destination_leaf, holder.dir(), Path::new("previous"))
-                .map_err(|err| {
-                    AtomicDirectoryError::io_path("rename_existing", destination, err)
-                })?;
+            let holder = create_backup_dir(parent_root).map_err(|err| {
+                let _ = staged_cleanup(parent_root, staged_leaf);
+                AtomicDirectoryError::io_path("create_backup_dir", destination, err)
+            })?;
+            if let Err(err) = move_existing_to_backup(parent_root, destination_leaf, &holder) {
+                let _ = staged_cleanup(parent_root, staged_leaf);
+                let _ = backup_root_cleanup(holder);
+                return Err(AtomicDirectoryError::io_path(
+                    "rename_existing",
+                    destination,
+                    err,
+                ));
+            }
             backup_root = Some(holder);
         }
     }
@@ -808,6 +817,21 @@ fn commit_replace_directory_with_cleanup_hooks(
 
 fn remove_backup_root(holder: RootDir) -> io::Result<()> {
     holder.into_dir().remove_open_dir_all()
+}
+
+fn create_backup_directory_in_root(parent_root: &RootDir) -> io::Result<RootDir> {
+    let (_, holder) = create_staged_directory_in_root(parent_root, ".directory-backup-")?;
+    Ok(holder)
+}
+
+fn move_existing_directory_to_backup(
+    parent_root: &RootDir,
+    destination_leaf: &Path,
+    holder: &RootDir,
+) -> io::Result<()> {
+    parent_root
+        .dir()
+        .rename(destination_leaf, holder.dir(), Path::new("previous"))
 }
 
 fn remove_staged_directory(parent_root: &RootDir, staged_leaf: &Path) -> io::Result<()> {
@@ -1010,6 +1034,8 @@ mod tests {
             &staged.destination_leaf,
             &destination,
             &staged.options,
+            super::create_backup_directory_in_root,
+            super::move_existing_directory_to_backup,
             |_| Err(std::io::Error::other("cleanup failed")),
             super::remove_staged_directory,
         )
@@ -1032,6 +1058,82 @@ mod tests {
     }
 
     #[test]
+    fn staged_atomic_directory_cleans_staged_tree_when_create_backup_dir_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tree");
+        std::fs::create_dir_all(&destination).expect("mkdir destination");
+        std::fs::write(destination.join("old.txt"), b"old").expect("seed file");
+
+        let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+            .expect("stage directory");
+        std::fs::write(staged.path().join("new.txt"), b"new").expect("write staged file");
+
+        let err = super::commit_replace_directory_with_cleanup_hooks(
+            &staged.parent_root,
+            &staged.staged_leaf,
+            &staged.destination_leaf,
+            &destination,
+            &staged.options,
+            |_| Err(std::io::Error::other("backup dir creation failed")),
+            super::move_existing_directory_to_backup,
+            super::remove_backup_root,
+            super::remove_staged_directory,
+        )
+        .expect_err("backup dir creation should fail");
+
+        match err {
+            super::AtomicDirectoryError::IoPath { op, path, .. } => {
+                assert_eq!(op, "create_backup_dir");
+                assert_eq!(path, destination);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert!(
+            !staged.path().exists(),
+            "create_backup_dir failure must clean staged directory"
+        );
+        assert!(destination.join("old.txt").is_file());
+    }
+
+    #[test]
+    fn staged_atomic_directory_cleans_staged_tree_when_rename_existing_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tree");
+        std::fs::create_dir_all(&destination).expect("mkdir destination");
+        std::fs::write(destination.join("old.txt"), b"old").expect("seed file");
+
+        let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+            .expect("stage directory");
+        std::fs::write(staged.path().join("new.txt"), b"new").expect("write staged file");
+
+        let err = super::commit_replace_directory_with_cleanup_hooks(
+            &staged.parent_root,
+            &staged.staged_leaf,
+            &staged.destination_leaf,
+            &destination,
+            &staged.options,
+            super::create_backup_directory_in_root,
+            |_, _, _| Err(std::io::Error::other("rename existing failed")),
+            super::remove_backup_root,
+            super::remove_staged_directory,
+        )
+        .expect_err("rename_existing should fail");
+
+        match err {
+            super::AtomicDirectoryError::IoPath { op, path, .. } => {
+                assert_eq!(op, "rename_existing");
+                assert_eq!(path, destination);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert!(
+            !staged.path().exists(),
+            "rename_existing failure must clean staged directory"
+        );
+        assert!(destination.join("old.txt").is_file());
+    }
+
+    #[test]
     fn staged_atomic_directory_rejects_non_directory_destination() {
         let temp = tempfile::tempdir().expect("tempdir");
         let destination = temp.path().join("tree");
@@ -1040,10 +1142,13 @@ mod tests {
         let staged = stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
             .expect("stage directory");
 
-        let err = staged
-            .commit()
-            .expect_err("non-directory destination must fail");
+        let staged_path = staged.path().to_path_buf();
+        let err = staged.commit().expect_err("non-directory destination must fail");
         assert!(matches!(err, super::AtomicDirectoryError::Validation(_)));
+        assert!(
+            !staged_path.exists(),
+            "validation failure must clean staged directory"
+        );
     }
 
     #[test]
@@ -1120,6 +1225,8 @@ mod tests {
             Path::new("tree.blocker"),
             &blocker,
             &stage_options,
+            super::create_backup_directory_in_root,
+            super::move_existing_directory_to_backup,
             super::remove_backup_root,
             |_, _| Err(std::io::Error::other("staged cleanup failed")),
         )
