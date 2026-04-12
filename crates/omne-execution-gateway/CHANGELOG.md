@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- keep mutation enforcement fail-closed for explicit unknown executables labeled
+  `declared_mutation = false`, and pin regression coverage proving only explicit
+  `non_mutating_program_allowlist` entries can authorize those read-only requests
 - route policy/request JSON reads plus audit-log sink validation through one crate-local
   no-follow regular-file helper, and pin extra `python311` / `pythonw3.11` / `pip311` launcher
   coverage so execution-gateway cannot quietly drift back into duplicated file-boundary logic or

@@ -464,89 +464,12 @@ impl ExecGateway {
                     event.program = bound_program.path.clone().into();
 
                     if self.policy.enforce_allowlisted_program_for_mutation {
-                        if request_uses_opaque_command_launcher(
-                            &request.program,
-                            &request.args,
+                        if let Err((reason, err)) = authorize_mutation_controlled_request(
+                            &self.policy,
+                            request,
                             &bound_program,
                         ) {
-                            return Err(self.deny_preflight(
-                                event,
-                                "opaque_command_forbidden",
-                                ExecError::PolicyDenied(
-                                    "opaque command launchers cannot be authorized by policy"
-                                        .to_string(),
-                                ),
-                            ));
-                        }
-                        let request_program_is_explicit =
-                            is_explicit_program_path(request.program.as_os_str());
-                        if !request_program_is_explicit {
-                            return Err(self.deny_preflight(
-                                event,
-                                "allowlisted_execution_requires_explicit_program_path",
-                                ExecError::PolicyDenied(
-                                    "mutation-controlled requests must use an explicit absolute program path"
-                                        .to_string(),
-                                ),
-                            ));
-                        }
-                        if !request.declared_mutation_is_explicit() {
-                            return Err(self.deny_preflight(
-                                event,
-                                "mutation_declaration_required",
-                                ExecError::MutationDeclarationRequired,
-                            ));
-                        }
-                        if let Some(name) = first_startup_sensitive_env_name(&request.env) {
-                            return Err(self.deny_preflight(
-                                event,
-                                "startup_sensitive_env_forbidden",
-                                ExecError::PolicyDenied(format!(
-                                    "allowlisted execution forbids startup-sensitive environment variable `{name}`"
-                                )),
-                            ));
-                        }
-                        let mutating_allowlisted = request_program_is_explicit
-                            && self
-                                .policy
-                                .is_mutating_program_allowlisted_path(&bound_program.path);
-                        let non_mutating_allowlisted = request_program_is_explicit
-                            && self
-                                .policy
-                                .is_non_mutating_program_allowlisted_path(&bound_program.path);
-
-                        if request.declared_mutation() {
-                            if !mutating_allowlisted {
-                                return Err(self.deny_preflight(
-                                    event,
-                                    "mutation_requires_allowlisted_program",
-                                    ExecError::PolicyDenied(
-                                        "declared mutating command must use an allowlisted program"
-                                            .to_string(),
-                                    ),
-                                ));
-                            }
-                        } else {
-                            if mutating_allowlisted {
-                                return Err(self.deny_preflight(
-                                    event,
-                                    "allowlisted_program_requires_declared_mutation",
-                                    ExecError::PolicyDenied(
-                                        "allowlisted mutating program must declare mutation"
-                                            .to_string(),
-                                    ),
-                                ));
-                            }
-                            if !non_mutating_allowlisted {
-                                return Err(self.deny_preflight(
-                                    event,
-                                    "non_mutating_requires_allowlisted_program",
-                                    ExecError::PolicyDenied(
-                                        "declared non-mutating command must use an allowlisted program"
-                                            .to_string(),
-                                    ),
-                                ));
-                            }
+                            return Err(self.deny_preflight(event, reason, err));
                         }
                     }
 
@@ -911,6 +834,80 @@ fn strip_windows_exe_suffix_owned(value: String) -> String {
         .find_map(|suffix| value.strip_suffix(suffix))
         .unwrap_or(&value)
         .to_string()
+}
+
+fn authorize_mutation_controlled_request(
+    policy: &GatewayPolicy,
+    request: &ExecRequest,
+    bound_program: &BoundProgram,
+) -> Result<(), (&'static str, ExecError)> {
+    if request_uses_opaque_command_launcher(&request.program, &request.args, bound_program) {
+        return Err((
+            "opaque_command_forbidden",
+            ExecError::PolicyDenied(
+                "opaque command launchers cannot be authorized by policy".to_string(),
+            ),
+        ));
+    }
+
+    if !is_explicit_program_path(request.program.as_os_str()) {
+        return Err((
+            "allowlisted_execution_requires_explicit_program_path",
+            ExecError::PolicyDenied(
+                "mutation-controlled requests must use an explicit absolute program path"
+                    .to_string(),
+            ),
+        ));
+    }
+    if !request.declared_mutation_is_explicit() {
+        return Err((
+            "mutation_declaration_required",
+            ExecError::MutationDeclarationRequired,
+        ));
+    }
+    if let Some(name) = first_startup_sensitive_env_name(&request.env) {
+        return Err((
+            "startup_sensitive_env_forbidden",
+            ExecError::PolicyDenied(format!(
+                "allowlisted execution forbids startup-sensitive environment variable `{name}`"
+            )),
+        ));
+    }
+
+    let mutating_allowlisted = policy.is_mutating_program_allowlisted_path(&bound_program.path);
+    let non_mutating_allowlisted =
+        policy.is_non_mutating_program_allowlisted_path(&bound_program.path);
+
+    if request.declared_mutation() {
+        if mutating_allowlisted {
+            return Ok(());
+        }
+        return Err((
+            "mutation_requires_allowlisted_program",
+            ExecError::PolicyDenied(
+                "declared mutating command must use an allowlisted program".to_string(),
+            ),
+        ));
+    }
+
+    if mutating_allowlisted {
+        return Err((
+            "allowlisted_program_requires_declared_mutation",
+            ExecError::PolicyDenied(
+                "allowlisted mutating program must declare mutation".to_string(),
+            ),
+        ));
+    }
+    if non_mutating_allowlisted {
+        return Ok(());
+    }
+
+    Err((
+        "non_mutating_requires_allowlisted_program",
+        ExecError::PolicyDenied(
+            "declared non-mutating command must use an allowlisted program".to_string(),
+        ),
+    ))
 }
 
 fn first_startup_sensitive_env_name(env: &[(OsString, OsString)]) -> Option<String> {
@@ -2667,6 +2664,29 @@ mod tests {
     }
 
     #[test]
+    fn denies_unknown_explicit_program_when_declared_non_mutating() {
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let workspace = tempdir().expect("create temp workspace");
+        let program = non_allowlisted_program_path(&workspace);
+        write_test_executable_placeholder(&program);
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("non_mutating_requires_allowlisted_program")
+        );
+    }
+
+    #[test]
     fn allows_non_mutating_for_explicitly_allowlisted_program_path() {
         let program = resolved_non_mutating_program_path();
         let policy = GatewayPolicy {
@@ -2678,6 +2698,32 @@ mod tests {
             ExecutionIsolation::BestEffort,
         );
         let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let event = gateway.evaluate(&request);
+        assert_eq!(event.decision, ExecDecision::Run);
+    }
+
+    #[test]
+    fn allows_explicitly_allowlisted_unknown_program_when_declared_non_mutating() {
+        let workspace = tempdir().expect("create temp workspace");
+        let program = workspace.path().join("readonly-tool");
+        write_test_executable_placeholder(&program);
+        let policy = GatewayPolicy {
+            non_mutating_program_allowlist: vec![program.display().to_string()],
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            ExecutionIsolation::BestEffort,
+        );
         let request = ExecRequest::new(
             &program,
             Vec::<OsString>::new(),
