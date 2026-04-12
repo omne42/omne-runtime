@@ -45,6 +45,7 @@ pub enum HostLinuxLibc {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPlatformTargetTripleError {
     LinuxLibcUnknown,
+    InconsistentPlatformMetadata,
 }
 
 impl fmt::Display for HostPlatformTargetTripleError {
@@ -53,6 +54,10 @@ impl fmt::Display for HostPlatformTargetTripleError {
             Self::LinuxLibcUnknown => write!(
                 f,
                 "linux host target triple is unknown because libc detection failed"
+            ),
+            Self::InconsistentPlatformMetadata => write!(
+                f,
+                "host target triple is unknown because host platform metadata is inconsistent"
             ),
         }
     }
@@ -125,7 +130,9 @@ impl HostPlatform {
                 Err(HostPlatformTargetTripleError::LinuxLibcUnknown)
             }
             (HostOperatingSystem::Macos, _, Some(_))
-            | (HostOperatingSystem::Windows, _, Some(_)) => unreachable!(),
+            | (HostOperatingSystem::Windows, _, Some(_)) => {
+                Err(HostPlatformTargetTripleError::InconsistentPlatformMetadata)
+            }
         }
     }
 }
@@ -390,7 +397,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        HostArchitecture, HostLinuxLibc, HostOperatingSystem, HostPlatformTargetTripleError,
+        HostArchitecture, HostLinuxLibc, HostOperatingSystem, HostPlatform,
+        HostPlatformTargetTripleError,
         TargetTripleError, detect_host_target_triple, executable_suffix_for_target,
         host_platform_from_parts, resolve_home_dir_with, resolve_target_triple,
         try_detect_host_target_triple_from_platform, try_executable_suffix_for_target,
@@ -448,6 +456,31 @@ mod tests {
         assert_eq!(
             x86_64.try_target_triple(),
             Err(HostPlatformTargetTripleError::LinuxLibcUnknown)
+        );
+    }
+
+    #[test]
+    fn try_target_triple_fails_closed_for_inconsistent_non_linux_libc_metadata() {
+        let macos = HostPlatform {
+            os: HostOperatingSystem::Macos,
+            arch: HostArchitecture::Aarch64,
+            linux_libc: Some(HostLinuxLibc::Gnu),
+        };
+        assert_eq!(macos.target_triple(), None);
+        assert_eq!(
+            macos.try_target_triple(),
+            Err(HostPlatformTargetTripleError::InconsistentPlatformMetadata)
+        );
+
+        let windows = HostPlatform {
+            os: HostOperatingSystem::Windows,
+            arch: HostArchitecture::X86_64,
+            linux_libc: Some(HostLinuxLibc::Musl),
+        };
+        assert_eq!(windows.target_triple(), None);
+        assert_eq!(
+            windows.try_target_triple(),
+            Err(HostPlatformTargetTripleError::InconsistentPlatformMetadata)
         );
     }
 
