@@ -8,6 +8,8 @@
   them or letting callers treat the host as implicit `*-unknown-linux-gnu`
 - make host-platform target-triple mapping checked: Linux hosts with unknown libc now surface a
   dedicated error, while compatibility helpers fail closed by returning no host target triple
+- remove the remaining `unreachable!` from checked host target-triple mapping so inconsistent
+  non-Linux `linux_libc` metadata now fails closed with a recoverable error instead of panicking
 - restrict Linux libc detection to current-process `/proc/self/maps` runtime evidence, so the
   crate no longer executes ambient `getconf`/`ldd` or guesses from unrelated filesystem markers
 - make Linux host libc detection fail closed when current-process mappings contain both musl and
