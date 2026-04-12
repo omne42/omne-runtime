@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use omne_archive_primitives::{
     ArchiveTreeExtractionLimits as ArchiveExtractionLimits, ArchiveTreeVisitor,
@@ -17,7 +19,8 @@ use omne_archive_primitives::{walk_tar_archive_tree, walk_zip_archive_tree};
 use omne_fs_primitives::{
     AtomicDirectoryOptions, AtomicWriteOptions, Dir, create_directory_component,
     create_regular_file_at, filesystem_is_case_sensitive, lock_advisory_file_in_ambient_root,
-    open_directory_component, stage_directory_atomically, stage_file_atomically_with_name,
+    open_directory_component, open_regular_file_at, stage_directory_atomically,
+    stage_file_atomically_with_name,
 };
 #[cfg(all(test, unix))]
 use omne_fs_primitives::{MissingRootPolicy, open_ambient_root};
@@ -37,6 +40,8 @@ pub const DEFAULT_MAX_ARCHIVE_TREE_ENTRIES: u64 =
 const MAX_ZIP_SYMLINK_TARGET_BYTES: usize = omne_archive_primitives::MAX_ZIP_SYMLINK_TARGET_BYTES;
 const ARCHIVE_TREE_INSTALL_LOCK_PREFIX: &str = ".archive-tree-install-";
 const ARCHIVE_TREE_INSTALL_LOCK_SUFFIX: &str = ".lock";
+const ARCHIVE_STAGED_LEAF_RETRY_LIMIT: u64 = 128;
+static ARCHIVE_STAGED_LEAF_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy)]
 pub struct ArchiveTreeInstallRequest<'a> {
@@ -578,6 +583,38 @@ struct PendingTarHardLink {
     resolved_target: PathBuf,
 }
 
+struct PendingArchiveLeaf<'a> {
+    directory: &'a Dir,
+    leaf: PathBuf,
+    retained: bool,
+}
+
+impl<'a> PendingArchiveLeaf<'a> {
+    fn new(directory: &'a Dir, leaf: PathBuf) -> Self {
+        Self {
+            directory,
+            leaf,
+            retained: false,
+        }
+    }
+
+    fn leaf(&self) -> &Path {
+        &self.leaf
+    }
+
+    fn retain(&mut self) {
+        self.retained = true;
+    }
+}
+
+impl Drop for PendingArchiveLeaf<'_> {
+    fn drop(&mut self) {
+        if !self.retained {
+            let _ = self.directory.remove_file(&self.leaf);
+        }
+    }
+}
+
 fn create_tar_symlink(
     entry_path: &Path,
     output_path: &Path,
@@ -592,13 +629,15 @@ fn create_tar_symlink(
     })?;
     let parent_dir = ensure_archive_directory_chain(entry_path, parent, destination_root, true)?;
     validate_archive_link_target(entry_path, parent, link_target)?;
-    remove_existing_regular_file_leaf(entry_path, &parent_dir, archive_leaf_name(output_path)?)?;
+    let output_leaf = archive_leaf_name(output_path)?;
+    ensure_replaceable_archive_output_leaf(entry_path, &parent_dir, output_leaf)?;
 
     #[cfg(unix)]
     {
-        parent_dir
-            .symlink(link_target, archive_leaf_name(output_path)?)
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+        let mut staged_leaf =
+            create_archive_staged_symlink(entry_path, &parent_dir, link_target, "symlink")?;
+        rename_archive_leaf(entry_path, &parent_dir, staged_leaf.leaf(), output_leaf)?;
+        staged_leaf.retain();
         Ok(())
     }
 
@@ -701,30 +740,48 @@ fn try_create_tar_hard_link(
         None => open_archive_directory_root(destination_root)?,
     };
     let target_leaf = archive_leaf_name(&pending.resolved_target)?;
-    let target_metadata = match target_parent_dir.symlink_metadata(target_leaf) {
-        Ok(metadata) => metadata,
+    let source_file = match open_regular_file_at(&target_parent_dir, target_leaf) {
+        Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) if err.kind() == std::io::ErrorKind::InvalidInput => {
+            return Err(ArtifactInstallError::install(format!(
+                "unsafe hard link target `{}` for {}",
+                pending.link_target.display(),
+                pending.entry_path.display()
+            )));
+        }
         Err(err) => return Err(ArtifactInstallError::install(err.to_string())),
     };
-    if target_metadata.file_type().is_symlink() || target_metadata.is_dir() {
-        return Err(ArtifactInstallError::install(format!(
-            "unsafe hard link target `{}` for {}",
-            pending.link_target.display(),
-            pending.entry_path.display()
-        )));
-    }
-    remove_existing_regular_file_leaf(
+    #[cfg(unix)]
+    let source_identity = source_file
+        .into_std()
+        .metadata()
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    #[cfg(not(unix))]
+    let _source_file = source_file;
+    let output_leaf = archive_leaf_name(&pending.output_path)?;
+    ensure_replaceable_archive_output_leaf(&pending.entry_path, &output_parent_dir, output_leaf)?;
+    let mut staged_leaf = create_archive_staged_hard_link(
+        &pending.entry_path,
+        &target_parent_dir,
+        target_leaf,
+        &output_parent_dir,
+        "hardlink",
+    )?;
+    #[cfg(unix)]
+    validate_staged_hard_link_matches_source(
+        pending,
+        &output_parent_dir,
+        staged_leaf.leaf(),
+        &source_identity,
+    )?;
+    rename_archive_leaf(
         &pending.entry_path,
         &output_parent_dir,
-        archive_leaf_name(&pending.output_path)?,
+        staged_leaf.leaf(),
+        output_leaf,
     )?;
-    target_parent_dir
-        .hard_link(
-            target_leaf,
-            &output_parent_dir,
-            archive_leaf_name(&pending.output_path)?,
-        )
-        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    staged_leaf.retain();
     Ok(true)
 }
 
@@ -748,10 +805,9 @@ where
     })?;
     let parent_dir = ensure_archive_directory_chain(entry_path, parent, destination_root, true)?;
     let leaf = archive_leaf_name(output_path)?;
-    remove_existing_regular_file_leaf(entry_path, &parent_dir, leaf)?;
-    let mut file = create_regular_file_at(&parent_dir, leaf)
-        .map(|file| file.into_std())
-        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    ensure_replaceable_archive_output_leaf(entry_path, &parent_dir, leaf)?;
+    let (mut staged_leaf, mut file) =
+        create_archive_staged_regular_file(entry_path, &parent_dir, "file")?;
     std::io::copy(reader, &mut file)
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     #[cfg(unix)]
@@ -759,10 +815,14 @@ where
         file.set_permissions(fs::Permissions::from_mode(mode))
             .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     }
+    file.flush()
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    rename_archive_leaf(entry_path, &parent_dir, staged_leaf.leaf(), leaf)?;
+    staged_leaf.retain();
     Ok(())
 }
 
-fn remove_existing_regular_file_leaf(
+fn ensure_replaceable_archive_output_leaf(
     entry_path: &Path,
     directory: &Dir,
     file_name: &Path,
@@ -780,15 +840,162 @@ fn remove_existing_regular_file_leaf(
             file_name.display(),
             entry_path.display()
         ))),
-        Ok(_) => {
-            directory
-                .remove_file(file_name)
-                .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-            Ok(())
-        }
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(ArtifactInstallError::install(format!(
+            "unsafe archive output `{}` is not a regular file for {}",
+            file_name.display(),
+            entry_path.display()
+        ))),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(ArtifactInstallError::install(err.to_string())),
     }
+}
+
+fn create_archive_staged_regular_file<'a>(
+    entry_path: &Path,
+    directory: &'a Dir,
+    purpose: &str,
+) -> Result<(PendingArchiveLeaf<'a>, fs::File), ArtifactInstallError> {
+    for _ in 0..ARCHIVE_STAGED_LEAF_RETRY_LIMIT {
+        let staged_leaf = next_archive_staged_leaf_name(purpose);
+        match create_regular_file_at(directory, &staged_leaf) {
+            Ok(file) => {
+                return Ok((
+                    PendingArchiveLeaf::new(directory, staged_leaf),
+                    file.into_std(),
+                ));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(stage_archive_leaf_error(entry_path, &staged_leaf, err)),
+        }
+    }
+
+    Err(ArtifactInstallError::install(format!(
+        "failed to allocate archive staging leaf for {}",
+        entry_path.display()
+    )))
+}
+
+#[cfg(unix)]
+fn create_archive_staged_symlink<'a>(
+    entry_path: &Path,
+    directory: &'a Dir,
+    link_target: &Path,
+    purpose: &str,
+) -> Result<PendingArchiveLeaf<'a>, ArtifactInstallError> {
+    for _ in 0..ARCHIVE_STAGED_LEAF_RETRY_LIMIT {
+        let staged_leaf = next_archive_staged_leaf_name(purpose);
+        match directory.symlink(link_target, &staged_leaf) {
+            Ok(()) => return Ok(PendingArchiveLeaf::new(directory, staged_leaf)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(stage_archive_leaf_error(entry_path, &staged_leaf, err)),
+        }
+    }
+
+    Err(ArtifactInstallError::install(format!(
+        "failed to allocate archive staging leaf for {}",
+        entry_path.display()
+    )))
+}
+
+fn create_archive_staged_hard_link<'a>(
+    entry_path: &Path,
+    source_directory: &Dir,
+    source_leaf: &Path,
+    destination_directory: &'a Dir,
+    purpose: &str,
+) -> Result<PendingArchiveLeaf<'a>, ArtifactInstallError> {
+    for _ in 0..ARCHIVE_STAGED_LEAF_RETRY_LIMIT {
+        let staged_leaf = next_archive_staged_leaf_name(purpose);
+        match source_directory.hard_link(source_leaf, destination_directory, &staged_leaf) {
+            Ok(()) => return Ok(PendingArchiveLeaf::new(destination_directory, staged_leaf)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(stage_archive_leaf_error(entry_path, &staged_leaf, err)),
+        }
+    }
+
+    Err(ArtifactInstallError::install(format!(
+        "failed to allocate archive staging leaf for {}",
+        entry_path.display()
+    )))
+}
+
+fn rename_archive_leaf(
+    entry_path: &Path,
+    directory: &Dir,
+    staged_leaf: &Path,
+    output_leaf: &Path,
+) -> Result<(), ArtifactInstallError> {
+    directory
+        .rename(staged_leaf, directory, output_leaf)
+        .map_err(|err| {
+            ArtifactInstallError::install(format!(
+                "failed to commit archive entry {} into `{}`: {err}",
+                entry_path.display(),
+                output_leaf.display()
+            ))
+        })
+}
+
+fn stage_archive_leaf_error(
+    entry_path: &Path,
+    staged_leaf: &Path,
+    err: io::Error,
+) -> ArtifactInstallError {
+    ArtifactInstallError::install(format!(
+        "failed to stage archive entry {} at `{}`: {err}",
+        entry_path.display(),
+        staged_leaf.display()
+    ))
+}
+
+fn next_archive_staged_leaf_name(purpose: &str) -> PathBuf {
+    let sequence = ARCHIVE_STAGED_LEAF_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    PathBuf::from(format!(
+        ".archive-tree-{purpose}-{pid:x}-{timestamp:x}-{sequence:x}.tmp",
+        pid = std::process::id()
+    ))
+}
+
+#[cfg(unix)]
+fn validate_staged_hard_link_matches_source(
+    pending: &PendingTarHardLink,
+    output_parent_dir: &Dir,
+    staged_leaf: &Path,
+    source_identity: &fs::Metadata,
+) -> Result<(), ArtifactInstallError> {
+    let staged_identity = open_regular_file_at(output_parent_dir, staged_leaf)
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::InvalidInput {
+                ArtifactInstallError::install(format!(
+                    "unsafe hard link target `{}` for {}",
+                    pending.link_target.display(),
+                    pending.entry_path.display()
+                ))
+            } else {
+                ArtifactInstallError::install(err.to_string())
+            }
+        })?
+        .into_std()
+        .metadata()
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    // Hard-link creation itself cannot be made atomic from a path-only source. Compare the inode
+    // we opened with `O_NOFOLLOW` against the staged result and fail closed if the source raced.
+    if !staged_identity.is_file()
+        || staged_identity.dev() != source_identity.dev()
+        || staged_identity.ino() != source_identity.ino()
+    {
+        return Err(ArtifactInstallError::install(format!(
+            "unsafe hard link target `{}` for {}",
+            pending.link_target.display(),
+            pending.entry_path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn ensure_archive_directory_chain(
@@ -1038,6 +1245,8 @@ mod tests {
     use std::fs;
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
+    #[cfg(unix)]
+    use std::os::unix::fs::FileTypeExt;
     #[cfg(unix)]
     use std::path::PathBuf;
     use std::sync::mpsc;
@@ -1717,6 +1926,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn tar_regular_files_fail_closed_on_existing_special_leaf() -> Result<(), Box<dyn Error>> {
+        let archive = make_tar_archive(&[TarEntry::File("bin/demo", b"demo".as_slice(), 0o755)])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        fs::create_dir_all(destination.join("bin"))?;
+        let fifo = destination.join("bin/demo");
+        let status = std::process::Command::new("mkfifo").arg(&fifo).status()?;
+        assert!(status.success(), "mkfifo failed: {status}");
+
+        let err = extract_tar_tree(
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits::default(),
+        )
+        .expect_err("existing special leaf must be rejected");
+
+        assert!(
+            err.to_string().contains("not a regular file"),
+            "unexpected error: {err}"
+        );
+        assert!(fs::symlink_metadata(&fifo)?.file_type().is_fifo());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn tar_hard_link_entries_fail_closed_on_symlink_ancestor() -> Result<(), Box<dyn Error>> {
         let archive = make_tar_archive(&[
             TarEntry::Directory("safe", 0o755),
@@ -1767,6 +2002,33 @@ mod tests {
         assert_eq!(fs::read(&target)?, b"demo");
         assert_eq!(fs::read(&linked)?, b"demo");
         assert_eq!(fs::metadata(&target)?.ino(), fs::metadata(&linked)?.ino());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_hard_link_entries_reject_symlink_targets() -> Result<(), Box<dyn Error>> {
+        let archive = make_tar_archive(&[
+            TarEntry::File("real/target.txt", b"demo", 0o644),
+            TarEntry::Symlink("bin/demo", "../real/target.txt"),
+            TarEntry::HardLink("bin/demo-copy", "bin/demo"),
+        ])?;
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("tree");
+        fs::create_dir_all(&destination)?;
+
+        let err = extract_tar_tree(
+            Cursor::new(archive),
+            &destination,
+            ArchiveExtractionLimits::default(),
+        )
+        .expect_err("symlink hard-link targets must be rejected");
+
+        assert!(
+            err.to_string().contains("unsafe hard link target"),
+            "unexpected error: {err}"
+        );
+        assert!(!destination.join("bin/demo-copy").exists());
         Ok(())
     }
 
