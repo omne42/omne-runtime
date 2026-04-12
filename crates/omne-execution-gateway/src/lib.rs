@@ -49,7 +49,7 @@ pub(crate) fn validate_appendable_regular_file(
     context: &'static str,
 ) -> io::Result<()> {
     validate_absolute_path(path, context)?;
-    validate_appendable_regular_file_in_ambient_root(path, context).map_err(io::Error::from)
+    validate_appendable_regular_file_in_ambient_root(path, context)
 }
 
 pub(crate) fn open_appendable_regular_file(
