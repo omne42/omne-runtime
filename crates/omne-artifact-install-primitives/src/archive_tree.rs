@@ -754,10 +754,11 @@ fn try_create_tar_hard_link(
     };
     #[cfg(unix)]
     let source_identity = source_file
+        .into_std()
         .metadata()
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     #[cfg(not(unix))]
-    let _ = source_file;
+    let _source_file = source_file;
     let output_leaf = archive_leaf_name(&pending.output_path)?;
     ensure_replaceable_archive_output_leaf(&pending.entry_path, &output_parent_dir, output_leaf)?;
     let mut staged_leaf = create_archive_staged_hard_link(
@@ -850,11 +851,11 @@ fn ensure_replaceable_archive_output_leaf(
     }
 }
 
-fn create_archive_staged_regular_file(
+fn create_archive_staged_regular_file<'a>(
     entry_path: &Path,
-    directory: &Dir,
+    directory: &'a Dir,
     purpose: &str,
-) -> Result<(PendingArchiveLeaf<'_>, fs::File), ArtifactInstallError> {
+) -> Result<(PendingArchiveLeaf<'a>, fs::File), ArtifactInstallError> {
     for _ in 0..ARCHIVE_STAGED_LEAF_RETRY_LIMIT {
         let staged_leaf = next_archive_staged_leaf_name(purpose);
         match create_regular_file_at(directory, &staged_leaf) {
@@ -967,13 +968,24 @@ fn validate_staged_hard_link_matches_source(
     staged_leaf: &Path,
     source_identity: &fs::Metadata,
 ) -> Result<(), ArtifactInstallError> {
-    let staged_identity = output_parent_dir
-        .symlink_metadata(staged_leaf)
+    let staged_identity = open_regular_file_at(output_parent_dir, staged_leaf)
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::InvalidInput {
+                ArtifactInstallError::install(format!(
+                    "unsafe hard link target `{}` for {}",
+                    pending.link_target.display(),
+                    pending.entry_path.display()
+                ))
+            } else {
+                ArtifactInstallError::install(err.to_string())
+            }
+        })?
+        .into_std()
+        .metadata()
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
     // Hard-link creation itself cannot be made atomic from a path-only source. Compare the inode
     // we opened with `O_NOFOLLOW` against the staged result and fail closed if the source raced.
-    if staged_identity.file_type().is_symlink()
-        || !staged_identity.is_file()
+    if !staged_identity.is_file()
         || staged_identity.dev() != source_identity.dev()
         || staged_identity.ino() != source_identity.ino()
     {
