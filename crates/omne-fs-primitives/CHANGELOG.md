@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- return explicit fail-closed errors instead of panicking when staged atomic file/directory handles were already consumed, and surface staged directory cleanup failures after failed directory swaps
 - fsync staged directory trees before atomic replace so successful directory installs do not return before nested file content is durable
 - make `open_regular_file_at` use non-blocking no-follow opens so FIFOs and other special files fail closed instead of hanging callers before regular-file validation
 - report staged directory replace backup cleanup failures as post-commit errors so callers can tell the destination already switched
