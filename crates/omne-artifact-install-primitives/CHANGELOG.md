@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- tighten archive-tree leaf materialization so regular files, symlinks, and hard links stage into
+  unique handle-bound temp names before an in-directory rename; existing directory/symlink/special
+  leaves now fail closed, and Unix hard-link extraction revalidates the staged inode against the
+  no-follow-opened source to collapse source-path races into rejection
 - reject archive-tree entries whose output paths only differ by case when the staged destination
   filesystem is case-insensitive, so archives such as `bin/tool` plus `BIN/TOOL` fail closed
   instead of depending on host filesystem semantics

@@ -20,7 +20,7 @@
 - 对同一个 archive tree 目标目录，安装阶段按目标做 advisory lock 串行化，锁名基于归一化后的 destination identity 派生，避免 root alias 或词法等价路径把同一个真实目录拆成多把锁。
 - 对 archive tree 中会物化到 staged 目录的条目，如果两个输出路径只在大小写上不同，而 staged 目标文件系统本身大小写不敏感，则安装必须 fail-closed，不能把最终结果交给宿主文件系统的路径折叠语义决定。
 - 对 archive tree 中会物化目录项的条目，要求 staging 根及其内部落点父目录链必须是 staging 目录下的真实目录；命中这些受管组件里的 symlink 祖先时 fail-closed，不能借由已创建链接把后续 regular file 写出到 staging 目录之外。
-- 对 archive tree 中落到 leaf 的 regular file、symlink 和 hard link，使用 `omne-fs-primitives` 的 capability-style directory handle 完成 remove/create/link，避免 staged extraction 依赖 ambient 路径的 leaf 级 TOCTOU。
+- 对 archive tree 中落到 leaf 的 regular file、symlink 和 hard link，使用 `omne-fs-primitives` 的 capability-style directory handle 先写入随机临时 leaf，再在同一父目录内 rename 到最终 leaf；已存在的 directory/symlink/special leaf 必须 fail-closed，避免 staged extraction 依赖 ambient 路径或 `remove + create/link` 的 leaf 级 TOCTOU。
 - archive tree install 在 staged 目录创建成功后，后续 unzip/untar 和最终目录替换都继续绑定同一个 staged directory / parent directory handle；如果 staging 之后原始 destination parent path 被 rename 或替换成 symlink，安装必须继续写入原绑定目录或 fail-closed，而不是沿新的 ambient 路径漂移。
 - 在 Unix 上把 zip symlink 条目按 symlink 语义物化，并对 symlink target 读取施加独立长度上限；非 Unix 平台遇到 zip symlink 条目时 fail-closed。
 - 对 tar hard link 条目允许目标成员晚于 link 条目出现，只要最终目标仍解析到 staging 目录内的 regular file。
