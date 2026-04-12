@@ -280,7 +280,9 @@ pub fn write_file(ctx: &Context, request: WriteFileRequest) -> Result<WriteFileR
                     requested_parent,
                     canonical_root,
                 )?
-                .ok_or_else(|| Error::InvalidPath("failed to preview parent directory".to_string()))?
+                .ok_or_else(|| {
+                    Error::InvalidPath("failed to preview parent directory".to_string())
+                })?
             }
             Err(err) => return Err(err),
         };
