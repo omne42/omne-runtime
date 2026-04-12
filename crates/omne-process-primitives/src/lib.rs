@@ -245,6 +245,8 @@ fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
 
 #[cfg(target_os = "linux")]
 fn should_kill_unix_process_group(identity: UnixProcessGroupIdentity) -> bool {
+    // Linux only arms `killpg` while the original leader still matches the exact `/proc`
+    // identity captured at spawn time; once that identity disappears, cleanup fails closed.
     should_kill_linux_process_group(identity, read_linux_process_identity(identity.leader_pid))
 }
 
