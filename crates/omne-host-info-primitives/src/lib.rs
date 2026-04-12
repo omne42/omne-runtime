@@ -677,22 +677,19 @@ mod tests {
     #[test]
     fn detect_host_linux_libc_reads_musl_from_ldd_runtime_evidence() {
         assert_eq!(
-            super::detect_host_linux_libc_with(
-                &|_path| false,
-                &|program, _args| match program {
-                    "getconf" => Some(LinuxCommandOutput {
-                        status_success: false,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                    }),
-                    "ldd" => Some(LinuxCommandOutput {
-                        status_success: true,
-                        stdout: "musl libc (x86_64)\n".to_string(),
-                        stderr: String::new(),
-                    }),
-                    _ => None,
-                }
-            ),
+            super::detect_host_linux_libc_with(&|_path| false, &|program, _args| match program {
+                "getconf" => Some(LinuxCommandOutput {
+                    status_success: false,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                }),
+                "ldd" => Some(LinuxCommandOutput {
+                    status_success: true,
+                    stdout: "musl libc (x86_64)\n".to_string(),
+                    stderr: String::new(),
+                }),
+                _ => None,
+            }),
             Some(HostLinuxLibc::Musl)
         );
     }
@@ -748,9 +745,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn detect_host_linux_libc_uses_ldd_glibc_when_getconf_is_unavailable() {
-        let libc = super::detect_host_linux_libc_with(
-            &|_path| false,
-            &|program, _args| match program {
+        let libc =
+            super::detect_host_linux_libc_with(&|_path| false, &|program, _args| match program {
                 "getconf" => None,
                 "ldd" => Some(LinuxCommandOutput {
                     status_success: true,
@@ -758,8 +754,7 @@ mod tests {
                     stderr: String::new(),
                 }),
                 _ => None,
-            },
-        );
+            });
         assert_eq!(libc, Some(HostLinuxLibc::Gnu));
     }
 
