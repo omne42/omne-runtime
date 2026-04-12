@@ -1433,8 +1433,7 @@ mod tests {
         command_available_for_request, command_exists, command_exists_for_request,
         command_path_exists, default_recipe_sudo_mode_for_program, environment_assignment,
         map_command_output_error, resolve_program_for_direct_spawn, run_host_command,
-        run_host_recipe,
-        select_execution_for_request_with_status, should_try_sudo_with_status,
+        run_host_recipe, select_execution_for_request_with_status, should_try_sudo_with_status,
     };
     #[cfg(unix)]
     use super::{ResolvedExecutionPrograms, build_command_with_resolved_programs};
