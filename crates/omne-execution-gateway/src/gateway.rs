@@ -4,6 +4,15 @@ use std::path::{Path, PathBuf};
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 
+#[cfg(target_os = "linux")]
+use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
+#[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
+
 use crate::audit::{ExecDecision, ExecEvent, SandboxRuntimeObservation, requested_policy_meta};
 use crate::audit_log::{AuditLogger, PreparedAuditSink};
 use crate::error::{ExecError, ExecResult};
@@ -40,6 +49,14 @@ struct BoundProgram {
     path: PathBuf,
     identity: SameFileHandle,
     content_fingerprint: [u8; 32],
+    #[cfg(target_os = "linux")]
+    executable: LinuxBoundExecutable,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct LinuxBoundExecutable {
+    file: File,
 }
 
 #[derive(Debug)]
@@ -1288,10 +1305,16 @@ fn bind_absolute_program_path(requested_path: &Path) -> ExecResult<BoundProgram>
             path: canonical_path.clone(),
         }
     })?;
+    let content_fingerprint = fingerprint_program_contents(&canonical_path)?;
+    #[cfg(target_os = "linux")]
+    let executable =
+        bind_linux_program_executable(&canonical_path, &identity, &content_fingerprint)?;
     Ok(BoundProgram {
-        path: canonical_path.clone(),
+        path: canonical_path,
         identity,
-        content_fingerprint: fingerprint_program_contents(&canonical_path)?,
+        content_fingerprint,
+        #[cfg(target_os = "linux")]
+        executable,
     })
 }
 
@@ -1349,6 +1372,8 @@ fn revalidate_bound_program(program: &BoundProgram) -> ExecResult<()> {
             detail: "file contents changed".to_string(),
         });
     }
+    #[cfg(target_os = "linux")]
+    revalidate_linux_bound_program_executable(program)?;
 
     Ok(())
 }
@@ -1417,11 +1442,21 @@ fn spawn_command_with_monitor(
     command: &mut Command,
     monitor: sandbox::SandboxMonitor,
 ) -> ExecResult<(std::process::Child, Option<SandboxRuntimeObservation>)> {
+    #[cfg(all(test, target_os = "linux"))]
+    run_test_before_spawn_hook_for(command);
     let child = command.spawn().map_err(ExecError::Spawn)?;
     Ok((child, monitor.observe_after_spawn()))
 }
 
 fn build_prepared_spawn_command(prepared: &PreparedExecRequest, args: &[OsString]) -> Command {
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let proc_fd_path = linux_proc_fd_path(prepared.bound_program.executable.file.as_raw_fd());
+        let mut command = Command::new(&proc_fd_path);
+        command.arg0(&prepared.bound_program.path);
+        command
+    };
+    #[cfg(not(target_os = "linux"))]
     let mut command = Command::new(&prepared.bound_program.path);
     command.args(args);
     command
@@ -1461,6 +1496,91 @@ fn fingerprint_program_contents(path: &Path) -> ExecResult<[u8; 32]> {
         hasher.update(&buffer[..read]);
     }
     Ok(hasher.finalize().into())
+}
+
+#[cfg(target_os = "linux")]
+fn bind_linux_program_executable(
+    path: &Path,
+    expected_identity: &SameFileHandle,
+    expected_fingerprint: &[u8; 32],
+) -> ExecResult<LinuxBoundExecutable> {
+    let file = File::open(path).map_err(|err| ExecError::ProgramPathInvalid {
+        path: path.to_path_buf(),
+        detail: err.to_string(),
+    })?;
+    let proc_fd_path = linux_proc_fd_path(file.as_raw_fd());
+    let bound_identity = SameFileHandle::from_path(&proc_fd_path).map_err(|_| {
+        ExecError::PathIdentityUnavailable {
+            kind: "program",
+            path: path.to_path_buf(),
+        }
+    })?;
+    if &bound_identity != expected_identity {
+        return Err(ExecError::RequestPathChanged {
+            kind: "program",
+            path: path.to_path_buf(),
+            detail: "opened file identity changed".to_string(),
+        });
+    }
+
+    let bound_fingerprint = fingerprint_program_contents(&proc_fd_path)?;
+    if &bound_fingerprint != expected_fingerprint {
+        return Err(ExecError::RequestPathChanged {
+            kind: "program",
+            path: path.to_path_buf(),
+            detail: "opened file contents changed".to_string(),
+        });
+    }
+
+    Ok(LinuxBoundExecutable { file })
+}
+
+#[cfg(target_os = "linux")]
+fn revalidate_linux_bound_program_executable(program: &BoundProgram) -> ExecResult<()> {
+    let proc_fd_path = linux_proc_fd_path(program.executable.file.as_raw_fd());
+    let current_identity = SameFileHandle::from_path(&proc_fd_path).map_err(|_| {
+        ExecError::PathIdentityUnavailable {
+            kind: "program",
+            path: program.path.clone(),
+        }
+    })?;
+    if current_identity != program.identity {
+        return Err(ExecError::RequestPathChanged {
+            kind: "program",
+            path: program.path.clone(),
+            detail: "opened file identity changed".to_string(),
+        });
+    }
+
+    let current_fingerprint = fingerprint_program_contents(&proc_fd_path)?;
+    if current_fingerprint != program.content_fingerprint {
+        return Err(ExecError::RequestPathChanged {
+            kind: "program",
+            path: program.path.clone(),
+            detail: "opened file contents changed".to_string(),
+        });
+    }
+    set_linux_fd_inheritable(&program.executable.file, &program.path)?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_proc_fd_path(fd: i32) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{fd}"))
+}
+
+#[cfg(target_os = "linux")]
+fn set_linux_fd_inheritable(file: &File, path: &Path) -> ExecResult<()> {
+    let mut current = fcntl_getfd(file).map_err(|err| ExecError::ProgramPathInvalid {
+        path: path.to_path_buf(),
+        detail: err.to_string(),
+    })?;
+    current.remove(FdFlags::CLOEXEC);
+    fcntl_setfd(file, current).map_err(|err| ExecError::ProgramPathInvalid {
+        path: path.to_path_buf(),
+        detail: err.to_string(),
+    })
 }
 
 fn is_explicit_program_path(program: &OsStr) -> bool {
@@ -1733,6 +1853,62 @@ fn post_preflight_denial_reason(err: &ExecError) -> Option<&'static str> {
             ..
         } => Some("cwd_outside_workspace"),
         _ => None,
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn run_test_before_spawn_hook_for(command: &Command) {
+    let mut hook = test_before_spawn_hook_cell()
+        .lock()
+        .expect("lock pre-spawn hook");
+    let should_run = hook.as_ref().is_some_and(|hook| hook.matches(command));
+    if should_run {
+        hook.take()
+            .expect("matched pre-spawn hook must exist")
+            .run();
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn test_before_spawn_hook_cell() -> &'static std::sync::Mutex<Option<TestBeforeSpawnHook>> {
+    static TEST_BEFORE_SPAWN_HOOK: OnceLock<std::sync::Mutex<Option<TestBeforeSpawnHook>>> =
+        OnceLock::new();
+    TEST_BEFORE_SPAWN_HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn install_test_before_spawn_hook(hook: TestBeforeSpawnHook) {
+    *test_before_spawn_hook_cell()
+        .lock()
+        .expect("lock pre-spawn hook") = Some(hook);
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[derive(Debug)]
+enum TestBeforeSpawnHook {
+    Rename {
+        expected_cwd: PathBuf,
+        from: PathBuf,
+        to: PathBuf,
+    },
+}
+
+#[cfg(all(test, target_os = "linux"))]
+impl TestBeforeSpawnHook {
+    fn matches(&self, command: &Command) -> bool {
+        match self {
+            Self::Rename { expected_cwd, .. } => command
+                .get_current_dir()
+                .is_some_and(|cwd| path_equals(cwd, expected_cwd)),
+        }
+    }
+
+    fn run(self) {
+        match self {
+            Self::Rename { from, to, .. } => {
+                std::fs::rename(&from, &to).expect("rename test hook target");
+            }
+        }
     }
 }
 
@@ -5018,5 +5194,56 @@ mod tests {
             Err(ExecError::ProgramPathInvalid { ref detail, .. })
                 if detail == "program path must reference a spawnable executable"
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prepared_spawn_executes_bound_fd_even_if_program_path_is_replaced_after_revalidate() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let program = test_program_path(&workspace, "tool");
+        let replacement = test_program_path(&workspace, "tool.replacement");
+        let original_marker = workspace.path().join("bound.txt");
+        let replacement_marker = workspace.path().join("replaced.txt");
+
+        write_unix_shell_executable(&program, "touch bound.txt\n");
+        write_unix_shell_executable(&replacement, "touch replaced.txt\n");
+
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        );
+        let (_event, result) = gateway.prepare_command(&request);
+        let prepared = result.expect("prepare command");
+
+        install_test_before_spawn_hook(TestBeforeSpawnHook::Rename {
+            expected_cwd: workspace.path().to_path_buf(),
+            from: replacement.clone(),
+            to: program.clone(),
+        });
+
+        let child = prepared.spawn().expect("spawn prepared command");
+        let outcome = child.wait();
+        let (_event, result) = outcome.into_parts();
+        let status = result.expect("prepared command result");
+        assert!(status.success());
+        assert!(
+            original_marker.exists(),
+            "spawn should execute the originally bound program"
+        );
+        assert!(
+            !replacement_marker.exists(),
+            "spawn must not execute the replacement path target"
+        );
     }
 }

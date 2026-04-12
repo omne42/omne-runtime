@@ -1233,6 +1233,7 @@ dependencies = [
  "libc",
  "omne-fs-primitives",
  "policy-meta",
+ "rustix",
  "same-file",
  "serde",
  "serde_json",

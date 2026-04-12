@@ -16,6 +16,7 @@ policy-meta = { version = "0.1.0", git = "https://github.com/omne42/omne_foundat
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+rustix = { version = "1", features = ["fs", "std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
