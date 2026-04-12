@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Error, Result};
 
@@ -27,6 +27,72 @@ pub(super) struct PreparedTransferDestination {
 
 fn requested_transfer_destination_relative(paths: &ResolvedTransferPaths<'_>) -> PathBuf {
     Path::new(&paths.to_parent_relative).join(Path::new(&paths.to_name))
+}
+
+fn preview_parent_dir_under_root(
+    root_id: &str,
+    requested_parent: &Path,
+    canonical_root: &Path,
+) -> Result<PathBuf> {
+    let mut current = canonical_root.to_path_buf();
+    let mut current_relative = PathBuf::new();
+    let mut components = requested_parent.components().peekable();
+    while let Some(component) = components.next() {
+        let segment = match component {
+            Component::CurDir => continue,
+            Component::Normal(segment) => segment,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(Error::InvalidPath(format!(
+                    "invalid path {}: unsupported parent directory reference",
+                    requested_parent.display()
+                )));
+            }
+        };
+        current_relative.push(segment);
+        let next = current.join(segment);
+        match std::fs::symlink_metadata(&next) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() || meta.is_dir() {
+                    current = next
+                        .canonicalize()
+                        .map_err(|err| Error::io_path("canonicalize", &current_relative, err))?;
+                    if !crate::path_utils::starts_with_case_insensitive_normalized(
+                        &current,
+                        canonical_root,
+                    ) {
+                        return Err(Error::OutsideRoot {
+                            root_id: root_id.to_string(),
+                            path: requested_parent.to_path_buf(),
+                        });
+                    }
+                    continue;
+                }
+                return Err(Error::InvalidPath(format!(
+                    "path component {} is not a directory",
+                    current_relative.display()
+                )));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                current.push(segment);
+                for remaining in components {
+                    match remaining {
+                        Component::CurDir => {}
+                        Component::Normal(remaining) => current.push(remaining),
+                        Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                            return Err(Error::InvalidPath(format!(
+                                "invalid path {}: unsupported parent directory reference",
+                                requested_parent.display()
+                            )));
+                        }
+                    }
+                }
+                return Ok(current);
+            }
+            Err(err) => return Err(Error::io_path("symlink_metadata", &current_relative, err)),
+        }
+    }
+
+    Ok(current)
 }
 
 pub(super) fn resolve_transfer_paths<'ctx>(
@@ -128,6 +194,37 @@ pub(super) fn prepare_transfer_destination(
     let requested_relative = requested_transfer_destination_relative(paths);
     if ctx.redactor.is_path_denied(&requested_relative) {
         return Err(Error::SecretPathDenied(requested_relative));
+    }
+
+    let preview_relative_parent = match ctx.ensure_dir_under_root(root_id, &paths.to_parent_relative, false)
+    {
+        Ok(canonical_parent) => crate::path_utils::strip_prefix_case_insensitive_normalized(
+            &canonical_parent,
+            paths.canonical_root,
+        )
+        .ok_or_else(|| Error::OutsideRoot {
+            root_id: root_id.to_string(),
+            path: paths.requested_to.clone(),
+        })?,
+        Err(Error::IoPath { source, .. })
+            if paths.to_parent.is_none() && source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            let preview_parent =
+                preview_parent_dir_under_root(root_id, &paths.to_parent_relative, paths.canonical_root)?;
+            crate::path_utils::strip_prefix_case_insensitive_normalized(
+                &preview_parent,
+                paths.canonical_root,
+            )
+            .ok_or_else(|| Error::OutsideRoot {
+                root_id: root_id.to_string(),
+                path: paths.requested_to.clone(),
+            })?
+        }
+        Err(err) => return Err(err),
+    };
+    let preview_relative = preview_relative_parent.join(Path::new(&paths.to_name));
+    if ctx.redactor.is_path_denied(&preview_relative) {
+        return Err(Error::SecretPathDenied(preview_relative));
     }
 
     if paths.to_parent.is_none() {

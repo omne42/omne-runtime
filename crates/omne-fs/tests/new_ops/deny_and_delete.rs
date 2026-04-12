@@ -296,6 +296,43 @@ fn move_path_denies_after_canonicalization_through_symlink_parent() {
 }
 
 #[test]
+#[cfg(any(unix, windows))]
+fn move_path_denies_after_canonicalization_with_create_parents_without_side_effects() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("deny")).expect("mkdir");
+    std::fs::write(dir.path().join("from.txt"), "source").expect("write");
+    if !create_symlink_dir_or_skip(&dir.path().join("deny"), &dir.path().join("alias_parent")) {
+        return;
+    }
+
+    let ctx = ctx_with_deny_glob(dir.path(), WriteScope::WorkspaceWrite);
+    let err = move_path(
+        &ctx,
+        MovePathRequest {
+            root_id: "root".to_string(),
+            from: PathBuf::from("from.txt"),
+            to: PathBuf::from("alias_parent/nested/out.txt"),
+            overwrite: false,
+            create_parents: true,
+        },
+    )
+    .expect_err("move_path should reject denied canonical destination before creating parents");
+    assert_secret_path_denied_any(
+        err,
+        &[
+            PathBuf::from("deny"),
+            PathBuf::from("deny").join("nested"),
+            PathBuf::from("deny").join("nested").join("out.txt"),
+        ],
+    );
+    assert!(dir.path().join("from.txt").exists());
+    assert!(
+        !dir.path().join("deny").join("nested").exists(),
+        "canonical deny must not create destination parents"
+    );
+}
+
+#[test]
 fn copy_file_denies_secret_requested_destination_path() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(dir.path().join("deny")).expect("mkdir");
@@ -366,6 +403,43 @@ fn copy_file_denies_after_canonicalization_through_symlink_parent() {
         &[PathBuf::from("deny"), PathBuf::from("deny").join("out.txt")],
     );
     assert!(dir.path().join("from.txt").exists());
+}
+
+#[test]
+#[cfg(any(unix, windows))]
+fn copy_file_denies_after_canonicalization_with_create_parents_without_side_effects() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("deny")).expect("mkdir");
+    std::fs::write(dir.path().join("from.txt"), "source").expect("write");
+    if !create_symlink_dir_or_skip(&dir.path().join("deny"), &dir.path().join("alias_parent")) {
+        return;
+    }
+
+    let ctx = ctx_with_deny_glob(dir.path(), WriteScope::WorkspaceWrite);
+    let err = copy_file(
+        &ctx,
+        CopyFileRequest {
+            root_id: "root".to_string(),
+            from: PathBuf::from("from.txt"),
+            to: PathBuf::from("alias_parent/nested/out.txt"),
+            overwrite: false,
+            create_parents: true,
+        },
+    )
+    .expect_err("copy_file should reject denied canonical destination before creating parents");
+    assert_secret_path_denied_any(
+        err,
+        &[
+            PathBuf::from("deny"),
+            PathBuf::from("deny").join("nested"),
+            PathBuf::from("deny").join("nested").join("out.txt"),
+        ],
+    );
+    assert!(dir.path().join("from.txt").exists());
+    assert!(
+        !dir.path().join("deny").join("nested").exists(),
+        "canonical deny must not create destination parents"
+    );
 }
 
 #[test]
