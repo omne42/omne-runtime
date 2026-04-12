@@ -18,6 +18,8 @@
 - 从受支持的 archive 中提取目标二进制并安装到目标路径，且提取阶段受默认 extracted-byte 预算约束；同一 binary 目标的整个 install attempt 同样按归一化后的 destination identity 做 advisory lock 串行化。
 - 把受支持的 archive 目录树解到 `omne-fs-primitives` 提供的 staged 目录，并在默认 extracted-byte / entry-count 预算内成功后替换目标目录。
 - 对同一个 archive tree 目标目录，安装阶段按目标做 advisory lock 串行化，锁名基于归一化后的 destination identity 派生，避免 root alias 或词法等价路径把同一个真实目录拆成多把锁。
+- 当 archive tree 目标是 `toolchain` 这类单段相对路径时，lock root 必须归一化到非空 ambient root
+  `"."`，不能把空 parent path 直接传给 lock primitive。
 - 对 archive tree 中会物化到 staged 目录的条目，如果两个输出路径只在大小写上不同，而 staged 目标文件系统本身大小写不敏感，则安装必须 fail-closed，不能把最终结果交给宿主文件系统的路径折叠语义决定。
 - 对 archive tree 中会物化目录项的条目，要求 staging 根及其内部落点父目录链必须是 staging 目录下的真实目录；命中这些受管组件里的 symlink 祖先时 fail-closed，不能借由已创建链接把后续 regular file 写出到 staging 目录之外。
 - 对 archive tree 中落到 leaf 的 regular file、symlink 和 hard link，使用 `omne-fs-primitives` 的 capability-style directory handle 先写入随机临时 leaf，再在同一父目录内 rename 到最终 leaf；已存在的 directory/symlink/special leaf 必须 fail-closed，避免 staged extraction 依赖 ambient 路径或 `remove + create/link` 的 leaf 级 TOCTOU。

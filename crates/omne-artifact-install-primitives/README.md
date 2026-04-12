@@ -25,6 +25,9 @@ Reusable artifact download and install primitives shared by higher-level callers
 - direct binary artifact atomic installation, serialized for the full per-destination install attempt so a second installer cannot race ahead to download/commit the same target
 - binary-from-archive installation with the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget and the same full per-destination install lock
 - archive-tree installation via `omne-fs-primitives` staged directory replacement plus exported extracted-byte and entry-count budgets
+- archive-tree destination locking derives a normalized per-target identity and uses `"."` as the
+  ambient lock root for single-component relative destinations such as `toolchain`, so
+  same-process and concurrent callers do not fall through to an empty lock root
 - archive-tree installation now reuses `omne-archive-primitives` for archive traversal, path
   sanitization, link validation, and extraction-budget accounting instead of carrying a duplicate
   archive reader stack locally
