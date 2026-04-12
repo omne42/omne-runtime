@@ -86,12 +86,8 @@ impl GatewayPolicy {
 
     pub fn load_json(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
         let path = path.as_ref();
-        let content = read_utf8_regular_file(
-            path,
-            "gateway policy",
-            MAX_POLICY_JSON_BYTES,
-            "policy file",
-        )?;
+        let content =
+            read_utf8_regular_file(path, "gateway policy", MAX_POLICY_JSON_BYTES, "policy file")?;
         let policy = serde_json::from_str::<Self>(&content)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
         Ok(policy)
