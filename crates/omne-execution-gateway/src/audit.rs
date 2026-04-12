@@ -2,9 +2,9 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use policy_meta::PolicyMetaV1;
-use serde::ser::SerializeSeq;
 use serde::Serialize;
 use serde::Serializer;
+use serde::ser::SerializeSeq;
 
 use policy_meta::ExecutionIsolation;
 
