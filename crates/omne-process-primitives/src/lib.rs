@@ -78,11 +78,9 @@ impl ProcessTreeCleanup {
 
     #[cfg(not(windows))]
     pub fn new(child: &tokio::process::Child) -> io::Result<Self> {
-        Self::from_pid(
-            child.id().ok_or_else(|| {
-                io::Error::other("cannot capture process-tree identity for a child without a pid")
-            })?,
-        )
+        Self::from_pid(child.id().ok_or_else(|| {
+            io::Error::other("cannot capture process-tree identity for a child without a pid")
+        })?)
     }
 
     pub fn from_std_child(child: &std::process::Child) -> io::Result<Self> {
@@ -778,8 +776,7 @@ mod tests {
         build_linux_process_group_identity, capture_linux_process_group_identity,
         configure_command_for_process_tree, configure_std_command_for_process_tree,
         ensure_linux_leader_is_current_child, ensure_unix_process_group_is_dedicated,
-        parse_linux_process_identity_stat,
-        should_kill_linux_process_group,
+        parse_linux_process_identity_stat, should_kill_linux_process_group,
     };
     use rustix::process::{Pid, Signal, kill_process};
     use std::io;
