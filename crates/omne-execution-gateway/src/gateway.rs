@@ -4692,7 +4692,7 @@ mod tests {
         assert_eq!(record["result"]["status"], "execution_error");
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, target_os = "linux"))]
     #[test]
     fn execute_spawn_failure_updates_event_to_deny() {
         use std::os::unix::fs::PermissionsExt;
