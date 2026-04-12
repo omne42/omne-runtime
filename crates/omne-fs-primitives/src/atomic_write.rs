@@ -1143,7 +1143,9 @@ mod tests {
             .expect("stage directory");
 
         let staged_path = staged.path().to_path_buf();
-        let err = staged.commit().expect_err("non-directory destination must fail");
+        let err = staged
+            .commit()
+            .expect_err("non-directory destination must fail");
         assert!(matches!(err, super::AtomicDirectoryError::Validation(_)));
         assert!(
             !staged_path.exists(),
