@@ -1763,6 +1763,20 @@ mod tests {
         ExitStatus::from_raw(code)
     }
 
+    fn sample_event(program: impl Into<OsString>) -> ExecEvent {
+        let workspace = tempdir().expect("create temp workspace");
+        let gateway = ExecGateway::with_supported_isolation(ExecutionIsolation::BestEffort);
+        let request = ExecRequest::new(
+            program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            ExecutionIsolation::BestEffort,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+        gateway.evaluate(&request)
+    }
+
     #[cfg(unix)]
     #[test]
     fn opaque_launcher_detection_rejects_non_utf8_basename() {
