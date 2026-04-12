@@ -335,8 +335,7 @@ where
 #[cfg(target_os = "linux")]
 fn detect_host_linux_libc_from_proc_maps(proc_maps: &str) -> LinuxLibcDetection {
     let normalized = proc_maps.to_ascii_lowercase();
-    let musl_marker_present =
-        normalized.contains("ld-musl-") || normalized.contains("libc.musl-");
+    let musl_marker_present = normalized.contains("ld-musl-") || normalized.contains("libc.musl-");
     let gnu_marker_present = normalized.contains("ld-linux-") || normalized.contains("libc.so.6");
 
     classify_linux_libc_markers(musl_marker_present, gnu_marker_present)
