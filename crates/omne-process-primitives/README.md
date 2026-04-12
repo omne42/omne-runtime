@@ -48,7 +48,8 @@ Low-level host-command and process-tree primitives shared across callers.
 - sudo resolution that ignores both request-scoped and ambient `PATH` pollution when choosing the `sudo` binary or the elevated bare-command target, and only auto-escalates canonical system package manager commands whose explicit paths match the same binary identity trusted standard locations resolve for that manager name
 - default sudo-mode selection driven by the canonical `omne-system-package-primitives` manager catalog
 - optional `sudo -n` probing on Unix
-- process-tree cleanup setup and best-effort termination
+- process-tree cleanup setup and best-effort termination, including `std::process::Command`,
+  `std::process::Child`, and raw PID-friendly entry points alongside the existing tokio API
 - fail-closed process-tree capture on Unix unless the child was spawned into its own dedicated process group via `configure_command_for_process_tree`
 - Linux process-tree cleanup capture that now fails closed if the leader identity is already gone before capture completes, instead of arming a later `killpg` from a bare historical PGID
 - Windows `taskkill` cleanup that waits for command success before skipping descendant fallback
