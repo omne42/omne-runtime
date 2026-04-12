@@ -1442,7 +1442,7 @@ fn spawn_command_with_monitor(
     command: &mut Command,
     monitor: sandbox::SandboxMonitor,
 ) -> ExecResult<(std::process::Child, Option<SandboxRuntimeObservation>)> {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     run_test_before_spawn_hook_for(command);
     let child = command.spawn().map_err(ExecError::Spawn)?;
     Ok((child, monitor.observe_after_spawn()))
@@ -1856,7 +1856,7 @@ fn post_preflight_denial_reason(err: &ExecError) -> Option<&'static str> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 fn run_test_before_spawn_hook_for(command: &Command) {
     let mut hook = test_before_spawn_hook_cell()
         .lock()
@@ -1869,21 +1869,21 @@ fn run_test_before_spawn_hook_for(command: &Command) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 fn test_before_spawn_hook_cell() -> &'static std::sync::Mutex<Option<TestBeforeSpawnHook>> {
     static TEST_BEFORE_SPAWN_HOOK: OnceLock<std::sync::Mutex<Option<TestBeforeSpawnHook>>> =
         OnceLock::new();
     TEST_BEFORE_SPAWN_HOOK.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 fn install_test_before_spawn_hook(hook: TestBeforeSpawnHook) {
     *test_before_spawn_hook_cell()
         .lock()
         .expect("lock pre-spawn hook") = Some(hook);
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[derive(Debug)]
 enum TestBeforeSpawnHook {
     Rename {
@@ -1893,7 +1893,7 @@ enum TestBeforeSpawnHook {
     },
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 impl TestBeforeSpawnHook {
     fn matches(&self, command: &Command) -> bool {
         match self {
