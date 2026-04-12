@@ -116,6 +116,7 @@ struct UnixProcessGroupIdentity {
 #[cfg(all(unix, target_os = "linux"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LinuxProcessIdentity {
+    parent_pid: i32,
     process_group_id: i32,
     session_id: i32,
     start_ticks: u64,
@@ -162,7 +163,24 @@ fn capture_linux_process_group_identity(
         }
         Err(error) => return Err(error),
     };
+    let leader_identity = ensure_linux_leader_is_current_child(leader_identity)?;
     build_linux_process_group_identity(leader_pid, leader_identity).map(Some)
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_linux_leader_is_current_child(
+    identity: LinuxProcessIdentity,
+) -> io::Result<LinuxProcessIdentity> {
+    let current_pid = i32::try_from(std::process::id())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid current process id"))?;
+    if identity.parent_pid == current_pid {
+        return Ok(identity);
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "process-tree cleanup requires the captured Linux process-group leader to still be this process child during capture",
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -258,9 +276,7 @@ fn parse_linux_process_identity_stat(stat: &str) -> io::Result<LinuxProcessIdent
     let _state = fields
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing proc state"))?;
-    let _parent_pid = fields
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing proc parent pid"))?;
+    let parent_pid = parse_proc_stat_i32(fields.next(), "missing proc parent pid")?;
     let process_group_id = parse_proc_stat_i32(fields.next(), "missing proc group id")?;
     let session_id = parse_proc_stat_i32(fields.next(), "missing proc session id")?;
     for _ in 0..15 {
@@ -270,6 +286,7 @@ fn parse_linux_process_identity_stat(stat: &str) -> io::Result<LinuxProcessIdent
     }
     let start_ticks = parse_proc_stat_u64(fields.next(), "missing proc start time")?;
     Ok(LinuxProcessIdentity {
+        parent_pid,
         process_group_id,
         session_id,
         start_ticks,
@@ -719,7 +736,8 @@ mod tests {
         CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
         build_linux_process_group_identity, capture_linux_process_group_identity,
         configure_command_for_process_tree, ensure_unix_process_group_is_dedicated,
-        parse_linux_process_identity_stat, should_kill_linux_process_group,
+        ensure_linux_leader_is_current_child, parse_linux_process_identity_stat,
+        should_kill_linux_process_group,
     };
     use rustix::process::{Pid, Signal, kill_process};
     use std::io;
@@ -727,25 +745,26 @@ mod tests {
     use std::process::Stdio;
     use std::time::Duration;
 
+    fn fixture_identity(process_group_id: i32, session_id: i32, start_ticks: u64) -> LinuxProcessIdentity {
+        LinuxProcessIdentity {
+            parent_pid: 1,
+            process_group_id,
+            session_id,
+            start_ticks,
+        }
+    }
+
     #[test]
     fn reused_leader_pid_fails_closed_even_if_surviving_group_members_remain() {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
             process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
-            leader_identity: LinuxProcessIdentity {
-                process_group_id: 31337,
-                session_id: 7,
-                start_ticks: 11,
-            },
+            leader_identity: fixture_identity(31337, 7, 11),
         };
 
         assert!(!should_kill_linux_process_group(
             identity,
-            Ok(LinuxProcessIdentity {
-                process_group_id: 9999,
-                session_id: 7,
-                start_ticks: 22,
-            }),
+            Ok(fixture_identity(9999, 7, 22)),
         ));
     }
 
@@ -754,11 +773,7 @@ mod tests {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
             process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
-            leader_identity: LinuxProcessIdentity {
-                process_group_id: 31337,
-                session_id: 7,
-                start_ticks: 11,
-            },
+            leader_identity: fixture_identity(31337, 7, 11),
         };
 
         assert!(!should_kill_linux_process_group(
@@ -772,11 +787,7 @@ mod tests {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
             process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
-            leader_identity: LinuxProcessIdentity {
-                process_group_id: 31337,
-                session_id: 7,
-                start_ticks: 11,
-            },
+            leader_identity: fixture_identity(31337, 7, 11),
         };
 
         assert!(!should_kill_linux_process_group(
@@ -790,20 +801,12 @@ mod tests {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
             process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
-            leader_identity: LinuxProcessIdentity {
-                process_group_id: 31337,
-                session_id: 7,
-                start_ticks: 11,
-            },
+            leader_identity: fixture_identity(31337, 7, 11),
         };
 
         assert!(!should_kill_linux_process_group(
             identity,
-            Ok(LinuxProcessIdentity {
-                process_group_id: 31337,
-                session_id: 7,
-                start_ticks: 22,
-            }),
+            Ok(fixture_identity(31337, 7, 22)),
         ));
     }
 
@@ -812,20 +815,12 @@ mod tests {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
             process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
-            leader_identity: LinuxProcessIdentity {
-                process_group_id: 31337,
-                session_id: 7,
-                start_ticks: 11,
-            },
+            leader_identity: fixture_identity(31337, 7, 11),
         };
 
         assert!(!should_kill_linux_process_group(
             identity,
-            Ok(LinuxProcessIdentity {
-                process_group_id: 31337,
-                session_id: 99,
-                start_ticks: 11,
-            }),
+            Ok(fixture_identity(31337, 99, 11)),
         ));
     }
 
@@ -834,11 +829,7 @@ mod tests {
         let identity = UnixProcessGroupIdentity {
             leader_pid: Pid::from_raw(4242).expect("leader pid must be non-zero"),
             process_group_id: Pid::from_raw(31337).expect("process group id must be non-zero"),
-            leader_identity: LinuxProcessIdentity {
-                process_group_id: 31337,
-                session_id: 7,
-                start_ticks: 11,
-            },
+            leader_identity: fixture_identity(31337, 7, 11),
         };
 
         assert!(!should_kill_linux_process_group(
@@ -867,11 +858,7 @@ mod tests {
         let leader_pid = Pid::from_raw(4242).expect("leader pid must be non-zero");
         let identity = build_linux_process_group_identity(
             leader_pid,
-            LinuxProcessIdentity {
-                process_group_id: 4242,
-                session_id: 7,
-                start_ticks: 11,
-            },
+            fixture_identity(4242, 7, 11),
         )
         .expect("dedicated process group snapshot should be accepted");
 
@@ -879,11 +866,7 @@ mod tests {
         assert_eq!(identity.process_group_id, leader_pid);
         assert_eq!(
             identity.leader_identity,
-            LinuxProcessIdentity {
-                process_group_id: 4242,
-                session_id: 7,
-                start_ticks: 11,
-            }
+            fixture_identity(4242, 7, 11)
         );
     }
 
@@ -892,11 +875,7 @@ mod tests {
         let leader_pid = Pid::from_raw(4242).expect("leader pid must be non-zero");
         let err = build_linux_process_group_identity(
             leader_pid,
-            LinuxProcessIdentity {
-                process_group_id: 0,
-                session_id: 7,
-                start_ticks: 11,
-            },
+            fixture_identity(0, 7, 11),
         )
         .expect_err("zero pgid must fail closed");
 
@@ -925,12 +904,34 @@ mod tests {
 
         assert_eq!(
             identity,
-            LinuxProcessIdentity {
-                process_group_id: 4242,
-                session_id: 7,
-                start_ticks: 11,
-            }
+            fixture_identity(4242, 7, 11)
         );
+    }
+
+    #[test]
+    fn linux_capture_rejects_identity_when_leader_is_not_current_child() {
+        let current_pid = i32::try_from(std::process::id()).expect("pid fits i32");
+        let err = ensure_linux_leader_is_current_child(LinuxProcessIdentity {
+            parent_pid: current_pid.saturating_add(1),
+            process_group_id: 4242,
+            session_id: 7,
+            start_ticks: 11,
+        })
+        .expect_err("non-child identity must fail closed");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn linux_capture_accepts_identity_when_leader_is_current_child() {
+        let current_pid = i32::try_from(std::process::id()).expect("pid fits i32");
+        let identity = ensure_linux_leader_is_current_child(LinuxProcessIdentity {
+            parent_pid: current_pid,
+            process_group_id: 4242,
+            session_id: 7,
+            start_ticks: 11,
+        })
+        .expect("current child identity should be accepted");
+        assert_eq!(identity.parent_pid, current_pid);
     }
 
     fn process_terminated_or_zombie(pid: u32) -> bool {
