@@ -107,15 +107,18 @@ pub enum AtomicDirectoryError {
         path: PathBuf,
         source: io::Error,
     },
-    RollbackFailed {
-        op: &'static str,
-        path: PathBuf,
-        backup_path: PathBuf,
-        source: Box<io::Error>,
-        staged_cleanup_path: Option<PathBuf>,
-        staged_cleanup_source: Option<Box<io::Error>>,
-    },
+    RollbackFailed(Box<RollbackFailureDetail>),
     Validation(String),
+}
+
+#[derive(Debug)]
+pub struct RollbackFailureDetail {
+    pub op: &'static str,
+    pub path: PathBuf,
+    pub backup_path: PathBuf,
+    pub source: io::Error,
+    pub staged_cleanup_path: Option<PathBuf>,
+    pub staged_cleanup_source: Option<io::Error>,
 }
 
 impl AtomicWriteError {
@@ -169,14 +172,14 @@ impl AtomicDirectoryError {
         staged_cleanup_path: Option<PathBuf>,
         staged_cleanup_source: Option<io::Error>,
     ) -> Self {
-        Self::RollbackFailed {
+        Self::RollbackFailed(Box::new(RollbackFailureDetail {
             op,
             path: path.to_path_buf(),
             backup_path,
-            source: Box::new(source),
+            source,
             staged_cleanup_path,
-            staged_cleanup_source: staged_cleanup_source.map(Box::new),
-        }
+            staged_cleanup_source,
+        }))
     }
 }
 
@@ -212,22 +215,17 @@ impl fmt::Display for AtomicDirectoryError {
                 "filesystem update committed but cleanup failed during {op} ({}): {source}",
                 path.display()
             ),
-            Self::RollbackFailed {
-                op,
-                path,
-                backup_path,
-                source,
-                staged_cleanup_path,
-                staged_cleanup_source,
-            } => {
+            Self::RollbackFailed(detail) => {
                 write!(
                     f,
                     "atomic directory replace failed during {op} ({}); original directory remains recoverable at {}: {source}",
-                    path.display(),
-                    backup_path.display()
+                    detail.path.display(),
+                    detail.backup_path.display(),
+                    op = detail.op,
+                    source = detail.source
                 )?;
                 if let (Some(cleanup_path), Some(cleanup_source)) =
-                    (staged_cleanup_path, staged_cleanup_source)
+                    (&detail.staged_cleanup_path, &detail.staged_cleanup_source)
                 {
                     write!(
                         f,
@@ -257,7 +255,7 @@ impl std::error::Error for AtomicDirectoryError {
             Self::IoPath { source, .. }
             | Self::CommittedButUnsynced { source, .. }
             | Self::CommittedButCleanupFailed { source, .. } => Some(source),
-            Self::RollbackFailed { source, .. } => Some(source.as_ref()),
+            Self::RollbackFailed(detail) => Some(&detail.source),
             Self::Validation(_) => None,
         }
     }
@@ -1366,23 +1364,16 @@ mod tests {
         .expect_err("restore failure should expose backup path");
 
         match err {
-            super::AtomicDirectoryError::RollbackFailed {
-                op,
-                path,
-                backup_path,
-                source,
-                staged_cleanup_path,
-                staged_cleanup_source,
-            } => {
-                assert_eq!(op, "restore_existing");
-                assert_eq!(path, destination);
-                assert_eq!(backup_path, expected_backup_path);
+            super::AtomicDirectoryError::RollbackFailed(detail) => {
+                assert_eq!(detail.op, "restore_existing");
+                assert_eq!(detail.path, destination);
+                assert_eq!(detail.backup_path, expected_backup_path);
                 assert!(matches!(
-                    source.kind(),
+                    detail.source.kind(),
                     std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotADirectory
                 ));
-                assert!(staged_cleanup_path.is_none());
-                assert!(staged_cleanup_source.is_none());
+                assert!(detail.staged_cleanup_path.is_none());
+                assert!(detail.staged_cleanup_source.is_none());
             }
             other => panic!("unexpected error: {other:?}"),
         }
