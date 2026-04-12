@@ -412,6 +412,20 @@ impl Drop for StagedAtomicDirectory {
     }
 }
 
+fn missing_staged_file_error(staged_path: &Path) -> AtomicWriteError {
+    AtomicWriteError::Validation(format!(
+        "staged file `{}` is no longer available",
+        staged_path.display()
+    ))
+}
+
+fn missing_staged_directory_error(staged_path: &Path) -> AtomicDirectoryError {
+    AtomicDirectoryError::Validation(format!(
+        "staged directory `{}` is no longer available",
+        staged_path.display()
+    ))
+}
+
 fn normalize_platform_root_alias(path: &Path) -> io::Result<PathBuf> {
     #[cfg(not(target_os = "macos"))]
     {
@@ -481,7 +495,10 @@ impl StagedAtomicFile {
     }
 
     pub fn commit(mut self) -> Result<(), AtomicWriteError> {
-        let staged = self.staged.as_mut().expect("staged file missing");
+        let staged = self
+            .staged
+            .as_mut()
+            .ok_or_else(|| missing_staged_file_error(&self.staged_path))?;
         staged
             .flush()
             .map_err(|err| AtomicWriteError::io_path("flush", &self.destination, err))?;
@@ -520,13 +537,24 @@ impl StagedAtomicDirectory {
     pub fn try_clone_dir(&self) -> io::Result<Dir> {
         self.staged_root
             .as_ref()
-            .expect("staged directory missing")
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "staged directory `{}` is no longer available",
+                        self.staged_path.display()
+                    ),
+                )
+            })?
             .dir()
             .try_clone()
     }
 
     pub fn commit(mut self) -> Result<(), AtomicDirectoryError> {
-        let staged_root = self.staged_root.as_ref().expect("staged directory missing");
+        let staged_root = self
+            .staged_root
+            .as_ref()
+            .ok_or_else(|| missing_staged_directory_error(&self.staged_path))?;
         validate_staged_directory(staged_root.dir(), &self.staged_path)?;
         sync_directory_tree(staged_root.dir(), &self.staged_path)?;
         let _ = self.staged_root.take();
@@ -679,23 +707,25 @@ fn commit_replace_directory(
     destination: &Path,
     options: &AtomicDirectoryOptions,
 ) -> Result<(), AtomicDirectoryError> {
-    commit_replace_directory_with_backup_root_cleanup(
+    commit_replace_directory_with_cleanup_hooks(
         parent_root,
         staged_leaf,
         destination_leaf,
         destination,
         options,
         remove_backup_root,
+        remove_staged_directory,
     )
 }
 
-fn commit_replace_directory_with_backup_root_cleanup(
+fn commit_replace_directory_with_cleanup_hooks(
     parent_root: &RootDir,
     staged_leaf: &Path,
     destination_leaf: &Path,
     destination: &Path,
     options: &AtomicDirectoryOptions,
     backup_root_cleanup: fn(RootDir) -> io::Result<()>,
+    staged_cleanup: fn(&RootDir, &Path) -> io::Result<()>,
 ) -> Result<(), AtomicDirectoryError> {
     let mut backup_root = None;
 
@@ -737,6 +767,7 @@ fn commit_replace_directory_with_backup_root_cleanup(
         .dir()
         .rename(staged_leaf, parent_root.dir(), destination_leaf)
     {
+        let staged_cleanup_error = staged_cleanup(parent_root, staged_leaf).err();
         let restore_error = match backup_root.as_ref() {
             Some(holder) => holder
                 .dir()
@@ -744,8 +775,13 @@ fn commit_replace_directory_with_backup_root_cleanup(
                 .err(),
             None => None,
         };
-        let _ = parent_root.dir().remove_dir_all(staged_leaf);
         let mut error = AtomicDirectoryError::io_path("rename_staged", destination, err);
+        if let Some(staged_cleanup_error) = staged_cleanup_error {
+            error = AtomicDirectoryError::Validation(format!(
+                "{error}; cleanup staged directory `{}` failed: {staged_cleanup_error}",
+                parent_root.path().join(staged_leaf).display()
+            ));
+        }
         if let Some(restore_error) = restore_error {
             error = AtomicDirectoryError::Validation(format!(
                 "{error}; restore existing directory `{}` failed: {restore_error}",
@@ -774,6 +810,10 @@ fn remove_backup_root(holder: RootDir) -> io::Result<()> {
     holder.into_dir().remove_open_dir_all()
 }
 
+fn remove_staged_directory(parent_root: &RootDir, staged_leaf: &Path) -> io::Result<()> {
+    parent_root.dir().remove_dir_all(staged_leaf)
+}
+
 #[cfg(all(not(windows), unix))]
 fn sync_dir_handle(dir: &Dir) -> io::Result<()> {
     match rustix::fs::fsync(dir) {
@@ -798,6 +838,7 @@ mod tests {
     use std::io::{Read, Seek, SeekFrom, Write};
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    use std::path::Path;
 
     #[cfg(unix)]
     use super::sync_directory_tree;
@@ -963,13 +1004,14 @@ mod tests {
             .expect("validate staged directory");
         let _ = staged.staged_root.take();
 
-        let err = super::commit_replace_directory_with_backup_root_cleanup(
+        let err = super::commit_replace_directory_with_cleanup_hooks(
             &staged.parent_root,
             &staged.staged_leaf,
             &staged.destination_leaf,
             &destination,
             &staged.options,
             |_| Err(std::io::Error::other("cleanup failed")),
+            super::remove_staged_directory,
         )
         .expect_err("cleanup failure should surface");
 
@@ -1002,6 +1044,100 @@ mod tests {
             .commit()
             .expect_err("non-directory destination must fail");
         assert!(matches!(err, super::AtomicDirectoryError::Validation(_)));
+    }
+
+    #[test]
+    fn staged_atomic_file_commit_returns_error_after_staged_file_is_consumed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tool");
+        let mut staged = stage_file_atomically(&destination, &AtomicWriteOptions::default())
+            .expect("stage file");
+        let _ = staged.staged.take();
+
+        let err = staged
+            .commit()
+            .expect_err("missing staged file must fail closed");
+        match err {
+            super::AtomicWriteError::Validation(message) => {
+                assert!(message.contains("is no longer available"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn staged_atomic_directory_clone_returns_error_after_staged_dir_is_consumed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tree");
+        let mut staged =
+            stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+                .expect("stage directory");
+        let _ = staged.staged_root.take();
+
+        let err = staged
+            .try_clone_dir()
+            .expect_err("missing staged directory must fail closed");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(err.to_string().contains("is no longer available"));
+    }
+
+    #[test]
+    fn staged_atomic_directory_commit_returns_error_after_staged_dir_is_consumed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tree");
+        let mut staged =
+            stage_directory_atomically(&destination, &AtomicDirectoryOptions::default())
+                .expect("stage directory");
+        let _ = staged.staged_root.take();
+
+        let err = staged
+            .commit()
+            .expect_err("missing staged directory must fail closed");
+        match err {
+            super::AtomicDirectoryError::Validation(message) => {
+                assert!(message.contains("is no longer available"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn staged_atomic_directory_reports_staged_cleanup_failure_after_rename_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("tree");
+        let blocker = temp.path().join("tree.blocker");
+        let stage_options = AtomicDirectoryOptions {
+            overwrite_existing: false,
+            ..AtomicDirectoryOptions::default()
+        };
+        let staged =
+            stage_directory_atomically(&destination, &stage_options).expect("stage directory");
+        std::fs::write(&blocker, b"blocker").expect("create rename blocker");
+
+        let err = super::commit_replace_directory_with_cleanup_hooks(
+            &staged.parent_root,
+            &staged.staged_leaf,
+            Path::new("tree.blocker"),
+            &blocker,
+            &stage_options,
+            super::remove_backup_root,
+            |_, _| Err(std::io::Error::other("staged cleanup failed")),
+        )
+        .expect_err("rename failure should surface staged cleanup failure");
+
+        match err {
+            super::AtomicDirectoryError::Validation(message) => {
+                assert!(message.contains("cleanup staged directory"));
+                assert!(message.contains("staged cleanup failed"));
+                assert!(message.contains("rename_staged"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert!(
+            staged.path().exists(),
+            "failing cleanup hook should leave staged tree behind"
+        );
+        assert!(blocker.is_file(), "rename blocker must remain in place");
     }
 
     #[cfg(unix)]
