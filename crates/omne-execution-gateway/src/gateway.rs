@@ -992,6 +992,11 @@ fn normalized_env_name_ascii(name: &OsStr) -> Option<String> {
 }
 
 fn canonicalize_workspace_root(path: &Path) -> ExecResult<PathBuf> {
+    if !path.is_absolute() {
+        return Err(ExecError::WorkspaceRootInvalid {
+            path: path.to_path_buf(),
+        });
+    }
     canonicalize_directory_without_forbidden_ancestors(path).map_err(|_| {
         ExecError::WorkspaceRootInvalid {
             path: path.to_path_buf(),
@@ -1013,6 +1018,12 @@ fn resolve_request_paths(cwd: &Path, workspace_root: &Path) -> ExecResult<Resolv
 }
 
 fn canonicalize_cwd_within_workspace(cwd: &Path, workspace_root: &Path) -> ExecResult<PathBuf> {
+    if !cwd.is_absolute() {
+        return Err(ExecError::CwdInvalid {
+            cwd: cwd.to_path_buf(),
+            detail: "cwd must be absolute".to_string(),
+        });
+    }
     let cwd = canonicalize_directory_without_forbidden_ancestors(cwd).map_err(|detail| {
         ExecError::CwdInvalid {
             cwd: cwd.to_path_buf(),
@@ -1948,6 +1959,66 @@ mod tests {
 
         match err {
             ExecError::CwdInvalid { cwd, .. } => assert_eq!(cwd, missing),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn rejects_relative_cwd_as_cwd_invalid() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            PathBuf::from("."),
+            ExecutionIsolation::BestEffort,
+            canonical_test_root(&workspace),
+        );
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("cwd_invalid"));
+        match result.expect_err("relative cwd should be rejected") {
+            ExecError::CwdInvalid { cwd, detail } => {
+                assert_eq!(cwd, PathBuf::from("."));
+                assert_eq!(detail, "cwd must be absolute");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn rejects_relative_workspace_root_as_workspace_root_invalid() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::BestEffort,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let cwd = canonical_test_root(&workspace);
+
+        let request = ExecRequest::new(
+            OsString::from(dummy_program()),
+            Vec::<OsString>::new(),
+            &cwd,
+            ExecutionIsolation::BestEffort,
+            PathBuf::from("."),
+        );
+
+        let (event, result) = gateway.execute(&request).into_parts();
+        assert_eq!(event.decision, ExecDecision::Deny);
+        assert_eq!(event.reason.as_deref(), Some("workspace_root_invalid"));
+        match result.expect_err("relative workspace_root should be rejected") {
+            ExecError::WorkspaceRootInvalid { path } => assert_eq!(path, PathBuf::from(".")),
             other => panic!("unexpected error: {other}"),
         }
     }

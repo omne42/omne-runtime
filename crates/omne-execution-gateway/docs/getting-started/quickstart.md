@@ -22,9 +22,9 @@ let gateway = ExecGateway::with_policy(GatewayPolicy {
 let req = ExecRequest::new(
     "echo",
     ["hello"],
-    ".",
+    "/absolute/workspace",
     ExecutionIsolation::None,
-    ".",
+    "/absolute/workspace",
 )
 .with_declared_mutation(false);
 
@@ -117,6 +117,7 @@ Example fragment:
 ## 5. Common Failure Cases
 
 - `cwd` outside `workspace_root` -> denied.
+- relative `cwd` or `workspace_root` -> denied as `cwd_invalid` / `workspace_root_invalid`.
 - missing, inaccessible, or non-directory `cwd` -> denied as `cwd_invalid`.
 - requested `best_effort` or `strict` on current hosts -> denied as `isolation_not_supported`.
 - requested `strict` above host support -> denied.
