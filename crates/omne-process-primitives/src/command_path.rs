@@ -112,6 +112,7 @@ pub(crate) fn is_spawnable_command_path(path: &Path) -> bool {
     #[cfg(windows)]
     {
         is_regular_command_path(path)
+            && has_windows_spawnable_extension(path, &windows_path_extensions())
     }
 }
 
@@ -206,19 +207,49 @@ fn resolve_path_entry_dir(dir: &Path, base_dir: Option<&Path>) -> Option<PathBuf
     Some(base_dir?.join(dir))
 }
 
-#[cfg(windows)]
+#[cfg(any(test, windows))]
+fn has_windows_spawnable_extension(path: &Path, path_extensions: &[String]) -> bool {
+    let Some(extension) = path.extension() else {
+        return false;
+    };
+
+    let candidate = format!(".{}", extension.to_string_lossy().to_ascii_lowercase());
+    path_extensions.iter().any(|value| value == &candidate)
+}
+
+#[cfg(any(test, windows))]
+#[cfg_attr(not(windows), allow(dead_code))]
 fn windows_path_extensions() -> Vec<String> {
-    std::env::var("PATHEXT")
-        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+    windows_path_extensions_from_var(std::env::var("PATHEXT").ok().as_deref())
+}
+
+#[cfg(any(test, windows))]
+fn windows_path_extensions_from_var(path_ext: Option<&str>) -> Vec<String> {
+    path_ext
+        .unwrap_or(".COM;.EXE;.BAT;.CMD")
         .split(';')
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
+        .filter_map(normalize_windows_path_extension)
         .collect()
+}
+
+#[cfg(any(test, windows))]
+fn normalize_windows_path_extension(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    Some(if value.starts_with('.') {
+        value.to_ascii_lowercase()
+    } else {
+        format!(".{}", value.to_ascii_lowercase())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::resolve_command_path;
+    use super::{has_windows_spawnable_extension, windows_path_extensions_from_var};
     #[cfg(unix)]
     use super::{
         is_regular_command_path, is_spawnable_command_path, resolve_available_command_path,
@@ -443,6 +474,54 @@ mod tests {
         );
 
         assert_eq!(resolved, Some(tool));
+    }
+
+    #[test]
+    fn windows_spawnable_command_path_requires_allowed_extension() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let plain_file = temp.path().join("tool.txt");
+        std::fs::write(&plain_file, "not a command").expect("write plain file");
+
+        assert!(!has_windows_spawnable_extension(
+            &plain_file,
+            &windows_path_extensions_from_var(Some(".EXE;.CMD"))
+        ));
+    }
+
+    #[test]
+    fn windows_spawnable_command_path_accepts_pathext_case_insensitively() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command = temp.path().join("tool.CmD");
+        std::fs::write(&command, "@echo off\r\n").expect("write command");
+
+        assert!(has_windows_spawnable_extension(
+            &command,
+            &windows_path_extensions_from_var(Some(".exe;.cmd"))
+        ));
+    }
+
+    #[test]
+    fn windows_spawnable_command_path_accepts_custom_pathext_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let command = temp.path().join("tool.PY");
+        std::fs::write(&command, "print('hi')\n").expect("write command");
+
+        assert!(has_windows_spawnable_extension(
+            &command,
+            &windows_path_extensions_from_var(Some(".EXE;PY"))
+        ));
+    }
+
+    #[test]
+    fn windows_pathext_normalization_ignores_empty_entries() {
+        assert_eq!(
+            windows_path_extensions_from_var(Some(".EXE;; cmd ;BAT")),
+            vec![
+                String::from(".exe"),
+                String::from(".cmd"),
+                String::from(".bat")
+            ]
+        );
     }
 
     #[cfg(unix)]
