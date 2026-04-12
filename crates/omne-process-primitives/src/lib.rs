@@ -49,10 +49,12 @@ pub enum CleanupDisposition {
     DirectChildKillRequired,
 }
 
-pub fn configure_command_for_process_tree(command: &mut tokio::process::Command) {
-    #[cfg(unix)]
-    command.process_group(0);
+pub fn configure_std_command_for_process_tree(command: &mut std::process::Command) {
+    configure_std_command_for_process_group(command);
+}
 
+pub fn configure_command_for_process_tree(command: &mut tokio::process::Command) {
+    configure_tokio_command_for_process_group(command);
     command.kill_on_drop(true);
 }
 
@@ -76,9 +78,30 @@ impl ProcessTreeCleanup {
 
     #[cfg(not(windows))]
     pub fn new(child: &tokio::process::Child) -> io::Result<Self> {
+        Self::from_pid(
+            child.id().ok_or_else(|| {
+                io::Error::other("cannot capture process-tree identity for a child without a pid")
+            })?,
+        )
+    }
+
+    pub fn from_std_child(child: &std::process::Child) -> io::Result<Self> {
+        Self::from_pid(child.id())
+    }
+
+    #[cfg(windows)]
+    pub fn from_pid(pid: u32) -> io::Result<Self> {
+        Ok(Self {
+            windows_job: None,
+            windows_process_identity: Mutex::new(capture_windows_process_identity(Some(pid))),
+        })
+    }
+
+    #[cfg(not(windows))]
+    pub fn from_pid(pid: u32) -> io::Result<Self> {
         Ok(Self {
             #[cfg(unix)]
-            unix_process_group: capture_unix_process_group_identity(child)?,
+            unix_process_group: capture_unix_process_group_identity(pid)?,
         })
     }
 
@@ -104,6 +127,24 @@ impl ProcessTreeCleanup {
 }
 
 #[cfg(unix)]
+fn configure_std_command_for_process_group(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_std_command_for_process_group(_command: &mut std::process::Command) {}
+
+#[cfg(unix)]
+fn configure_tokio_command_for_process_group(command: &mut tokio::process::Command) {
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_tokio_command_for_process_group(_command: &mut tokio::process::Command) {}
+
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug)]
 struct UnixProcessGroupIdentity {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -123,10 +164,8 @@ struct LinuxProcessIdentity {
 }
 
 #[cfg(unix)]
-fn capture_unix_process_group_identity(
-    child: &tokio::process::Child,
-) -> io::Result<Option<UnixProcessGroupIdentity>> {
-    let leader_pid = child_process_pid(child).ok_or_else(|| {
+fn capture_unix_process_group_identity(pid: u32) -> io::Result<Option<UnixProcessGroupIdentity>> {
+    let leader_pid = child_process_pid(pid).ok_or_else(|| {
         io::Error::other("cannot capture process-tree identity for a child without a pid")
     })?;
     #[cfg(target_os = "linux")]
@@ -199,8 +238,8 @@ fn build_linux_process_group_identity(
 }
 
 #[cfg(unix)]
-fn child_process_pid(child: &tokio::process::Child) -> Option<rustix::process::Pid> {
-    let raw_pid = i32::try_from(child.id()?).ok()?;
+fn child_process_pid(pid: u32) -> Option<rustix::process::Pid> {
+    let raw_pid = i32::try_from(pid).ok()?;
     rustix::process::Pid::from_raw(raw_pid)
 }
 
@@ -737,8 +776,9 @@ mod tests {
     use super::{
         CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
         build_linux_process_group_identity, capture_linux_process_group_identity,
-        configure_command_for_process_tree, ensure_linux_leader_is_current_child,
-        ensure_unix_process_group_is_dedicated, parse_linux_process_identity_stat,
+        configure_command_for_process_tree, configure_std_command_for_process_tree,
+        ensure_linux_leader_is_current_child, ensure_unix_process_group_is_dedicated,
+        parse_linux_process_identity_stat,
         should_kill_linux_process_group,
     };
     use rustix::process::{Pid, Signal, kill_process};
@@ -927,6 +967,33 @@ mod tests {
         })
         .expect("current child identity should be accepted");
         assert_eq!(identity.parent_pid, current_pid);
+    }
+
+    #[test]
+    fn std_child_cleanup_capture_supports_same_dedicated_group_contract() -> io::Result<()> {
+        let mut command = std::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_std_command_for_process_tree(&mut command);
+
+        let mut child = command.spawn()?;
+        let mut cleanup = ProcessTreeCleanup::from_std_child(&child)?;
+
+        assert_eq!(
+            cleanup.start_termination(),
+            CleanupDisposition::DirectChildKillRequired
+        );
+        cleanup.kill_tree();
+
+        let child_pid = Pid::from_raw(i32::try_from(child.id()).expect("pid fits i32"))
+            .expect("child pid must be non-zero");
+        let _ = kill_process(child_pid, Signal::KILL);
+        let _ = child.wait();
+        Ok(())
     }
 
     fn process_terminated_or_zombie(pid: u32) -> bool {

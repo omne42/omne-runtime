@@ -39,7 +39,7 @@
 - `HostRecipeError::Display` 只输出退出状态和捕获字节数，不把完整 stdout/stderr 直接拼进错误字符串；需要原始输出的调用方仍可从结构化 `Output` 读取。
 - 基于 `omne-system-package-primitives` 的 canonical manager 目录为系统包命令提供默认 `sudo` 模式选择，避免并行维护两份 manager 名称表。
 - Unix 下对 bare system command 做 `sudo -n` 试探。
-- 配置子进程以支持进程树清理；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
+- 配置子进程以支持进程树清理；tokio caller 可以继续使用 `configure_command_for_process_tree`，而不想把上层公共边界绑到 tokio 的 caller 则可以使用 `configure_std_command_for_process_tree` 与 PID / `std::process::Child` 友好的 cleanup 入口；如果子进程没有被放进独立进程组，cleanup capture 会 fail-closed。
 - 捕获进程树清理标识并执行 best-effort 终止。
 - Windows 下先等待 `taskkill /T /F` 的真实退出结果；只有它失败时才回退到 best-effort
   root+descendant sweep，而且 fallback 会继续绑定 capture 时记录的 root `(pid, start_time)`
