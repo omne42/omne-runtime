@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- pin the elevated sudo target `PATH` to trusted standard directories instead of replaying request-controlled `PATH`, so auto-sudo package-manager runs cannot reintroduce caller-chosen root search paths after launcher/target resolution has already been hardened
 - add a runtime regression that creates `ProcessTreeCleanup` after the Linux leader has already
   exited but before it is reaped, so later cleanup stays fail-closed once the leader identity is
   gone instead of trusting the historical PGID

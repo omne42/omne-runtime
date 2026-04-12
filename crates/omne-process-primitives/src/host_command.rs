@@ -15,6 +15,9 @@ use crate::command_path::{
 };
 
 const DEFAULT_CAPTURED_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024 * 1024;
+#[cfg(unix)]
+const TRUSTED_SUDO_TARGET_PATH: &str =
+    "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/opt/local/bin";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostCommandSudoMode {
@@ -530,12 +533,18 @@ fn effective_target_environment_assignments_with_base_env<I>(
 where
     I: IntoIterator<Item = (OsString, OsString)>,
 {
+    let keep_trusted_path = !should_skip_request_environment_name(OsStr::new("PATH"), env_remove);
     let mut effective = base_env
         .into_iter()
-        .filter(|(name, _)| !should_skip_request_environment_name(name, env_remove))
+        .filter(|(name, _)| {
+            !should_skip_request_environment_name(name, env_remove) && !is_path_env_name(name)
+        })
         .collect::<Vec<_>>();
 
     for (name, value) in request_env {
+        if is_path_env_name(name) {
+            continue;
+        }
         if let Some((_, existing_value)) =
             effective.iter_mut().find(|(existing, _)| existing == name)
         {
@@ -543,6 +552,10 @@ where
             continue;
         }
         effective.push((name.clone(), value.clone()));
+    }
+
+    if keep_trusted_path {
+        effective.push((OsString::from("PATH"), trusted_sudo_target_path_var()));
     }
 
     effective
@@ -560,6 +573,16 @@ fn environment_assignment(name: OsString, value: OsString) -> OsString {
 
 fn should_skip_request_environment_name(name: &OsStr, env_remove: &[OsString]) -> bool {
     env_remove.iter().any(|removed| removed == name)
+}
+
+#[cfg(unix)]
+fn trusted_sudo_target_path_var() -> OsString {
+    OsString::from(TRUSTED_SUDO_TARGET_PATH)
+}
+
+#[cfg(not(unix))]
+fn trusted_sudo_target_path_var() -> OsString {
+    std::env::var_os("PATH").unwrap_or_else(|| OsString::from("PATH"))
 }
 
 fn run_command_output(
@@ -1400,6 +1423,8 @@ mod tests {
     use super::run_host_command_with_capture_options;
     #[cfg(unix)]
     use super::should_try_sudo_for_request_with_status;
+    #[cfg(unix)]
+    use super::trusted_sudo_target_path_var;
     use super::{
         HostCommandCaptureOptions, HostCommandError, HostCommandExecution, HostCommandRequest,
         HostCommandRunOptions, HostCommandSudoMode, HostRecipeError, HostRecipeRequest,
@@ -1621,7 +1646,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sudo_command_reconstructs_direct_effective_environment() {
+    fn sudo_command_reconstructs_effective_environment_with_trusted_path() {
         let explicit_program = std::env::current_exe().expect("current exe");
         let args = vec![OsString::from("-c"), OsString::from("exit 0")];
         let Some((ambient_name, ambient_value)) = std::env::vars_os().find(|(name, _)| {
@@ -1677,9 +1702,16 @@ mod tests {
         assert!(
             env_assignments.contains(&environment_assignment(
                 OsString::from("PATH"),
+                trusted_sudo_target_path_var()
+            )),
+            "sudo target must receive the trusted PATH override: {env_assignments:?}"
+        );
+        assert!(
+            !env_assignments.contains(&environment_assignment(
+                OsString::from("PATH"),
                 OsString::from("/tmp/not-trusted:/usr/bin")
             )),
-            "sudo target must receive request PATH override: {env_assignments:?}"
+            "sudo target must not receive request-controlled PATH entries: {env_assignments:?}"
         );
         assert!(
             env_assignments.contains(&environment_assignment(
@@ -1719,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_target_environment_assignments_follow_direct_overlay_model() {
+    fn effective_target_environment_assignments_use_trusted_path_overlay() {
         let request_env = vec![
             (OsString::from("PATH"), OsString::from("/request/bin")),
             (
@@ -1755,9 +1787,15 @@ mod tests {
         assert!(
             assignments.contains(&environment_assignment(
                 OsString::from("PATH"),
-                OsString::from("/request/bin")
+                trusted_sudo_target_path_var()
             )),
-            "request PATH should override ambient PATH: {assignments:?}"
+            "sudo target PATH should be pinned to trusted standard locations: {assignments:?}"
+        );
+        assert!(
+            !assignments
+                .iter()
+                .any(|assignment| assignment == "PATH=/request/bin"),
+            "request PATH must not survive into the sudo target environment: {assignments:?}"
         );
         assert!(
             assignments.contains(&environment_assignment(
@@ -1785,6 +1823,22 @@ mod tests {
                 .iter()
                 .any(|assignment| assignment == "OMNE_REMOVED=ambient-removed"),
             "env_remove entries must not survive into the effective target environment: {assignments:?}"
+        );
+    }
+
+    #[test]
+    fn effective_target_environment_assignments_respect_path_removal() {
+        let assignments = effective_target_environment_assignments_with_base_env(
+            &[(OsString::from("PATH"), OsString::from("/request/bin"))],
+            &[OsString::from("PATH")],
+            [(OsString::from("PATH"), OsString::from("/ambient/bin"))],
+        );
+
+        assert!(
+            !assignments
+                .iter()
+                .any(|assignment| assignment.to_string_lossy().starts_with("PATH=")),
+            "PATH removal should suppress even the trusted sudo PATH: {assignments:?}"
         );
     }
 
