@@ -735,8 +735,8 @@ mod tests {
     use super::{
         CleanupDisposition, LinuxProcessIdentity, ProcessTreeCleanup, UnixProcessGroupIdentity,
         build_linux_process_group_identity, capture_linux_process_group_identity,
-        configure_command_for_process_tree, ensure_unix_process_group_is_dedicated,
-        ensure_linux_leader_is_current_child, parse_linux_process_identity_stat,
+        configure_command_for_process_tree, ensure_linux_leader_is_current_child,
+        ensure_unix_process_group_is_dedicated, parse_linux_process_identity_stat,
         should_kill_linux_process_group,
     };
     use rustix::process::{Pid, Signal, kill_process};
@@ -745,7 +745,11 @@ mod tests {
     use std::process::Stdio;
     use std::time::Duration;
 
-    fn fixture_identity(process_group_id: i32, session_id: i32, start_ticks: u64) -> LinuxProcessIdentity {
+    fn fixture_identity(
+        process_group_id: i32,
+        session_id: i32,
+        start_ticks: u64,
+    ) -> LinuxProcessIdentity {
         LinuxProcessIdentity {
             parent_pid: 1,
             process_group_id,
@@ -856,28 +860,20 @@ mod tests {
     #[test]
     fn linux_capture_identity_uses_single_snapshot_for_group_and_leader_identity() {
         let leader_pid = Pid::from_raw(4242).expect("leader pid must be non-zero");
-        let identity = build_linux_process_group_identity(
-            leader_pid,
-            fixture_identity(4242, 7, 11),
-        )
-        .expect("dedicated process group snapshot should be accepted");
+        let identity =
+            build_linux_process_group_identity(leader_pid, fixture_identity(4242, 7, 11))
+                .expect("dedicated process group snapshot should be accepted");
 
         assert_eq!(identity.leader_pid, leader_pid);
         assert_eq!(identity.process_group_id, leader_pid);
-        assert_eq!(
-            identity.leader_identity,
-            fixture_identity(4242, 7, 11)
-        );
+        assert_eq!(identity.leader_identity, fixture_identity(4242, 7, 11));
     }
 
     #[test]
     fn linux_capture_identity_rejects_invalid_zero_process_group_id() {
         let leader_pid = Pid::from_raw(4242).expect("leader pid must be non-zero");
-        let err = build_linux_process_group_identity(
-            leader_pid,
-            fixture_identity(0, 7, 11),
-        )
-        .expect_err("zero pgid must fail closed");
+        let err = build_linux_process_group_identity(leader_pid, fixture_identity(0, 7, 11))
+            .expect_err("zero pgid must fail closed");
 
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("invalid proc group id"));
@@ -902,10 +898,7 @@ mod tests {
         )
         .expect("parse proc stat");
 
-        assert_eq!(
-            identity,
-            fixture_identity(4242, 7, 11)
-        );
+        assert_eq!(identity, fixture_identity(4242, 7, 11));
     }
 
     #[test]
