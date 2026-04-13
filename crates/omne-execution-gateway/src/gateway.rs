@@ -4396,8 +4396,14 @@ mod tests {
                 detail: "directory identity changed".to_string(),
             },
         );
-        assert_eq!(changed.event.reason.as_deref(), Some("request_path_changed"));
-        assert!(matches!(changed.error, ExecError::RequestPathChanged { .. }));
+        assert_eq!(
+            changed.event.reason.as_deref(),
+            Some("request_path_changed")
+        );
+        assert!(matches!(
+            changed.error,
+            ExecError::RequestPathChanged { .. }
+        ));
 
         let identity_unavailable = classify_request_path_preflight_error(
             &gateway,
