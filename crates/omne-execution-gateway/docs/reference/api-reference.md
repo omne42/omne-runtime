@@ -158,6 +158,10 @@ Notable fields:
 - `reason`
 - `sandbox_runtime`
 
+`reason` is a stable denial-classification label. Path-boundary races that occur after path
+validation now remain distinguishable as `path_identity_unavailable` and
+`request_path_changed` instead of being flattened into `cwd_outside_workspace`.
+
 ## ExecutionOutcome
 
 - fields:

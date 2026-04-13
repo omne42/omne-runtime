@@ -35,6 +35,8 @@ agent plan
 | `mutation_declaration_required` | Rebuild the request and set `with_declared_mutation(true/false)` explicitly before evaluation. |
 | `cwd_invalid` | Fix missing, inaccessible, or non-directory working directory input before retrying. |
 | `cwd_outside_workspace` | Correct path under workspace root. |
+| `path_identity_unavailable` | Retry with stable paths after removing races (rename/symlink flips) around `cwd`/`workspace_root`. |
+| `request_path_changed` | Rebuild and re-preflight after path identity/content changed between checks and execution. |
 | `mutation_requires_allowlisted_program` | Route via a policy-allowlisted explicit executable path instead of a bare program name. |
 | `opaque_command_forbidden` | Replace shell/interpreter launcher usage with a more specific directly auditable executable. |
 | `isolation_none_forbidden` | Explicitly allow `none`, or defer execution until a supported native isolation backend exists. |

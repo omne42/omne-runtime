@@ -605,12 +605,22 @@ fn classify_request_path_preflight_error(
             gateway.deny_preflight(event, "workspace_root_invalid", err)
         }
         err @ ExecError::CwdInvalid { .. } => gateway.deny_preflight(event, "cwd_invalid", err),
-        err @ ExecError::CwdOutsideWorkspace { .. }
-        | err @ ExecError::PathIdentityUnavailable { .. }
-        | err @ ExecError::RequestPathChanged { .. }
-        | err @ ExecError::RelativeProgramPath { .. }
+        err @ ExecError::CwdOutsideWorkspace { .. } => {
+            gateway.deny_preflight(event, "cwd_outside_workspace", err)
+        }
+        err @ ExecError::PathIdentityUnavailable {
+            kind: "cwd" | "workspace_root",
+            ..
+        } => gateway.deny_preflight(event, "path_identity_unavailable", err),
+        err @ ExecError::RequestPathChanged {
+            kind: "cwd" | "workspace_root",
+            ..
+        } => gateway.deny_preflight(event, "request_path_changed", err),
+        err @ ExecError::RelativeProgramPath { .. }
         | err @ ExecError::ProgramPathInvalid { .. }
         | err @ ExecError::ProgramLookupFailed { .. }
+        | err @ ExecError::PathIdentityUnavailable { .. }
+        | err @ ExecError::RequestPathChanged { .. }
         | err @ ExecError::MutationDeclarationRequired
         | err @ ExecError::PolicyDefaultIsolationMismatch { .. }
         | err @ ExecError::PolicyDenied(_)
@@ -1842,15 +1852,15 @@ fn post_preflight_denial_reason(err: &ExecError) -> &'static str {
             kind: "program", ..
         }
         | ExecError::ProgramPathInvalid { .. } => "program_path_invalid",
-        ExecError::CwdOutsideWorkspace { .. }
-        | ExecError::PathIdentityUnavailable {
+        ExecError::CwdOutsideWorkspace { .. } => "cwd_outside_workspace",
+        ExecError::PathIdentityUnavailable {
             kind: "cwd" | "workspace_root",
             ..
-        }
-        | ExecError::RequestPathChanged {
+        } => "path_identity_unavailable",
+        ExecError::RequestPathChanged {
             kind: "cwd" | "workspace_root",
             ..
-        } => "cwd_outside_workspace",
+        } => "request_path_changed",
         ExecError::Sandbox(_) => "sandbox_apply_failed",
         ExecError::Spawn(_) => "spawn_failed",
         _ => "post_preflight_execution_failed",
@@ -4240,7 +4250,7 @@ mod tests {
         );
 
         let cwd_event = event_for_post_preflight_error(
-            event,
+            event.clone(),
             &ExecError::RequestPathChanged {
                 kind: "cwd",
                 path: PathBuf::from("/tmp/cwd"),
@@ -4248,7 +4258,20 @@ mod tests {
             },
         );
         assert_eq!(cwd_event.decision, ExecDecision::Deny);
-        assert_eq!(cwd_event.reason.as_deref(), Some("cwd_outside_workspace"));
+        assert_eq!(cwd_event.reason.as_deref(), Some("request_path_changed"));
+
+        let cwd_identity_unavailable_event = event_for_post_preflight_error(
+            event,
+            &ExecError::PathIdentityUnavailable {
+                kind: "cwd",
+                path: PathBuf::from("/tmp/cwd"),
+            },
+        );
+        assert_eq!(cwd_identity_unavailable_event.decision, ExecDecision::Deny);
+        assert_eq!(
+            cwd_identity_unavailable_event.reason.as_deref(),
+            Some("path_identity_unavailable")
+        );
     }
 
     #[test]
@@ -4341,6 +4364,57 @@ mod tests {
 
         assert_eq!(err.event.reason.as_deref(), Some("cwd_outside_workspace"));
         assert!(matches!(err.error, ExecError::ProgramLookupFailed { .. }));
+    }
+
+    #[test]
+    fn request_path_error_classifier_uses_specific_identity_reasons() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy::default(),
+            ExecutionIsolation::BestEffort,
+        );
+        let event = ExecEvent {
+            decision: ExecDecision::Run,
+            requested_isolation: ExecutionIsolation::BestEffort,
+            requested_policy_meta: requested_policy_meta(ExecutionIsolation::BestEffort),
+            supported_isolation: ExecutionIsolation::BestEffort,
+            program: OsString::from("tool"),
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: PathBuf::from("/tmp"),
+            workspace_root: PathBuf::from("/tmp"),
+            declared_mutation: false,
+            reason: None,
+            sandbox_runtime: None,
+        };
+
+        let changed = classify_request_path_preflight_error(
+            &gateway,
+            event.clone(),
+            ExecError::RequestPathChanged {
+                kind: "cwd",
+                path: PathBuf::from("/tmp"),
+                detail: "directory identity changed".to_string(),
+            },
+        );
+        assert_eq!(changed.event.reason.as_deref(), Some("request_path_changed"));
+        assert!(matches!(changed.error, ExecError::RequestPathChanged { .. }));
+
+        let identity_unavailable = classify_request_path_preflight_error(
+            &gateway,
+            event,
+            ExecError::PathIdentityUnavailable {
+                kind: "workspace_root",
+                path: PathBuf::from("/tmp"),
+            },
+        );
+        assert_eq!(
+            identity_unavailable.event.reason.as_deref(),
+            Some("path_identity_unavailable")
+        );
+        assert!(matches!(
+            identity_unavailable.error,
+            ExecError::PathIdentityUnavailable { .. }
+        ));
     }
 
     #[cfg(unix)]
@@ -4688,7 +4762,7 @@ mod tests {
             serde_json::from_str(audit.lines().last().expect("execution error record"))
                 .expect("parse audit record");
         assert_eq!(record["event"]["decision"], "deny");
-        assert_eq!(record["event"]["reason"], "cwd_outside_workspace");
+        assert_eq!(record["event"]["reason"], "request_path_changed");
         assert_eq!(record["result"]["status"], "execution_error");
     }
 

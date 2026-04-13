@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- keep `PathIdentityUnavailable` and `RequestPathChanged` denial reasons distinct from
+  `cwd_outside_workspace` in both preflight and post-preflight audit events, so path-identity
+  races no longer look like plain workspace-boundary violations
 - require request `cwd` and `workspace_root` to be absolute input paths during preflight, keeping denial reasons stable as `cwd_invalid` and `workspace_root_invalid` instead of resolving relative directories against the gateway process `cwd`
 - expose `ExecError::completed_status()` / `command_completed_successfully()` plus matching
   `ExecutionOutcome` helpers, and document that audit persistence stays bound to the descriptor

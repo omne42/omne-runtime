@@ -61,5 +61,7 @@
 - `workspace_root_invalid`
 - `cwd_invalid`
 - `cwd_outside_workspace`
+- `path_identity_unavailable`
+- `request_path_changed`
 - `audit_log_path_invalid`
 - `audit_log_unavailable`

@@ -151,6 +151,9 @@ authoritative `exit_code` / `signal` from that child status and reports the audi
 `error`, so downstream callers can see both "the command ran" and "audit persistence failed".
 If `cwd` is missing, inaccessible, or not a directory, the CLI surfaces `cwd_invalid` instead of
 mislabeling the input as `cwd_outside_workspace`.
+If `cwd` / `workspace_root` identity becomes unavailable or changes across the preflight-to-spawn
+window, the CLI preserves that distinction with `path_identity_unavailable` or
+`request_path_changed` instead of collapsing both into `cwd_outside_workspace`.
 `requested_isolation_source` explains whether the effective isolation came from the request payload
 or from `policy.default_isolation`.
 Current hosts report `supported_isolation = none`; `best_effort` and `strict` requests fail closed
