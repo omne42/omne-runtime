@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Re-exported `policy::WriteScope` from `omne-fs`, so downstream adapters can construct
+  `SandboxPolicy` with the crate's own policy-meta type instead of depending on a potentially
+  incompatible sibling `policy-meta` instance.
+
 - Clarified the `omne-fs` mutating-operation docs: writable roots may use `write_scope = workspace_write` or `write_scope = full_access`; the previous text incorrectly implied `workspace_write` was the only accepted mutating scope.
 
 - `list_dir` now spends `limits.max_walk_entries` budget while enumerating direct children, so oversized directory scans fail closed as `truncated=true` instead of walking arbitrarily many entries before applying the existing result/response caps.

@@ -106,6 +106,15 @@ pub struct PreparedCommand {
     args: Vec<OsString>,
     prepared: PreparedExecRequest,
     audit_sink: Option<PreparedAuditSink>,
+    stdin_mode: PreparedStdioMode,
+    stdout_mode: PreparedStdioMode,
+    stderr_mode: PreparedStdioMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreparedStdioMode {
+    Null,
+    Piped,
 }
 
 impl ExecutionOutcome {
@@ -138,12 +147,24 @@ impl PreparedChild {
         self.child.stdin.as_mut()
     }
 
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child.stdin.take()
+    }
+
     pub fn stdout(&mut self) -> Option<&mut ChildStdout> {
         self.child.stdout.as_mut()
     }
 
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child.stdout.take()
+    }
+
     pub fn stderr(&mut self) -> Option<&mut ChildStderr> {
         self.child.stderr.as_mut()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child.stderr.take()
     }
 
     pub fn sandbox_runtime(&self) -> Option<&SandboxRuntimeObservation> {
@@ -212,12 +233,32 @@ impl PreparedCommand {
         Some(self.prepared.resolved_paths.cwd.path.as_path())
     }
 
+    pub fn with_piped_stdin(mut self) -> Self {
+        self.stdin_mode = PreparedStdioMode::Piped;
+        self
+    }
+
+    pub fn with_piped_stdout(mut self) -> Self {
+        self.stdout_mode = PreparedStdioMode::Piped;
+        self
+    }
+
+    pub fn with_piped_stderr(mut self) -> Self {
+        self.stderr_mode = PreparedStdioMode::Piped;
+        self
+    }
+
     pub fn spawn(mut self) -> ExecResult<PreparedChild> {
         let event = self.prepared.event.clone();
         let result = revalidate_prepared_request(&self.prepared)
             .and_then(|_| {
                 let mut command = build_prepared_spawn_command(&self.prepared, &self.args);
-                configure_noninteractive_stdio(&mut command);
+                configure_prepared_stdio(
+                    &mut command,
+                    self.stdin_mode,
+                    self.stdout_mode,
+                    self.stderr_mode,
+                );
                 apply_prepared_request(&self.prepared, &mut command)
                     .and_then(|monitor| spawn_command_with_monitor(&mut command, monitor))
             })
@@ -388,6 +429,9 @@ impl ExecGateway {
                             args: request.args.clone(),
                             prepared,
                             audit_sink: None,
+                            stdin_mode: PreparedStdioMode::Null,
+                            stdout_mode: PreparedStdioMode::Null,
+                            stderr_mode: PreparedStdioMode::Null,
                         }),
                         audit_sink.take(),
                     )
@@ -1254,6 +1298,14 @@ fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<Boun
     Ok(BoundDirectory { path, identity })
 }
 
+pub fn resolve_bare_program_path_for_execution(program: &OsStr) -> Option<PathBuf> {
+    if is_explicit_program_path(program) {
+        return None;
+    }
+
+    resolve_bare_program_path(program)
+}
+
 fn bind_program_path(program: &OsStr) -> ExecResult<BoundProgram> {
     if is_explicit_program_path(program) {
         bind_explicit_program_path(program)
@@ -1473,10 +1525,33 @@ fn build_prepared_spawn_command(prepared: &PreparedExecRequest, args: &[OsString
 }
 
 fn configure_noninteractive_stdio(command: &mut Command) {
+    configure_prepared_stdio(
+        command,
+        PreparedStdioMode::Null,
+        PreparedStdioMode::Null,
+        PreparedStdioMode::Null,
+    );
+}
+
+fn configure_prepared_stdio(
+    command: &mut Command,
+    stdin_mode: PreparedStdioMode,
+    stdout_mode: PreparedStdioMode,
+    stderr_mode: PreparedStdioMode,
+) {
     command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(match stdin_mode {
+            PreparedStdioMode::Null => Stdio::null(),
+            PreparedStdioMode::Piped => Stdio::piped(),
+        })
+        .stdout(match stdout_mode {
+            PreparedStdioMode::Null => Stdio::null(),
+            PreparedStdioMode::Piped => Stdio::piped(),
+        })
+        .stderr(match stderr_mode {
+            PreparedStdioMode::Null => Stdio::null(),
+            PreparedStdioMode::Piped => Stdio::piped(),
+        });
 }
 
 fn configure_request_environment(env: &[(OsString, OsString)], command: &mut Command) {
@@ -3992,6 +4067,55 @@ mod tests {
             .canonicalize()
             .expect("canonicalize workspace");
         assert_eq!(prepared.current_dir(), Some(expected_cwd.as_path()));
+    }
+
+    #[test]
+    fn resolve_bare_program_path_for_execution_rejects_explicit_paths() {
+        assert!(
+            resolve_bare_program_path_for_execution(
+                resolved_non_mutating_program_path().as_os_str()
+            )
+            .is_none()
+        );
+        assert!(
+            resolve_bare_program_path_for_execution(OsStr::new(non_mutating_program())).is_some()
+        );
+    }
+
+    #[test]
+    fn prepared_command_can_pipe_and_take_stdio_handles() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let program = test_program_path(&workspace, "stdio");
+        write_test_executable_placeholder(&program);
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            host_supported_test_isolation(),
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+        let (_event, result) = gateway.prepare_command(&request);
+        let prepared = result
+            .expect("prepare command")
+            .with_piped_stdin()
+            .with_piped_stdout()
+            .with_piped_stderr();
+        let mut child = prepared.spawn().expect("spawn prepared child");
+        assert!(child.take_stdin().is_some());
+        assert!(child.take_stdout().is_some());
+        assert!(child.take_stderr().is_some());
+        let outcome = child.wait();
+        assert!(outcome.command_completed_successfully());
     }
 
     #[cfg(unix)]

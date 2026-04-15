@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- expose bare-program resolution plus prepared-command piped stdio/take-handle helpers so downstream tool runtimes can reuse the gateway's canonical executable binding and audited spawn boundary while still streaming stdin/stdout/stderr
 - keep `PathIdentityUnavailable` and `RequestPathChanged` denial reasons distinct from
   `cwd_outside_workspace` in both preflight and post-preflight audit events, so path-identity
   races no longer look like plain workspace-boundary violations
