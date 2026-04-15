@@ -20,7 +20,9 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - workspace boundary enforcement (`cwd` and `workspace_root` must be absolute input paths; `cwd` must stay inside `workspace_root`; both reject symlink or reparse-point ancestors before canonical binding, except for macOS root aliases such as `/var` and `/tmp`, and execution revalidates the bound directory identities before spawn)
 - mutation enforcement requires both an explicit absolute program path and an explicit mutation declaration
 - fail-closed denial for shell-like, interpreter, and multiplexing frontend launchers such as `sh`, `cmd`, `pwsh`, `python3.12`, `pip3.12`, and `nodejs`; policy allowlists cannot authorize them because the gateway cannot bind arbitrary script or subcommand semantics to a stable executable identity, and explicit-path aliases are checked against the final bound executable identity instead of only the caller-visible basename
-- gateway-managed spawns disconnect child stdio from the caller so `execute()` and prepared commands stay non-interactive by default
+- gateway-managed spawns disconnect child stdio from the caller by default, so `execute()` stays
+  non-interactive and prepared commands only surface child stdio when the caller opts into piped
+  handles explicitly before `spawn()`
 - structured decision events for audit/logging, including lossy display fields plus exact JSON encodings for `program` / `args` / explicit environment entries when OS strings are not valid UTF-8
 - mutating and non-mutating allowlists plus opaque-launcher gates evaluate native `OsStr` / `Path` inputs directly instead of relying on lossy UTF-8 coercion; Unix non-UTF-8 executable paths therefore cannot collide with UTF-8 allowlist entries through replacement-character text
 
@@ -71,7 +73,9 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `prepare_command` emits the preflight `prepared`/`prepare_error` audit record, and `PreparedChild::wait()` / `try_wait()` / drop finalization append the terminal execution audit record, so prepared execution no longer escapes the final audit boundary just because the caller owns the lifecycle after spawn.
 - `execute()` and `PreparedCommand::spawn()` both revalidate bound `cwd` / `workspace_root` identities immediately before spawn.
 - missing, inaccessible, or non-directory `cwd` values are reported as `cwd_invalid` instead of being mislabeled as workspace boundary violations.
-- `execute()` and `PreparedCommand::spawn()` bind `stdin/stdout/stderr` to null handles; callers that need interactive or captured stdio should use a different process primitive.
+- `execute()` always binds `stdin/stdout/stderr` to null handles; `PreparedCommand::spawn()`
+  does the same by default and only exposes child stdio when the caller explicitly opts into
+  piped handles via the prepared-command builder methods.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.
 
 ## Platform Capability (v0.1.0)

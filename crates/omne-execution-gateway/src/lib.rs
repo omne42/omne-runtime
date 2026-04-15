@@ -27,8 +27,7 @@ pub use crate::audit::{
 };
 pub use crate::error::{ExecError, ExecResult};
 pub use crate::gateway::{
-    CapabilityReport, ExecGateway, ExecutionOutcome, PreflightError, PreparedChild,
-    PreparedCommand, resolve_bare_program_path_for_execution,
+    CapabilityReport, ExecGateway, ExecutionOutcome, PreflightError, PreparedChild, PreparedCommand,
 };
 pub use crate::policy::GatewayPolicy;
 pub use crate::types::{ExecRequest, RequestResolution, RequestedIsolationSource};

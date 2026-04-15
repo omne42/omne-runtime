@@ -2,8 +2,7 @@
 use std::path::Component;
 use std::path::{Path, PathBuf};
 
-use policy_meta::PolicyMetaV1;
-pub use policy_meta::WriteScope;
+use policy_meta::{PolicyMetaV1, WriteScope};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};

@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-- expose bare-program resolution plus prepared-command piped stdio/take-handle helpers so downstream tool runtimes can reuse the gateway's canonical executable binding and audited spawn boundary while still streaming stdin/stdout/stderr
+- add opt-in prepared-command piped stdio/take-handle helpers while keeping bare-program
+  resolution crate-private, so downstream runtimes can reuse the audited spawn boundary without
+  turning `omne-execution-gateway` into a generic ambient executable lookup helper
 - keep `PathIdentityUnavailable` and `RequestPathChanged` denial reasons distinct from
   `cwd_outside_workspace` in both preflight and post-preflight audit events, so path-identity
   races no longer look like plain workspace-boundary violations
