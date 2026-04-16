@@ -50,29 +50,26 @@ jobs:
             New-Item -ItemType Directory -Force -Path (Split-Path $RepoDir -Parent) | Out-Null
             New-Item -ItemType Directory -Force -Path (Split-Path $MirrorDir -Parent) | Out-Null
 
-            git config --global http.version HTTP/1.1
-            git config --global --add safe.directory $RepoDir
-
             if (-not $mirrorExists) {
-              git clone --mirror $RepoUrl $MirrorDir
+              git -c http.version=HTTP/1.1 clone --mirror $RepoUrl $MirrorDir
             }
 
             git -C $MirrorDir remote set-url origin $RepoUrl
-            git -C $MirrorDir fetch --prune origin "+refs/heads/*:refs/heads/*" "+refs/pull/*:refs/pull/*" "+refs/tags/*:refs/tags/*"
+            git -c http.version=HTTP/1.1 -C $MirrorDir fetch --prune origin "+refs/heads/*:refs/heads/*" "+refs/pull/*:refs/pull/*" "+refs/tags/*:refs/tags/*"
 
             if (-not $repoExists) {
               git clone $MirrorDir $RepoDir
             }
 
-            git -C $RepoDir remote set-url origin $RepoUrl
-            git -C $RepoDir fetch --prune origin "+refs/heads/*:refs/remotes/origin/*" "+refs/pull/*:refs/remotes/pull/*" "+refs/tags/*:refs/tags/*"
-            git -C $RepoDir reset --hard $Ref
-            git -C $RepoDir clean -ffd
+            git -c safe.directory=$RepoDir -C $RepoDir remote set-url origin $RepoUrl
+            git -c http.version=HTTP/1.1 -c safe.directory=$RepoDir -C $RepoDir fetch --prune origin "+refs/heads/*:refs/remotes/origin/*" "+refs/pull/*:refs/remotes/pull/*" "+refs/tags/*:refs/tags/*"
+            git -c safe.directory=$RepoDir -C $RepoDir reset --hard $Ref
+            git -c safe.directory=$RepoDir -C $RepoDir clean -ffdx
 
             return [ordered]@{
               mirror_exists = $mirrorExists
               repo_exists = $repoExists
-              head = (git -C $RepoDir rev-parse HEAD)
+              head = (git -c safe.directory=$RepoDir -C $RepoDir rev-parse HEAD)
             }
           }
 
