@@ -6,9 +6,8 @@ use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus};
 
 use omne_execution_gateway::{
-    ExecError, ExecEvent, ExecGateway, ExecRequest, ExecResult, ExecStdioMode, ExecutionOutcome,
-    GatewayPolicy, RequestResolution, RequestedIsolationSource, read_utf8_regular_file,
-    requested_policy_meta,
+    ExecError, ExecEvent, ExecGateway, ExecRequest, ExecResult, ExecutionOutcome, GatewayPolicy,
+    RequestResolution, RequestedIsolationSource, read_utf8_regular_file, requested_policy_meta,
 };
 use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
@@ -249,7 +248,9 @@ fn exit_status_signal(_: &ExitStatus) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omne_execution_gateway::{ExecDecision, RequestedIsolationSource, requested_policy_meta};
+    use omne_execution_gateway::{
+        ExecDecision, ExecStdioMode, RequestedIsolationSource, requested_policy_meta,
+    };
     use policy_meta::SpecVersion;
     #[cfg(unix)]
     use std::fs;
