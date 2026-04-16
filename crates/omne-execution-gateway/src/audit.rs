@@ -32,6 +32,13 @@ pub enum SandboxRuntimeOutcome {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecStdioMode {
+    Null,
+    Piped,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SandboxRuntimeObservation {
     pub mechanism: SandboxRuntimeMechanism,
@@ -52,6 +59,9 @@ pub struct ExecEvent {
     pub cwd: PathBuf,
     pub workspace_root: PathBuf,
     pub declared_mutation: bool,
+    pub stdin_mode: ExecStdioMode,
+    pub stdout_mode: ExecStdioMode,
+    pub stderr_mode: ExecStdioMode,
     pub reason: Option<String>,
     pub sandbox_runtime: Option<SandboxRuntimeObservation>,
 }
@@ -82,6 +92,9 @@ impl Serialize for ExecEvent {
             cwd: &'a PathBuf,
             workspace_root: &'a PathBuf,
             declared_mutation: bool,
+            stdin_mode: ExecStdioMode,
+            stdout_mode: ExecStdioMode,
+            stderr_mode: ExecStdioMode,
             reason: &'a Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             sandbox_runtime: &'a Option<SandboxRuntimeObservation>,
@@ -101,6 +114,9 @@ impl Serialize for ExecEvent {
             cwd: &self.cwd,
             workspace_root: &self.workspace_root,
             declared_mutation: self.declared_mutation,
+            stdin_mode: self.stdin_mode,
+            stdout_mode: self.stdout_mode,
+            stderr_mode: self.stderr_mode,
             reason: &self.reason,
             sandbox_runtime: &self.sandbox_runtime,
         }
@@ -406,6 +422,9 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             workspace_root: PathBuf::from("/workspace"),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         }
@@ -483,5 +502,18 @@ mod tests {
                 {"name": "MODE", "value": "debug"}
             ])
         );
+    }
+
+    #[test]
+    fn exec_event_serializes_stdio_modes() {
+        let mut event = sample_event(vec!["echo"], vec![]);
+        event.stdin_mode = ExecStdioMode::Piped;
+        event.stderr_mode = ExecStdioMode::Piped;
+
+        let value = serde_json::to_value(event).expect("serialize exec event");
+
+        assert_eq!(value["stdin_mode"], json!("piped"));
+        assert_eq!(value["stdout_mode"], json!("null"));
+        assert_eq!(value["stderr_mode"], json!("piped"));
     }
 }

@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus};
 
 use omne_execution_gateway::{
-    ExecError, ExecEvent, ExecGateway, ExecRequest, ExecResult, ExecutionOutcome, GatewayPolicy,
-    RequestResolution, RequestedIsolationSource, read_utf8_regular_file, requested_policy_meta,
+    ExecError, ExecEvent, ExecGateway, ExecRequest, ExecResult, ExecStdioMode, ExecutionOutcome,
+    GatewayPolicy, RequestResolution, RequestedIsolationSource, read_utf8_regular_file,
+    requested_policy_meta,
 };
 use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
@@ -285,6 +286,9 @@ mod tests {
             cwd: workspace.clone(),
             workspace_root: workspace,
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         }
@@ -413,6 +417,9 @@ mod tests {
                 "cwd": output.event.cwd,
                 "workspace_root": output.event.workspace_root,
                 "declared_mutation": false,
+                "stdin_mode": "null",
+                "stdout_mode": "null",
+                "stderr_mode": "null",
                 "reason": null
             })
         );

@@ -14,6 +14,7 @@
 - `RequestResolution`
 - `RequestedIsolationSource`
 - `requested_policy_meta`
+- `ExecStdioMode`
 - runtime sandbox observation types
 
 `policy_meta::ExecutionIsolation`, `policy_meta::PolicyMetaV1`, and `policy_meta::SpecVersion`
@@ -126,7 +127,9 @@ default, but callers that already hold the audited prepared boundary can opt spe
 handles into `piped` mode before spawn.
 `prepare_command()` records the preflight audit state, and `PreparedChild::wait()` /
 `PreparedChild::try_wait()` / `PreparedChild` drop finalization append the authoritative execution
-record so prepared spawns no longer bypass final audit closure.
+record so prepared spawns no longer bypass final audit closure. That terminal `ExecEvent` is also
+the authoritative source for `stdin_mode` / `stdout_mode` / `stderr_mode` after any prepared
+stdio opt-ins.
 `resolve_request()`, `evaluate()`, and `preflight()` stay side-effect free even when
 `audit_log_path` is configured; the path must be absolute, and audit-sink creation happens only on `execute()` /
 `prepare_command()`.
@@ -157,6 +160,9 @@ Notable fields:
 - `requested_policy_meta`
 - `supported_isolation`
 - `declared_mutation`
+- `stdin_mode`
+- `stdout_mode`
+- `stderr_mode`
 - `reason`
 - `sandbox_runtime`
 
@@ -183,6 +189,7 @@ validation now remain distinguishable as `path_identity_unavailable` and
 - behavior notes:
   - `spawn()` reapplies validated `cwd` / `workspace_root` checks before launching the child process
   - child stdio defaults to null handles; the `with_piped_*()` builders are explicit opt-ins for prepared callers that need to stream or capture audited child I/O without reopening program/cwd/env validation
+  - the final `ExecutionOutcome.event` reports those opt-ins via `ExecStdioMode::{Null,Piped}`, so audit consumers can distinguish detached execution from explicit child-I/O exposure
 
 ## PreparedChild
 

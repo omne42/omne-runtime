@@ -8,6 +8,8 @@ use fs2::FileExt;
 use serde::Serialize;
 
 use crate::audit::ExecEvent;
+#[cfg(test)]
+use crate::audit::ExecStdioMode;
 use crate::error::{ExecError, ExecResult};
 use crate::open_appendable_regular_file;
 #[cfg(test)]
@@ -844,6 +846,9 @@ mod tests {
             cwd: ".".into(),
             workspace_root: ".".into(),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         }

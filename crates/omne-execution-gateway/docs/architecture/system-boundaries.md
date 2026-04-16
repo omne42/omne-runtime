@@ -16,6 +16,10 @@
   执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端；只有已经通过
   `prepare_command()` 绑定过 audited request 的调用方，才可以在 `spawn()` 前显式选择把
   某些 stdio 句柄改成 piped。
+- 这种 stdio 暴露也属于审计契约的一部分：`ExecEvent` 会显式记录 `stdin_mode` /
+  `stdout_mode` / `stderr_mode`。对 prepared 路径来说，preflight 阶段写下的 `prepared`
+  记录仍然反映默认 null stdio，而真正 authoritative 的是 `wait()` / `try_wait()` / drop
+  产出的 terminal execution event，因为 piped opt-in 发生在 prepare 之后、spawn 之前。
 - 平台 sandbox 编排与 runtime 观测。
 - 结构化审计事件和日志输出，包括可读的 lossy `program` / `args` / `env` 字段，以及面向机器恢复的 exact OS-string 编码字段。allowlist 和 opaque launcher 门控本身继续保持在原生 `OsStr` / `Path` 边界，不先把请求收窄成 lossy UTF-8；Unix 非 UTF-8 可执行路径不会因为 replacement character 文本而和 UTF-8 allowlist 项发生碰撞授权。
 - policy / request / audit log 的 bounded regular-file 读取与 appendable-file 校验现在直接复用 `omne-fs-primitives` 的 ambient-root no-follow helper，而不是在 gateway 本地复制一套文件系统原语。

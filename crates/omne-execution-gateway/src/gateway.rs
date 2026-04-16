@@ -13,7 +13,9 @@ use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 
-use crate::audit::{ExecDecision, ExecEvent, SandboxRuntimeObservation, requested_policy_meta};
+use crate::audit::{
+    ExecDecision, ExecEvent, ExecStdioMode, SandboxRuntimeObservation, requested_policy_meta,
+};
 use crate::audit_log::{AuditLogger, PreparedAuditSink};
 use crate::error::{ExecError, ExecResult};
 use crate::policy::GatewayPolicy;
@@ -106,15 +108,9 @@ pub struct PreparedCommand {
     args: Vec<OsString>,
     prepared: PreparedExecRequest,
     audit_sink: Option<PreparedAuditSink>,
-    stdin_mode: PreparedStdioMode,
-    stdout_mode: PreparedStdioMode,
-    stderr_mode: PreparedStdioMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PreparedStdioMode {
-    Null,
-    Piped,
+    stdin_mode: ExecStdioMode,
+    stdout_mode: ExecStdioMode,
+    stderr_mode: ExecStdioMode,
 }
 
 impl ExecutionOutcome {
@@ -234,17 +230,20 @@ impl PreparedCommand {
     }
 
     pub fn with_piped_stdin(mut self) -> Self {
-        self.stdin_mode = PreparedStdioMode::Piped;
+        self.stdin_mode = ExecStdioMode::Piped;
+        self.prepared.event.stdin_mode = ExecStdioMode::Piped;
         self
     }
 
     pub fn with_piped_stdout(mut self) -> Self {
-        self.stdout_mode = PreparedStdioMode::Piped;
+        self.stdout_mode = ExecStdioMode::Piped;
+        self.prepared.event.stdout_mode = ExecStdioMode::Piped;
         self
     }
 
     pub fn with_piped_stderr(mut self) -> Self {
-        self.stderr_mode = PreparedStdioMode::Piped;
+        self.stderr_mode = ExecStdioMode::Piped;
+        self.prepared.event.stderr_mode = ExecStdioMode::Piped;
         self
     }
 
@@ -429,9 +428,9 @@ impl ExecGateway {
                             args: request.args.clone(),
                             prepared,
                             audit_sink: None,
-                            stdin_mode: PreparedStdioMode::Null,
-                            stdout_mode: PreparedStdioMode::Null,
-                            stderr_mode: PreparedStdioMode::Null,
+                            stdin_mode: ExecStdioMode::Null,
+                            stdout_mode: ExecStdioMode::Null,
+                            stderr_mode: ExecStdioMode::Null,
                         }),
                         audit_sink.take(),
                     )
@@ -574,6 +573,9 @@ impl ExecGateway {
             cwd: request.cwd.clone(),
             workspace_root: request.workspace_root.clone(),
             declared_mutation: request.declared_mutation(),
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         }
@@ -1519,30 +1521,30 @@ fn build_prepared_spawn_command(prepared: &PreparedExecRequest, args: &[OsString
 fn configure_noninteractive_stdio(command: &mut Command) {
     configure_prepared_stdio(
         command,
-        PreparedStdioMode::Null,
-        PreparedStdioMode::Null,
-        PreparedStdioMode::Null,
+        ExecStdioMode::Null,
+        ExecStdioMode::Null,
+        ExecStdioMode::Null,
     );
 }
 
 fn configure_prepared_stdio(
     command: &mut Command,
-    stdin_mode: PreparedStdioMode,
-    stdout_mode: PreparedStdioMode,
-    stderr_mode: PreparedStdioMode,
+    stdin_mode: ExecStdioMode,
+    stdout_mode: ExecStdioMode,
+    stderr_mode: ExecStdioMode,
 ) {
     command
         .stdin(match stdin_mode {
-            PreparedStdioMode::Null => Stdio::null(),
-            PreparedStdioMode::Piped => Stdio::piped(),
+            ExecStdioMode::Null => Stdio::null(),
+            ExecStdioMode::Piped => Stdio::piped(),
         })
         .stdout(match stdout_mode {
-            PreparedStdioMode::Null => Stdio::null(),
-            PreparedStdioMode::Piped => Stdio::piped(),
+            ExecStdioMode::Null => Stdio::null(),
+            ExecStdioMode::Piped => Stdio::piped(),
         })
         .stderr(match stderr_mode {
-            PreparedStdioMode::Null => Stdio::null(),
-            PreparedStdioMode::Piped => Stdio::piped(),
+            ExecStdioMode::Null => Stdio::null(),
+            ExecStdioMode::Piped => Stdio::piped(),
         });
 }
 
@@ -4095,6 +4097,9 @@ mod tests {
         assert!(child.take_stderr().is_some());
         let outcome = child.wait();
         assert!(outcome.command_completed_successfully());
+        assert_eq!(outcome.event.stdin_mode, ExecStdioMode::Piped);
+        assert_eq!(outcome.event.stdout_mode, ExecStdioMode::Piped);
+        assert_eq!(outcome.event.stderr_mode, ExecStdioMode::Piped);
     }
 
     #[cfg(unix)]
@@ -4334,6 +4339,9 @@ mod tests {
             cwd: PathBuf::from("."),
             workspace_root: PathBuf::from("."),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         };
@@ -4390,6 +4398,9 @@ mod tests {
             cwd: PathBuf::from("."),
             workspace_root: PathBuf::from("."),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         };
@@ -4419,6 +4430,9 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             workspace_root: PathBuf::from("/tmp"),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         };
@@ -4452,6 +4466,9 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             workspace_root: PathBuf::from("/tmp"),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         };
@@ -4486,6 +4503,9 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             workspace_root: PathBuf::from("/tmp"),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         };

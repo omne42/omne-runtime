@@ -76,6 +76,11 @@ Audit surfaces expose a canonical `policy-meta` projection for requested isolati
 - `execute()` always binds `stdin/stdout/stderr` to null handles; `PreparedCommand::spawn()`
   does the same by default and only exposes child stdio when the caller explicitly opts into
   piped handles via the prepared-command builder methods.
+- `ExecEvent` now records that child stdio exposure explicitly via `stdin_mode` /
+  `stdout_mode` / `stderr_mode`. For prepared execution, the terminal execution event written by
+  `wait()` / `try_wait()` / drop is the authoritative record of those modes; the earlier
+  `prepared` preflight record still reflects the default null stdio state that existed before the
+  caller opted into piped handles.
 - `execute()` is the primary integration surface because it preserves `ExecEvent` and runtime sandbox metadata.
 
 ## Platform Capability (v0.1.0)
