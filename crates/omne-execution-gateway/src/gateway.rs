@@ -1300,6 +1300,14 @@ fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<Boun
     Ok(BoundDirectory { path, identity })
 }
 
+pub fn resolve_bare_program_path_for_execution(program: &OsStr) -> Option<PathBuf> {
+    if is_explicit_program_path(program) {
+        return None;
+    }
+
+    resolve_bare_program_path_from_standard_locations(program)
+}
+
 fn bind_program_path(program: &OsStr) -> ExecResult<BoundProgram> {
     if is_explicit_program_path(program) {
         bind_explicit_program_path(program)
@@ -4061,6 +4069,35 @@ mod tests {
             .canonicalize()
             .expect("canonicalize workspace");
         assert_eq!(prepared.current_dir(), Some(expected_cwd.as_path()));
+    }
+
+    #[test]
+    fn resolve_bare_program_path_for_execution_rejects_explicit_paths() {
+        assert!(
+            resolve_bare_program_path_for_execution(
+                resolved_non_mutating_program_path().as_os_str()
+            )
+            .is_none()
+        );
+        assert!(
+            resolve_bare_program_path_for_execution(OsStr::new(non_mutating_program())).is_some()
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn resolve_bare_program_path_for_execution_uses_standard_locations() {
+        let resolved = resolve_bare_program_path_for_execution(OsStr::new(non_mutating_program()))
+            .expect("resolve standard program");
+        let parent = resolved.parent().expect("resolved program parent");
+        assert!(
+            standard_program_search_dirs()
+                .iter()
+                .map(Path::new)
+                .any(|dir| path_equals(dir, parent)),
+            "resolved execution helper path {} should come from trusted standard locations",
+            resolved.display()
+        );
     }
 
     #[test]
