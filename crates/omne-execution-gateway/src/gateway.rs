@@ -1689,9 +1689,20 @@ fn resolve_bare_program_path_from_env(program: &OsStr) -> Option<PathBuf> {
     None
 }
 
+#[cfg(not(windows))]
 fn resolve_bare_program_path_from_standard_locations(program: &OsStr) -> Option<PathBuf> {
     for dir in standard_program_search_dirs() {
         if let Some(path) = resolve_bare_program_in_dir(program, Path::new(dir)) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn resolve_bare_program_path_from_standard_locations(program: &OsStr) -> Option<PathBuf> {
+    for dir in windows_standard_program_search_dirs() {
+        if let Some(path) = resolve_bare_program_in_dir(program, &dir) {
             return Some(path);
         }
     }
@@ -1710,8 +1721,34 @@ fn standard_program_search_dirs() -> &'static [&'static str] {
 }
 
 #[cfg(windows)]
-fn standard_program_search_dirs() -> &'static [&'static str] {
-    &[]
+fn windows_standard_program_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let mut push_unique = |dir: PathBuf| {
+        if !dirs.iter().any(|existing| path_equals(existing, &dir)) {
+            dirs.push(dir);
+        }
+    };
+
+    let mut roots = Vec::new();
+    if let Some(root) = std::env::var_os("SystemRoot").filter(|value| !value.is_empty()) {
+        roots.push(PathBuf::from(root));
+    }
+    if let Some(root) = std::env::var_os("WINDIR").filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(root);
+        if !roots.iter().any(|existing| path_equals(existing, &path)) {
+            roots.push(path);
+        }
+    }
+    if roots.is_empty() {
+        roots.push(PathBuf::from(r"C:\Windows"));
+    }
+
+    for root in roots {
+        push_unique(root.join("System32"));
+        push_unique(root);
+    }
+
+    dirs
 }
 
 fn resolve_bare_program_in_dir(program: &OsStr, dir: &Path) -> Option<PathBuf> {
@@ -5209,6 +5246,12 @@ mod tests {
         "sh"
     }
 
+    #[cfg(windows)]
+    fn non_mutating_program() -> &'static str {
+        "hostname.exe"
+    }
+
+    #[cfg(not(windows))]
     fn non_mutating_program() -> &'static str {
         "uname"
     }
