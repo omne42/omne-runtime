@@ -1722,7 +1722,7 @@ fn standard_program_search_dirs() -> &'static [&'static str] {
 
 #[cfg(windows)]
 fn windows_standard_program_search_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
     let mut push_unique = |dir: PathBuf| {
         if !dirs.iter().any(|existing| path_equals(existing, &dir)) {
             dirs.push(dir);
@@ -1879,8 +1879,34 @@ fn trusted_opaque_launcher_paths() -> &'static [PathBuf] {
 fn discover_trusted_opaque_launcher_paths() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
 
+    #[cfg(not(windows))]
     for dir in standard_program_search_dirs() {
         let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            if !uses_opaque_command_launcher(file_name.as_os_str()) {
+                continue;
+            }
+
+            let path = entry.path();
+            if !is_spawnable_program_path(&path) {
+                continue;
+            }
+            if paths
+                .iter()
+                .any(|known| explicit_program_paths_match(known, &path))
+            {
+                continue;
+            }
+            paths.push(path);
+        }
+    }
+
+    #[cfg(windows)]
+    for dir in windows_standard_program_search_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
