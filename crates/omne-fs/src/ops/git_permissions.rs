@@ -1,5 +1,10 @@
 #[cfg(feature = "git-permissions")]
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
+#[cfg(any(
+    all(feature = "git-permissions", test),
+    all(feature = "git-permissions", windows)
+))]
+use std::ffi::OsStr;
 use std::path::Path;
 #[cfg(feature = "git-permissions")]
 use std::path::PathBuf;
@@ -55,7 +60,13 @@ fn build_git_command(
 ) -> Command {
     let mut cmd = Command::new(program);
     cmd.env_clear();
-    cmd.envs(sanitized_git_environment(std::env::vars_os()));
+    cmd.envs(minimal_git_environment());
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd.env("GIT_CONFIG_SYSTEM", disabled_git_file_path());
+    cmd.env("GIT_CONFIG_GLOBAL", disabled_git_file_path());
+    cmd.env("GIT_ATTR_SYSTEM", disabled_git_file_path());
+    cmd.env("GIT_ATTR_GLOBAL", disabled_git_file_path());
+    cmd.arg("--no-pager");
     cmd.arg("-C").arg(canonical_root);
     cmd.args(args);
     if let Some(relative_path) = relative_path {
@@ -66,16 +77,50 @@ fn build_git_command(
 }
 
 #[cfg(feature = "git-permissions")]
-fn sanitized_git_environment<I>(env: I) -> Vec<(OsString, OsString)>
-where
-    I: IntoIterator<Item = (OsString, OsString)>,
-{
-    env.into_iter()
-        .filter(|(name, _)| !is_git_env_name(name))
-        .collect()
+fn minimal_git_environment() -> Vec<(OsString, OsString)> {
+    let mut env = Vec::new();
+    for name in runtime_env_whitelist() {
+        if let Some(value) = std::env::var_os(name) {
+            env.push((OsString::from(name), value));
+        }
+    }
+    env
 }
 
-#[cfg(feature = "git-permissions")]
+#[cfg(unix)]
+fn runtime_env_whitelist() -> &'static [&'static str] {
+    &["LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR"]
+}
+
+#[cfg(windows)]
+fn runtime_env_whitelist() -> &'static [&'static str] {
+    &["SystemRoot", "WINDIR", "TMP", "TEMP"]
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn runtime_env_whitelist() -> &'static [&'static str] {
+    &[]
+}
+
+#[cfg(unix)]
+fn disabled_git_file_path() -> &'static str {
+    "/dev/null"
+}
+
+#[cfg(windows)]
+fn disabled_git_file_path() -> &'static str {
+    "NUL"
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn disabled_git_file_path() -> &'static str {
+    ""
+}
+
+#[cfg(any(
+    all(feature = "git-permissions", test),
+    all(feature = "git-permissions", windows)
+))]
 fn is_git_env_name(name: &OsStr) -> bool {
     #[cfg(windows)]
     {
@@ -199,7 +244,7 @@ pub(super) fn ensure_revertible_write_allowed(
         canonical_root,
         relative_path,
         op,
-        &["diff", "--quiet", "--no-ext-diff", "HEAD"],
+        &["diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD"],
     )?;
     match diff_status.code() {
         Some(0) => Ok(()),
@@ -227,27 +272,21 @@ pub(super) fn ensure_revertible_write_allowed(
 
 #[cfg(all(test, feature = "git-permissions"))]
 mod tests {
-    use super::{build_git_command, is_git_env_name, sanitized_git_environment};
-    use std::ffi::{OsStr, OsString};
+    use super::{build_git_command, disabled_git_file_path, is_git_env_name, minimal_git_environment};
+    use std::ffi::OsStr;
     use std::path::Path;
 
     #[test]
-    fn sanitized_git_environment_drops_git_prefixed_variables() {
-        let env = vec![
-            (OsString::from("HOME"), OsString::from("/tmp/home")),
-            (OsString::from("GIT_DIR"), OsString::from("/tmp/git")),
-            (OsString::from("GIT_WORK_TREE"), OsString::from("/tmp/work")),
-        ];
-
-        let sanitized = sanitized_git_environment(env);
-        assert_eq!(
-            sanitized,
-            vec![(OsString::from("HOME"), OsString::from("/tmp/home"))]
+    fn minimal_git_environment_never_reintroduces_git_prefixed_variables() {
+        let env = minimal_git_environment();
+        assert!(
+            env.iter().all(|(name, _)| !is_git_env_name(name)),
+            "git-prefixed variables must stay filtered from the fallback environment"
         );
     }
 
     #[test]
-    fn build_git_command_uses_absolute_program_and_sanitized_env() {
+    fn build_git_command_uses_absolute_program_and_hardened_env() {
         let command = build_git_command(
             Path::new("/usr/bin/git"),
             Path::new("/tmp/repo"),
@@ -258,12 +297,25 @@ mod tests {
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             vec![
+                OsStr::new("--no-pager"),
                 OsStr::new("-C"),
                 OsStr::new("/tmp/repo"),
                 OsStr::new("rev-parse"),
                 OsStr::new("--is-inside-work-tree")
             ]
         );
+        let env = command.get_envs().collect::<Vec<_>>();
+        assert!(env.iter().any(|(name, value)| {
+            *name == OsStr::new("GIT_CONFIG_NOSYSTEM") && *value == Some(OsStr::new("1"))
+        }));
+        assert!(env.iter().any(|(name, value)| {
+            *name == OsStr::new("GIT_CONFIG_GLOBAL")
+                && *value == Some(OsStr::new(disabled_git_file_path()))
+        }));
+        assert!(env.iter().any(|(name, value)| {
+            *name == OsStr::new("GIT_ATTR_GLOBAL")
+                && *value == Some(OsStr::new(disabled_git_file_path()))
+        }));
     }
 
     #[test]
