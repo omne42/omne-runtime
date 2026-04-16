@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::audit::ExecEvent;
+#[cfg(test)]
+use crate::audit::ExecStdioMode;
 use crate::os_serialization::{
     ExactEnvPairs, ExactOsStr, ExactOsStrings, LossyEnvPairs, LossyOsStr, LossyOsStrings,
 };
@@ -524,6 +526,9 @@ mod tests {
             cwd: PathBuf::from("/canonical/workspace"),
             workspace_root: PathBuf::from("/canonical/workspace"),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         };

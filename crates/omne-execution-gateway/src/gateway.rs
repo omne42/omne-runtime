@@ -13,7 +13,9 @@ use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 
-use crate::audit::{ExecDecision, ExecEvent, SandboxRuntimeObservation, requested_policy_meta};
+use crate::audit::{
+    ExecDecision, ExecEvent, ExecStdioMode, SandboxRuntimeObservation, requested_policy_meta,
+};
 use crate::audit_log::{AuditLogger, PreparedAuditSink};
 use crate::error::{ExecError, ExecResult};
 use crate::policy::GatewayPolicy;
@@ -106,6 +108,9 @@ pub struct PreparedCommand {
     args: Vec<OsString>,
     prepared: PreparedExecRequest,
     audit_sink: Option<PreparedAuditSink>,
+    stdin_mode: ExecStdioMode,
+    stdout_mode: ExecStdioMode,
+    stderr_mode: ExecStdioMode,
 }
 
 impl ExecutionOutcome {
@@ -138,12 +143,24 @@ impl PreparedChild {
         self.child.stdin.as_mut()
     }
 
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child.stdin.take()
+    }
+
     pub fn stdout(&mut self) -> Option<&mut ChildStdout> {
         self.child.stdout.as_mut()
     }
 
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child.stdout.take()
+    }
+
     pub fn stderr(&mut self) -> Option<&mut ChildStderr> {
         self.child.stderr.as_mut()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child.stderr.take()
     }
 
     pub fn sandbox_runtime(&self) -> Option<&SandboxRuntimeObservation> {
@@ -212,12 +229,35 @@ impl PreparedCommand {
         Some(self.prepared.resolved_paths.cwd.path.as_path())
     }
 
+    pub fn with_piped_stdin(mut self) -> Self {
+        self.stdin_mode = ExecStdioMode::Piped;
+        self.prepared.event.stdin_mode = ExecStdioMode::Piped;
+        self
+    }
+
+    pub fn with_piped_stdout(mut self) -> Self {
+        self.stdout_mode = ExecStdioMode::Piped;
+        self.prepared.event.stdout_mode = ExecStdioMode::Piped;
+        self
+    }
+
+    pub fn with_piped_stderr(mut self) -> Self {
+        self.stderr_mode = ExecStdioMode::Piped;
+        self.prepared.event.stderr_mode = ExecStdioMode::Piped;
+        self
+    }
+
     pub fn spawn(mut self) -> ExecResult<PreparedChild> {
         let event = self.prepared.event.clone();
         let result = revalidate_prepared_request(&self.prepared)
             .and_then(|_| {
                 let mut command = build_prepared_spawn_command(&self.prepared, &self.args);
-                configure_noninteractive_stdio(&mut command);
+                configure_prepared_stdio(
+                    &mut command,
+                    self.stdin_mode,
+                    self.stdout_mode,
+                    self.stderr_mode,
+                );
                 apply_prepared_request(&self.prepared, &mut command)
                     .and_then(|monitor| spawn_command_with_monitor(&mut command, monitor))
             })
@@ -388,6 +428,9 @@ impl ExecGateway {
                             args: request.args.clone(),
                             prepared,
                             audit_sink: None,
+                            stdin_mode: ExecStdioMode::Null,
+                            stdout_mode: ExecStdioMode::Null,
+                            stderr_mode: ExecStdioMode::Null,
                         }),
                         audit_sink.take(),
                     )
@@ -530,6 +573,9 @@ impl ExecGateway {
             cwd: request.cwd.clone(),
             workspace_root: request.workspace_root.clone(),
             declared_mutation: request.declared_mutation(),
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         }
@@ -1254,6 +1300,14 @@ fn capture_bound_directory(path: PathBuf, kind: &'static str) -> ExecResult<Boun
     Ok(BoundDirectory { path, identity })
 }
 
+pub fn resolve_bare_program_path_for_execution(program: &OsStr) -> Option<PathBuf> {
+    if is_explicit_program_path(program) {
+        return None;
+    }
+
+    resolve_bare_program_path_from_standard_locations(program)
+}
+
 fn bind_program_path(program: &OsStr) -> ExecResult<BoundProgram> {
     if is_explicit_program_path(program) {
         bind_explicit_program_path(program)
@@ -1473,10 +1527,33 @@ fn build_prepared_spawn_command(prepared: &PreparedExecRequest, args: &[OsString
 }
 
 fn configure_noninteractive_stdio(command: &mut Command) {
+    configure_prepared_stdio(
+        command,
+        ExecStdioMode::Null,
+        ExecStdioMode::Null,
+        ExecStdioMode::Null,
+    );
+}
+
+fn configure_prepared_stdio(
+    command: &mut Command,
+    stdin_mode: ExecStdioMode,
+    stdout_mode: ExecStdioMode,
+    stderr_mode: ExecStdioMode,
+) {
     command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(match stdin_mode {
+            ExecStdioMode::Null => Stdio::null(),
+            ExecStdioMode::Piped => Stdio::piped(),
+        })
+        .stdout(match stdout_mode {
+            ExecStdioMode::Null => Stdio::null(),
+            ExecStdioMode::Piped => Stdio::piped(),
+        })
+        .stderr(match stderr_mode {
+            ExecStdioMode::Null => Stdio::null(),
+            ExecStdioMode::Piped => Stdio::piped(),
+        });
 }
 
 fn configure_request_environment(env: &[(OsString, OsString)], command: &mut Command) {
@@ -1612,9 +1689,20 @@ fn resolve_bare_program_path_from_env(program: &OsStr) -> Option<PathBuf> {
     None
 }
 
+#[cfg(not(windows))]
 fn resolve_bare_program_path_from_standard_locations(program: &OsStr) -> Option<PathBuf> {
     for dir in standard_program_search_dirs() {
         if let Some(path) = resolve_bare_program_in_dir(program, Path::new(dir)) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn resolve_bare_program_path_from_standard_locations(program: &OsStr) -> Option<PathBuf> {
+    for dir in windows_standard_program_search_dirs() {
+        if let Some(path) = resolve_bare_program_in_dir(program, &dir) {
             return Some(path);
         }
     }
@@ -1633,8 +1721,34 @@ fn standard_program_search_dirs() -> &'static [&'static str] {
 }
 
 #[cfg(windows)]
-fn standard_program_search_dirs() -> &'static [&'static str] {
-    &[]
+fn windows_standard_program_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut push_unique = |dir: PathBuf| {
+        if !dirs.iter().any(|existing| path_equals(existing, &dir)) {
+            dirs.push(dir);
+        }
+    };
+
+    let mut roots = Vec::new();
+    if let Some(root) = std::env::var_os("SystemRoot").filter(|value| !value.is_empty()) {
+        roots.push(PathBuf::from(root));
+    }
+    if let Some(root) = std::env::var_os("WINDIR").filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(root);
+        if !roots.iter().any(|existing| path_equals(existing, &path)) {
+            roots.push(path);
+        }
+    }
+    if roots.is_empty() {
+        roots.push(PathBuf::from(r"C:\Windows"));
+    }
+
+    for root in roots {
+        push_unique(root.join("System32"));
+        push_unique(root);
+    }
+
+    dirs
 }
 
 fn resolve_bare_program_in_dir(program: &OsStr, dir: &Path) -> Option<PathBuf> {
@@ -1765,8 +1879,34 @@ fn trusted_opaque_launcher_paths() -> &'static [PathBuf] {
 fn discover_trusted_opaque_launcher_paths() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
 
+    #[cfg(not(windows))]
     for dir in standard_program_search_dirs() {
         let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            if !uses_opaque_command_launcher(file_name.as_os_str()) {
+                continue;
+            }
+
+            let path = entry.path();
+            if !is_spawnable_program_path(&path) {
+                continue;
+            }
+            if paths
+                .iter()
+                .any(|known| explicit_program_paths_match(known, &path))
+            {
+                continue;
+            }
+            paths.push(path);
+        }
+    }
+
+    #[cfg(windows)]
+    for dir in windows_standard_program_search_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -3994,6 +4134,74 @@ mod tests {
         assert_eq!(prepared.current_dir(), Some(expected_cwd.as_path()));
     }
 
+    #[test]
+    fn resolve_bare_program_path_for_execution_rejects_explicit_paths() {
+        assert!(
+            resolve_bare_program_path_for_execution(
+                resolved_non_mutating_program_path().as_os_str()
+            )
+            .is_none()
+        );
+        assert!(
+            resolve_bare_program_path_for_execution(OsStr::new(non_mutating_program())).is_some()
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn resolve_bare_program_path_for_execution_uses_standard_locations() {
+        let resolved = resolve_bare_program_path_for_execution(OsStr::new(non_mutating_program()))
+            .expect("resolve standard program");
+        let parent = resolved.parent().expect("resolved program parent");
+        assert!(
+            standard_program_search_dirs()
+                .iter()
+                .map(Path::new)
+                .any(|dir| path_equals(dir, parent)),
+            "resolved execution helper path {} should come from trusted standard locations",
+            resolved.display()
+        );
+    }
+
+    #[test]
+    fn prepared_command_can_pipe_and_take_stdio_handles() {
+        let policy = GatewayPolicy {
+            allow_isolation_none: true,
+            enforce_allowlisted_program_for_mutation: false,
+            ..GatewayPolicy::default()
+        };
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            policy,
+            host_supported_test_isolation(),
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let program = test_program_path(&workspace, "stdio");
+        write_test_executable_placeholder(&program);
+        let request = ExecRequest::new(
+            &program,
+            Vec::<OsString>::new(),
+            workspace.path(),
+            host_supported_test_isolation(),
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+        let (_event, result) = gateway.prepare_command(&request);
+        let prepared = result
+            .expect("prepare command")
+            .with_piped_stdin()
+            .with_piped_stdout()
+            .with_piped_stderr();
+        let mut child = prepared.spawn().expect("spawn prepared child");
+        assert!(child.take_stdin().is_some());
+        assert!(child.take_stdout().is_some());
+        assert!(child.take_stderr().is_some());
+        let outcome = child.wait();
+        assert!(outcome.command_completed_successfully());
+        assert_eq!(outcome.event.stdin_mode, ExecStdioMode::Piped);
+        assert_eq!(outcome.event.stdout_mode, ExecStdioMode::Piped);
+        assert_eq!(outcome.event.stderr_mode, ExecStdioMode::Piped);
+    }
+
     #[cfg(unix)]
     #[test]
     fn execute_status_applies_audited_request_environment() {
@@ -4231,6 +4439,9 @@ mod tests {
             cwd: PathBuf::from("."),
             workspace_root: PathBuf::from("."),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         };
@@ -4287,6 +4498,9 @@ mod tests {
             cwd: PathBuf::from("."),
             workspace_root: PathBuf::from("."),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         };
@@ -4316,6 +4530,9 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             workspace_root: PathBuf::from("/tmp"),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         };
@@ -4349,6 +4566,9 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             workspace_root: PathBuf::from("/tmp"),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         };
@@ -4383,6 +4603,9 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             workspace_root: PathBuf::from("/tmp"),
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         };
@@ -5049,6 +5272,12 @@ mod tests {
         "sh"
     }
 
+    #[cfg(windows)]
+    fn non_mutating_program() -> &'static str {
+        "hostname.exe"
+    }
+
+    #[cfg(not(windows))]
     fn non_mutating_program() -> &'static str {
         "uname"
     }

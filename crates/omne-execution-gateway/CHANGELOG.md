@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- add explicit `stdin_mode` / `stdout_mode` / `stderr_mode` fields to `ExecEvent`, so prepared
+  command stdio opt-ins are reflected in the authoritative terminal execution audit record instead
+  of remaining implicit runtime-only state
 - keep `PathIdentityUnavailable` and `RequestPathChanged` denial reasons distinct from
   `cwd_outside_workspace` in both preflight and post-preflight audit events, so path-identity
   races no longer look like plain workspace-boundary violations

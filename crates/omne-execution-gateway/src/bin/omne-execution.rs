@@ -248,7 +248,9 @@ fn exit_status_signal(_: &ExitStatus) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omne_execution_gateway::{ExecDecision, RequestedIsolationSource, requested_policy_meta};
+    use omne_execution_gateway::{
+        ExecDecision, ExecStdioMode, RequestedIsolationSource, requested_policy_meta,
+    };
     use policy_meta::SpecVersion;
     #[cfg(unix)]
     use std::fs;
@@ -285,6 +287,9 @@ mod tests {
             cwd: workspace.clone(),
             workspace_root: workspace,
             declared_mutation: false,
+            stdin_mode: ExecStdioMode::Null,
+            stdout_mode: ExecStdioMode::Null,
+            stderr_mode: ExecStdioMode::Null,
             reason: None,
             sandbox_runtime: None,
         }
@@ -413,6 +418,9 @@ mod tests {
                 "cwd": output.event.cwd,
                 "workspace_root": output.event.workspace_root,
                 "declared_mutation": false,
+                "stdin_mode": "null",
+                "stdout_mode": "null",
+                "stderr_mode": "null",
                 "reason": null
             })
         );

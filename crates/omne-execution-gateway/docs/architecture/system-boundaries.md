@@ -12,7 +12,14 @@
 - 对显式绝对 `program` 路径做“必须是可 spawn 的可执行文件”校验、解析到 canonical real executable path、绑定 file identity 与内容指纹，并在真正 spawn 前再次校验；bare command name 也会在 preflight 阶段解析成 canonical 绝对执行体并绑定同样的 identity + content 视图，如果无法稳定解析就 fail-closed 拒绝。allowlist 仍按最终可执行文件 identity 匹配，而不是按 basename 或原始路径字面量放行，避免 preflight 通过后被换文件、同 inode 原地改写或通过稳定别名漂移到别的可执行文件；但在最终 revalidate 到内核 `spawn/exec` 之间仍存在无法完全消除的 OS 级 TOCTOU 窗口，这里只承诺尽量缩小而不是假装消灭它。
 - 对 `cwd` / `workspace_root` 先做“不得穿过 symlink/reparse-point 祖先目录”的 fail-closed 校验，再做 canonical path + 目录 identity 绑定，并在真正 spawn 前重新校验；macOS 只对系统根别名 `/var`、`/tmp` 做最小例外，避免把平台自带 temp/workspace 路径误判成调用方可控别名。
 - 声明式变更命令门控，以及显式 mutation declaration、`mutating_program_allowlist` / `non_mutating_program_allowlist` 和 opaque launcher 之间的一致性校验；其中 opaque launcher/interpreter/多路 frontend 会按最终绑定到的 trusted launcher identity / content 做判断，而且识别按 launcher family 而不是脆弱的精确名字，所以就算 allowlisted 显式路径经过稳定 symlink、硬链接、复制重命名等 alias 最终落到 `sh`、`python3.12`、`pip3.12`、`nodejs`、`env` 之类 frontend，也会直接 fail-closed，不能靠别名名字绕过授权边界。
-- gateway 自己管理的 spawn 路径会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端。
+- gateway 自己管理的 spawn 路径默认会把子进程 `stdin/stdout/stderr` 绑定到空句柄，避免
+  执行边界意外退化成交互式命令会话或把输出直接泄漏回调用方终端；只有已经通过
+  `prepare_command()` 绑定过 audited request 的调用方，才可以在 `spawn()` 前显式选择把
+  某些 stdio 句柄改成 piped。
+- 这种 stdio 暴露也属于审计契约的一部分：`ExecEvent` 会显式记录 `stdin_mode` /
+  `stdout_mode` / `stderr_mode`。对 prepared 路径来说，preflight 阶段写下的 `prepared`
+  记录仍然反映默认 null stdio，而真正 authoritative 的是 `wait()` / `try_wait()` / drop
+  产出的 terminal execution event，因为 piped opt-in 发生在 prepare 之后、spawn 之前。
 - 平台 sandbox 编排与 runtime 观测。
 - 结构化审计事件和日志输出，包括可读的 lossy `program` / `args` / `env` 字段，以及面向机器恢复的 exact OS-string 编码字段。allowlist 和 opaque launcher 门控本身继续保持在原生 `OsStr` / `Path` 边界，不先把请求收窄成 lossy UTF-8；Unix 非 UTF-8 可执行路径不会因为 replacement character 文本而和 UTF-8 allowlist 项发生碰撞授权。
 - policy / request / audit log 的 bounded regular-file 读取与 appendable-file 校验现在直接复用 `omne-fs-primitives` 的 ambient-root no-follow helper，而不是在 gateway 本地复制一套文件系统原语。
@@ -53,7 +60,7 @@
 - 高层文件系统读写 API。
 - `omne-fs` CLI 语义。
 - 通用进程树原语。
-- 交互式终端桥接或输出捕获适配。
+- 默认交互式终端桥接或产品侧输出捕获适配。
 - 产品层超时、取消和保密策略。
 - 二进制来源或供应链校验。
 
