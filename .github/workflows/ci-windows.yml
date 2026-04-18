@@ -52,7 +52,7 @@ jobs:
                 if ($attempt -eq $MaxAttempts) {
                   throw
                 }
-                Write-Warning "$Description failed on attempt $attempt/$MaxAttempts: $($_.Exception.Message)"
+                Write-Warning ("{0} failed on attempt {1}/{2}: {3}" -f $Description, $attempt, $MaxAttempts, $_.Exception.Message)
                 Start-Sleep -Seconds $DelaySeconds
               }
             }
