@@ -78,11 +78,6 @@ jobs:
               }
             }
 
-            git -c safe.directory=$MirrorDir -C $MirrorDir remote set-url origin $RepoUrl
-            Invoke-WithRetry -Description "git fetch mirror $RepoUrl" -Script {
-              git -c http.version=HTTP/1.1 -c safe.directory=$MirrorDir -C $MirrorDir fetch --prune origin "+refs/heads/*:refs/heads/*" "+refs/pull/*:refs/pull/*" "+refs/tags/*:refs/tags/*"
-            }
-
             if (-not $repoExists) {
               git -c safe.directory=$MirrorDir clone $MirrorDir $RepoDir
             }
