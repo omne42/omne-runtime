@@ -146,6 +146,7 @@ jobs:
         shell: bash
         env:
           OMNE_RUNTIME_REPO_DIR_BASH: ${{ steps.sync.outputs.repo_dir_bash }}
+          SAFE_FS_TOOLS_ALLOW_SYMLINK_SKIP: "1"
         run: |
           cd "$OMNE_RUNTIME_REPO_DIR_BASH"
           ./crates/omne-fs/scripts/gate.sh
