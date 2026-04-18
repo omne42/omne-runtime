@@ -289,9 +289,7 @@ fn load_text_limited_rejects_symlink_paths() {
             if env_flag_enabled("SAFE_FS_TOOLS_ALLOW_SYMLINK_SKIP")
                 || env_flag_enabled("SAFE_FS_TOOLS_ALLOW_WINDOWS_SYMLINK_SKIP")
             {
-                eprintln!(
-                    "skipping symlink test due to permission denied: {err}"
-                );
+                eprintln!("skipping symlink test due to permission denied: {err}");
                 return;
             }
             panic!(
