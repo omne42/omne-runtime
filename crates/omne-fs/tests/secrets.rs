@@ -71,9 +71,7 @@ fn create_symlink_or_skip(target: &Path, link: &Path, kind: SymlinkKind) -> bool
                     .map(|value| value == "1")
                     .unwrap_or(false);
                 if allow_skip {
-                    eprintln!(
-                        "skipping symlink test (permission denied): {err}"
-                    );
+                    eprintln!("skipping symlink test (permission denied): {err}");
                     return false;
                 }
                 panic!(
