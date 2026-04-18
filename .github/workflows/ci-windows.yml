@@ -36,6 +36,28 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
 
+          function Invoke-WithRetry {
+            param(
+              [string]$Description,
+              [scriptblock]$Script,
+              [int]$MaxAttempts = 4,
+              [int]$DelaySeconds = 5
+            )
+
+            for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+              try {
+                & $Script
+                return
+              } catch {
+                if ($attempt -eq $MaxAttempts) {
+                  throw
+                }
+                Write-Warning "$Description failed on attempt $attempt/$MaxAttempts: $($_.Exception.Message)"
+                Start-Sleep -Seconds $DelaySeconds
+              }
+            }
+          }
+
           function Sync-Repo {
             param(
               [string]$RepoUrl,
@@ -51,18 +73,24 @@ jobs:
             New-Item -ItemType Directory -Force -Path (Split-Path $MirrorDir -Parent) | Out-Null
 
             if (-not $mirrorExists) {
-              git -c http.version=HTTP/1.1 clone --mirror $RepoUrl $MirrorDir
+              Invoke-WithRetry -Description "git clone --mirror $RepoUrl" -Script {
+                git -c http.version=HTTP/1.1 clone --mirror $RepoUrl $MirrorDir
+              }
             }
 
             git -c safe.directory=$MirrorDir -C $MirrorDir remote set-url origin $RepoUrl
-            git -c http.version=HTTP/1.1 -c safe.directory=$MirrorDir -C $MirrorDir fetch --prune origin "+refs/heads/*:refs/heads/*" "+refs/pull/*:refs/pull/*" "+refs/tags/*:refs/tags/*"
+            Invoke-WithRetry -Description "git fetch mirror $RepoUrl" -Script {
+              git -c http.version=HTTP/1.1 -c safe.directory=$MirrorDir -C $MirrorDir fetch --prune origin "+refs/heads/*:refs/heads/*" "+refs/pull/*:refs/pull/*" "+refs/tags/*:refs/tags/*"
+            }
 
             if (-not $repoExists) {
-              git clone $MirrorDir $RepoDir
+              git -c safe.directory=$MirrorDir clone $MirrorDir $RepoDir
             }
 
             git -c safe.directory=$RepoDir -C $RepoDir remote set-url origin $RepoUrl
-            git -c http.version=HTTP/1.1 -c safe.directory=$RepoDir -C $RepoDir fetch --prune origin "+refs/heads/*:refs/remotes/origin/*" "+refs/pull/*:refs/remotes/pull/*" "+refs/tags/*:refs/tags/*"
+            Invoke-WithRetry -Description "git fetch worktree $RepoUrl" -Script {
+              git -c http.version=HTTP/1.1 -c safe.directory=$RepoDir -C $RepoDir fetch --prune origin "+refs/heads/*:refs/remotes/origin/*" "+refs/pull/*:refs/remotes/pull/*" "+refs/tags/*:refs/tags/*"
+            }
             git -c safe.directory=$RepoDir -C $RepoDir reset --hard $Ref
             git -c safe.directory=$RepoDir -C $RepoDir clean -ffdx
 
@@ -153,7 +181,7 @@ jobs:
           ./crates/omne-fs/scripts/gate.sh
 
       - name: Summarize persistent cache state
-        if: always()
+        if: always() && steps.sync.outputs.report_path != ''
         shell: pwsh
         run: |
           $report = Get-Content "${{ steps.sync.outputs.report_path }}" | ConvertFrom-Json
