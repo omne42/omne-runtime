@@ -63,7 +63,8 @@ jobs:
               [string]$RepoUrl,
               [string]$RepoDir,
               [string]$MirrorDir,
-              [string]$Ref
+              [string]$Ref,
+              [string]$FetchRefspec
             )
 
             $repoExists = Test-Path (Join-Path $RepoDir ".git")
@@ -84,7 +85,7 @@ jobs:
 
             git -c safe.directory=$RepoDir -C $RepoDir remote set-url origin $RepoUrl
             Invoke-WithRetry -Description "git fetch worktree $RepoUrl" -Script {
-              git -c http.version=HTTP/1.1 -c safe.directory=$RepoDir -C $RepoDir fetch --prune origin "+refs/heads/*:refs/remotes/origin/*" "+refs/pull/*:refs/remotes/pull/*" "+refs/tags/*:refs/tags/*"
+              git -c http.version=HTTP/1.1 -c safe.directory=$RepoDir -C $RepoDir fetch --prune origin $FetchRefspec
             }
             git -c safe.directory=$RepoDir -C $RepoDir reset --hard $Ref
             git -c safe.directory=$RepoDir -C $RepoDir clean -ffdx
@@ -112,8 +113,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:RUSTUP_HOME | Out-Null
           New-Item -ItemType Directory -Force -Path $env:CARGO_TARGET_DIR | Out-Null
 
-          $runtime = Sync-Repo "https://github.com/${{ github.repository }}.git" $env:OMNE_RUNTIME_REPO_DIR $env:OMNE_RUNTIME_MIRROR_DIR $env:GITHUB_SHA
-          $foundation = Sync-Repo "https://github.com/omne42/omne_foundation.git" $env:OMNE_FOUNDATION_REPO_DIR $env:OMNE_FOUNDATION_MIRROR_DIR "origin/main"
+          $runtime = Sync-Repo "https://github.com/${{ github.repository }}.git" $env:OMNE_RUNTIME_REPO_DIR $env:OMNE_RUNTIME_MIRROR_DIR $env:GITHUB_SHA "+${{ github.ref }}:refs/remotes/origin/__sync_target"
+          $foundation = Sync-Repo "https://github.com/omne42/omne_foundation.git" $env:OMNE_FOUNDATION_REPO_DIR $env:OMNE_FOUNDATION_MIRROR_DIR "origin/main" "+refs/heads/main:refs/remotes/origin/main"
 
           $runtimeRepoDirBash = To-BashPath $env:OMNE_RUNTIME_REPO_DIR
 
