@@ -29,10 +29,15 @@ fn assert_patch_error_prefix(err: omne_fs::Error, expected_prefix: &str) {
 }
 
 #[cfg(windows)]
+fn is_windows_symlink_privilege_error(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(1314)
+}
+
+#[cfg(windows)]
 fn create_file_symlink_or_skip(target: &std::path::Path, link: &std::path::Path) -> bool {
     match std::os::windows::fs::symlink_file(target, link) {
         Ok(()) => true,
-        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+        Err(err) if is_windows_symlink_privilege_error(&err) => {
             let allow_skip = std::env::var("SAFE_FS_TOOLS_ALLOW_SYMLINK_SKIP")
                 .map(|value| value == "1")
                 .unwrap_or(false);
@@ -54,7 +59,7 @@ fn create_file_symlink_or_skip(target: &std::path::Path, link: &std::path::Path)
 fn create_dir_symlink_or_skip(target: &std::path::Path, link: &std::path::Path) -> bool {
     match std::os::windows::fs::symlink_dir(target, link) {
         Ok(()) => true,
-        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+        Err(err) if is_windows_symlink_privilege_error(&err) => {
             let allow_skip = std::env::var("SAFE_FS_TOOLS_ALLOW_SYMLINK_SKIP")
                 .map(|value| value == "1")
                 .unwrap_or(false);
