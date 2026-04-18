@@ -12,6 +12,11 @@ use policy_meta::WriteScope;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+#[cfg(windows)]
+fn is_windows_symlink_privilege_error(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(1314)
+}
+
 #[cfg(any(unix, windows))]
 fn create_symlink_file_or_skip(target: &Path, link: &Path) -> bool {
     #[cfg(unix)]
@@ -24,7 +29,7 @@ fn create_symlink_file_or_skip(target: &Path, link: &Path) -> bool {
     {
         match std::os::windows::fs::symlink_file(target, link) {
             Ok(()) => true,
-            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(err) if is_windows_symlink_privilege_error(&err) => {
                 let allow_skip = std::env::var("SAFE_FS_TOOLS_ALLOW_SYMLINK_SKIP")
                     .map(|value| value == "1")
                     .unwrap_or(false);
@@ -55,7 +60,7 @@ fn create_symlink_dir_or_skip(target: &Path, link: &Path) -> bool {
     {
         match std::os::windows::fs::symlink_dir(target, link) {
             Ok(()) => true,
-            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(err) if is_windows_symlink_privilege_error(&err) => {
                 let allow_skip = std::env::var("SAFE_FS_TOOLS_ALLOW_SYMLINK_SKIP")
                     .map(|value| value == "1")
                     .unwrap_or(false);
