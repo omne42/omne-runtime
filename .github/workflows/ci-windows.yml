@@ -34,6 +34,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
 
           function Sync-Repo {
             param(
@@ -53,8 +54,8 @@ jobs:
               git -c http.version=HTTP/1.1 clone --mirror $RepoUrl $MirrorDir
             }
 
-            git -C $MirrorDir remote set-url origin $RepoUrl
-            git -c http.version=HTTP/1.1 -C $MirrorDir fetch --prune origin "+refs/heads/*:refs/heads/*" "+refs/pull/*:refs/pull/*" "+refs/tags/*:refs/tags/*"
+            git -c safe.directory=$MirrorDir -C $MirrorDir remote set-url origin $RepoUrl
+            git -c http.version=HTTP/1.1 -c safe.directory=$MirrorDir -C $MirrorDir fetch --prune origin "+refs/heads/*:refs/heads/*" "+refs/pull/*:refs/pull/*" "+refs/tags/*:refs/tags/*"
 
             if (-not $repoExists) {
               git clone $MirrorDir $RepoDir
