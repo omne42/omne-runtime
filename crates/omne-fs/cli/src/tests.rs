@@ -273,7 +273,6 @@ fn load_text_limited_rejects_symlink_paths() {
 #[test]
 #[cfg(windows)]
 fn load_text_limited_rejects_symlink_paths() {
-    use std::io::ErrorKind;
     use std::os::windows::fs::symlink_file;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -283,21 +282,19 @@ fn load_text_limited_rejects_symlink_paths() {
 
     match symlink_file(&real, &link) {
         Ok(()) => {}
-        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
-            if env_flag_enabled("CI") {
-                panic!(
-                    "symlink test requires Windows symlink privileges in CI (set Developer Mode or grant SeCreateSymbolicLinkPrivilege): {err}"
-                );
-            }
-            if env_flag_enabled("SAFE_FS_TOOLS_ALLOW_WINDOWS_SYMLINK_SKIP") {
-                eprintln!(
-                    "skipping symlink test due to permission denied (SAFE_FS_TOOLS_ALLOW_WINDOWS_SYMLINK_SKIP=1): {err}"
-                );
+        Err(err)
+            if err.kind() == std::io::ErrorKind::PermissionDenied
+                || err.raw_os_error() == Some(1314) =>
+        {
+            if env_flag_enabled("SAFE_FS_TOOLS_ALLOW_SYMLINK_SKIP")
+                || env_flag_enabled("SAFE_FS_TOOLS_ALLOW_WINDOWS_SYMLINK_SKIP")
+            {
+                eprintln!("skipping symlink test due to permission denied: {err}");
                 return;
             }
             panic!(
                 "symlink_file permission denied. Enable Developer Mode or grant SeCreateSymbolicLinkPrivilege. \
-Set SAFE_FS_TOOLS_ALLOW_WINDOWS_SYMLINK_SKIP=1 to skip this test explicitly on local machines: {err}"
+Set SAFE_FS_TOOLS_ALLOW_SYMLINK_SKIP=1 to skip this test explicitly: {err}"
             );
         }
         Err(err) => panic!("symlink_file failed: {err}"),

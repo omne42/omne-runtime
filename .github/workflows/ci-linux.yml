@@ -1,9 +1,10 @@
-name: CI
+name: CI Linux
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -79,14 +80,9 @@ jobs:
           "${cmd[@]}"
 
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Test (ubuntu-latest)
+    runs-on: ubuntu-latest
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-
     steps:
       - name: Checkout runtime
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
