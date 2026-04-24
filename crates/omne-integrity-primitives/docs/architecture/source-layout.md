@@ -3,7 +3,7 @@
 ## 入口
 
 - `src/lib.rs`
-  - digest 解析、哈希计算、reader 校验和错误类型。
+  - digest 解析、哈希计算、链式 JSON 记录哈希、reader 校验和错误类型。
 
 ## 布局规则
 

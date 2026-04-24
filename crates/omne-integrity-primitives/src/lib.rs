@@ -8,6 +8,7 @@
 use std::fmt;
 use std::io::{self, Read};
 
+use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -122,6 +123,23 @@ pub fn hash_sha256(content: &[u8]) -> Sha256Digest {
     hasher.finalize()
 }
 
+pub fn hash_sha256_json_chain<T>(
+    prev_hash: Option<&str>,
+    record: &T,
+) -> Result<Sha256Digest, serde_json::Error>
+where
+    T: Serialize + ?Sized,
+{
+    let mut hasher = Sha256Hasher::new();
+    if let Some(prev_hash) = prev_hash {
+        hasher.update(prev_hash.as_bytes());
+    }
+    hasher.update(b"\n");
+    let serialized = serde_json::to_vec(record)?;
+    hasher.update(&serialized);
+    Ok(hasher.finalize())
+}
+
 pub fn hash_sha256_reader<R>(reader: &mut R) -> io::Result<Sha256Digest>
 where
     R: Read + ?Sized,
@@ -200,10 +218,18 @@ fn decode_hex_nibble(byte: u8) -> Option<u8> {
 mod tests {
     use std::io::Cursor;
 
+    use serde::Serialize;
+
     use super::{
-        Sha256Hasher, hash_sha256, hash_sha256_reader, parse_sha256_digest,
+        Sha256Hasher, hash_sha256, hash_sha256_json_chain, hash_sha256_reader, parse_sha256_digest,
         parse_sha256_user_input, verify_sha256, verify_sha256_reader,
     };
+
+    #[derive(Serialize)]
+    struct DemoRecord<'a> {
+        id: u64,
+        kind: &'a str,
+    }
 
     #[test]
     fn parse_sha256_digest_accepts_prefixed_hex() {
@@ -268,6 +294,38 @@ mod tests {
                 .expect("hash from reader")
                 .to_string(),
             "2a97516c354b68848cdbd8f54a226a0a55b21ed138e207ad6c5cbb9c00aa5aea"
+        );
+    }
+
+    #[test]
+    fn hash_sha256_json_chain_hashes_json_after_newline() {
+        let digest = hash_sha256_json_chain(
+            None,
+            &DemoRecord {
+                id: 7,
+                kind: "demo",
+            },
+        )
+        .expect("serialize json chain record");
+        assert_eq!(
+            digest.to_string(),
+            "4ff6c35461aba7cfd131ee068480a8f212921fead8d0578ca7e427f4257318c8"
+        );
+    }
+
+    #[test]
+    fn hash_sha256_json_chain_includes_previous_hash_bytes() {
+        let digest = hash_sha256_json_chain(
+            Some("prev"),
+            &DemoRecord {
+                id: 7,
+                kind: "demo",
+            },
+        )
+        .expect("serialize json chain record");
+        assert_eq!(
+            digest.to_string(),
+            "4010c0bed3d664a0ad35725bbc68efcbafc92e6ba50288fb38dee48bd2c71caa"
         );
     }
 

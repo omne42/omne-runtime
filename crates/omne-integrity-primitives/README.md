@@ -14,6 +14,7 @@ Low-level integrity primitives shared across callers.
 - `sha256:<hex>` parsing
 - raw hex digest parsing
 - SHA-256 hashing for bytes and readers
+- SHA-256 hashing for chained JSON records
 - structured checksum mismatch errors
 
 ## Non-Goals
