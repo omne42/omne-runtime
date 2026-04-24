@@ -1301,6 +1301,8 @@ version = "0.1.0"
 name = "omne-integrity-primitives"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "sha2",
 ]
 
