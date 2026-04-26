@@ -35,6 +35,7 @@
 - 对 bare command 的普通执行路径，audit / `request_resolution` / `ExecEvent` 记录的是 gateway 解析并绑定后的绝对执行体路径，而不是原始 bare token。
 - `prepare_command()` 现在只接受 `ExecRequest`，返回值中的 `PreparedCommand` 完全由 gateway 根据 audited request 重新构造；调用方不能再塞入一个部分配置好的 `Command` 来混入 `pre_exec`/`before_exec`、额外 stdio、环境、`current_dir` 或其他隐藏状态。
 - `PreparedCommand::spawn()` 会把 post-spawn sandbox 观测包进 `PreparedChild`；prepared 路径的最终 `wait` / `try_wait` / drop 也会补齐 terminal audit record，避免 prepared spawn 在最终执行结果上绕开 authoritative audit 边界。
+- `PreparedCommand::run_captured()` 和 `PreparedChild::wait_captured()` 提供 bounded stdout/stderr 捕获、可选 stdin 和可选 timeout 的便利执行面；capture 只负责把已经审计过的 prepared execution 跑完并返回字节/截断状态，不接管调用方的产品级输出脱敏、预算或展示策略。
 - 当 `enforce_allowlisted_program_for_mutation=true` 时，请求还必须使用显式绝对 `program` 路径；bare command 会在 mutation 分类前直接 fail-closed 拒绝，避免把“未知 direct executable 是否只读”继续建立在调用方自报上。
 - 对已经满足显式路径前提的请求，仍然必须显式声明 `declared_mutation`；否则 gateway 会以 `mutation_declaration_required` fail-closed 拒绝。
 - `ExecRequest` 把 `required_isolation` / `requested_isolation_source` 和 `declared_mutation` /

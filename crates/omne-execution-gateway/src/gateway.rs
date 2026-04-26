@@ -1,8 +1,9 @@
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
@@ -113,6 +114,78 @@ pub struct PreparedCommand {
     stderr_mode: ExecStdioMode,
 }
 
+#[derive(Debug, Clone)]
+pub struct PreparedCaptureOptions {
+    pub stdin: Option<Vec<u8>>,
+    pub timeout: Option<Duration>,
+    pub max_stdout_bytes: usize,
+    pub max_stderr_bytes: usize,
+    pub poll_interval: Duration,
+}
+
+#[derive(Debug)]
+pub struct PreparedCapturedOutput {
+    pub outcome: ExecutionOutcome,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub timed_out: bool,
+    pub stdin_error: Option<String>,
+    pub stdout_error: Option<String>,
+    pub stderr_error: Option<String>,
+}
+
+impl Default for PreparedCaptureOptions {
+    fn default() -> Self {
+        Self {
+            stdin: None,
+            timeout: None,
+            max_stdout_bytes: 256 * 1024,
+            max_stderr_bytes: 256 * 1024,
+            poll_interval: Duration::from_millis(10),
+        }
+    }
+}
+
+impl PreparedCaptureOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_stdin(mut self, stdin: impl Into<Vec<u8>>) -> Self {
+        self.stdin = Some(stdin.into());
+        self
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    pub fn with_stdout_limit(mut self, max_bytes: usize) -> Self {
+        self.max_stdout_bytes = max_bytes.max(1);
+        self
+    }
+
+    pub fn with_stderr_limit(mut self, max_bytes: usize) -> Self {
+        self.max_stderr_bytes = max_bytes.max(1);
+        self
+    }
+
+    pub fn with_output_limit(mut self, max_bytes: usize) -> Self {
+        let max_bytes = max_bytes.max(1);
+        self.max_stdout_bytes = max_bytes;
+        self.max_stderr_bytes = max_bytes;
+        self
+    }
+
+    pub fn with_poll_interval(mut self, interval: Duration) -> Self {
+        self.poll_interval = interval.max(Duration::from_millis(1));
+        self
+    }
+}
+
 impl ExecutionOutcome {
     /// Returns the child status for both plain success and "audit write failed after success".
     #[must_use]
@@ -189,6 +262,62 @@ impl PreparedChild {
         self.child.kill().map_err(ExecError::Spawn)
     }
 
+    pub fn wait_captured(
+        mut self,
+        options: PreparedCaptureOptions,
+    ) -> ExecResult<PreparedCapturedOutput> {
+        let stdin_task = if let Some(stdin) = options.stdin {
+            let child_stdin = self.take_stdin().ok_or_else(|| {
+                ExecError::Spawn(std::io::Error::other(
+                    "prepared child was not spawned with piped stdin",
+                ))
+            })?;
+            Some(std::thread::spawn(move || {
+                write_prepared_stdin(child_stdin, stdin)
+            }))
+        } else {
+            None
+        };
+        let stdout = self.take_stdout().ok_or_else(|| {
+            ExecError::Spawn(std::io::Error::other(
+                "prepared child was not spawned with piped stdout",
+            ))
+        })?;
+        let stderr = self.take_stderr().ok_or_else(|| {
+            ExecError::Spawn(std::io::Error::other(
+                "prepared child was not spawned with piped stderr",
+            ))
+        })?;
+
+        let stdout_task = std::thread::spawn(move || {
+            read_prepared_stream_limited(stdout, options.max_stdout_bytes)
+        });
+        let stderr_task = std::thread::spawn(move || {
+            read_prepared_stream_limited(stderr, options.max_stderr_bytes)
+        });
+
+        let (outcome, timed_out) = wait_prepared_child_with_optional_timeout(
+            &mut self,
+            options.timeout,
+            options.poll_interval,
+        );
+        let stdin_error = join_prepared_io_task(stdin_task).and_then(Result::err);
+        let (stdout, stdout_truncated, stdout_error) = join_prepared_stream_task(stdout_task);
+        let (stderr, stderr_truncated, stderr_error) = join_prepared_stream_task(stderr_task);
+
+        Ok(PreparedCapturedOutput {
+            outcome,
+            stdout,
+            stderr,
+            stdout_truncated,
+            stderr_truncated,
+            timed_out,
+            stdin_error,
+            stdout_error,
+            stderr_error,
+        })
+    }
+
     fn event_with_runtime(&self) -> ExecEvent {
         let mut event = self.event.clone();
         event.sandbox_runtime = self.sandbox_runtime.clone();
@@ -221,6 +350,102 @@ impl PreparedChild {
 impl Drop for PreparedChild {
     fn drop(&mut self) {
         self.finalize_on_drop();
+    }
+}
+
+fn wait_prepared_child_with_optional_timeout(
+    child: &mut PreparedChild,
+    timeout: Option<Duration>,
+    poll_interval: Duration,
+) -> (ExecutionOutcome, bool) {
+    let start = Instant::now();
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                let event = child.event_with_runtime();
+                let result = child.finalize_result(Ok(status));
+                return (ExecutionOutcome { event, result }, false);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let event = child.event_with_runtime();
+                let result = child.finalize_result(Err(ExecError::Spawn(err)));
+                return (ExecutionOutcome { event, result }, false);
+            }
+        }
+
+        if timeout.is_some_and(|timeout| start.elapsed() >= timeout) {
+            let _ = child.child.kill();
+            let event = child.event_with_runtime();
+            let result = child
+                .child
+                .wait()
+                .map_err(ExecError::Spawn)
+                .and_then(|status| child.finalize_result(Ok(status)));
+            return (ExecutionOutcome { event, result }, true);
+        }
+
+        let sleep_for = timeout
+            .map(|timeout| poll_interval.min(timeout.saturating_sub(start.elapsed())))
+            .unwrap_or(poll_interval)
+            .max(Duration::from_millis(1));
+        std::thread::sleep(sleep_for);
+    }
+}
+
+fn write_prepared_stdin(mut stdin: ChildStdin, input: Vec<u8>) -> Result<(), String> {
+    stdin
+        .write_all(&input)
+        .and_then(|_| stdin.flush())
+        .map_err(|err| err.to_string())
+}
+
+fn read_prepared_stream_limited(
+    mut reader: impl Read,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, bool), String> {
+    let mut out = Vec::<u8>::new();
+    let mut truncated = false;
+    let mut buf = [0u8; 8192];
+    loop {
+        let read = reader.read(&mut buf).map_err(|err| err.to_string())?;
+        if read == 0 {
+            break;
+        }
+        if out.len() < max_bytes {
+            let remaining = max_bytes.saturating_sub(out.len());
+            let take = read.min(remaining);
+            out.extend_from_slice(&buf[..take]);
+            if take < read {
+                truncated = true;
+            }
+        } else {
+            truncated = true;
+        }
+    }
+    Ok((out, truncated))
+}
+
+fn join_prepared_io_task(
+    task: Option<std::thread::JoinHandle<Result<(), String>>>,
+) -> Option<Result<(), String>> {
+    task.map(|task| match task.join() {
+        Ok(result) => result,
+        Err(_) => Err("prepared stdin writer panicked".to_string()),
+    })
+}
+
+fn join_prepared_stream_task(
+    task: std::thread::JoinHandle<Result<(Vec<u8>, bool), String>>,
+) -> (Vec<u8>, bool, Option<String>) {
+    match task.join() {
+        Ok(Ok((bytes, truncated))) => (bytes, truncated, None),
+        Ok(Err(err)) => (Vec::new(), false, Some(err)),
+        Err(_) => (
+            Vec::new(),
+            false,
+            Some("prepared stream reader panicked".to_string()),
+        ),
     }
 }
 
@@ -278,6 +503,17 @@ impl PreparedCommand {
             _ => Ok(()),
         };
         combine_result_with_audit_write(result, audit_result)
+    }
+
+    pub fn run_captured(
+        self,
+        options: PreparedCaptureOptions,
+    ) -> ExecResult<PreparedCapturedOutput> {
+        let mut prepared = self.with_piped_stdout().with_piped_stderr();
+        if options.stdin.is_some() {
+            prepared = prepared.with_piped_stdin();
+        }
+        prepared.spawn()?.wait_captured(options)
     }
 }
 
@@ -4200,6 +4436,52 @@ mod tests {
         assert_eq!(outcome.event.stdin_mode, ExecStdioMode::Piped);
         assert_eq!(outcome.event.stdout_mode, ExecStdioMode::Piped);
         assert_eq!(outcome.event.stderr_mode, ExecStdioMode::Piped);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_command_can_run_with_bounded_capture() {
+        let gateway = ExecGateway::with_policy_and_supported_isolation(
+            GatewayPolicy {
+                allow_isolation_none: true,
+                enforce_allowlisted_program_for_mutation: false,
+                ..GatewayPolicy::default()
+            },
+            ExecutionIsolation::None,
+        );
+        let workspace = tempdir().expect("create temp workspace");
+        let request = ExecRequest::new(
+            dummy_program_absolute_path(),
+            vec![
+                OsString::from(dummy_shell_flag()),
+                OsString::from("read line; printf '%s-world' \"$line\"; printf 'warn' >&2"),
+            ],
+            workspace.path(),
+            ExecutionIsolation::None,
+            workspace.path(),
+        )
+        .with_declared_mutation(false);
+
+        let (_event, result) = gateway.prepare_command(&request);
+        let output = result
+            .expect("prepare command")
+            .run_captured(
+                PreparedCaptureOptions::new()
+                    .with_stdin(b"hello\n".to_vec())
+                    .with_output_limit(64)
+                    .with_timeout(Duration::from_secs(5)),
+            )
+            .expect("run captured command");
+
+        assert!(output.outcome.command_completed_successfully());
+        assert_eq!(output.stdout, b"hello-world");
+        assert_eq!(output.stderr, b"warn");
+        assert!(!output.stdout_truncated);
+        assert!(!output.stderr_truncated);
+        assert!(!output.timed_out);
+        assert_eq!(output.outcome.event.stdin_mode, ExecStdioMode::Piped);
+        assert_eq!(output.outcome.event.stdout_mode, ExecStdioMode::Piped);
+        assert_eq!(output.outcome.event.stderr_mode, ExecStdioMode::Piped);
     }
 
     #[cfg(unix)]
