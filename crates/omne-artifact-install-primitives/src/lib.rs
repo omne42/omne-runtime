@@ -24,9 +24,9 @@ pub use artifact_download::{
     ArtifactInstallErrorDetail, ArtifactInstallErrorKind,
 };
 pub use binary_artifact::{
-    BinaryArchiveInstallRequest, DownloadBinaryRequest, InstalledArchiveBinary,
-    download_and_install_binary_from_archive, download_binary_to_destination,
-    install_binary_from_archive,
+    BinaryArchiveInstallRequest, DownloadBinaryRequest, DownloadFileRequest,
+    InstalledArchiveBinary, download_and_install_binary_from_archive,
+    download_binary_to_destination, download_file_to_destination, install_binary_from_archive,
 };
 pub use omne_archive_primitives::{
     ArchiveBinaryMatch, DEFAULT_MAX_EXTRACTED_BINARY_BYTES, is_binary_archive_asset_name,

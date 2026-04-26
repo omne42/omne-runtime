@@ -30,6 +30,15 @@ pub struct DownloadBinaryRequest<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct DownloadFileRequest<'a> {
+    pub canonical_url: &'a str,
+    pub destination: &'a Path,
+    pub asset_name: &'a str,
+    pub expected_sha256: Option<&'a Sha256Digest>,
+    pub max_download_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct BinaryArchiveInstallRequest<'a> {
     pub canonical_url: &'a str,
     pub destination: &'a Path,
@@ -123,6 +132,56 @@ where
         let mut staged = stage_file_atomically_with_name(
             request.destination,
             &binary_write_options(),
+            Some(request.asset_name),
+        )
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+
+        let download_result = download_candidate_to_writer_with_options(
+            downloader,
+            candidate,
+            staged.file_mut(),
+            request.max_download_bytes,
+        )
+        .await;
+        if let Err(err) = download_result {
+            errors.push(candidate_failure_message(candidate, &err));
+            continue;
+        }
+
+        let install_result = run_blocking_install(move || {
+            verify_downloaded_candidate(staged.file_mut(), expected_sha256.as_ref())
+                .and_then(|_| commit_binary_stage(staged))
+        })
+        .await;
+        if let Err(err) = install_result {
+            errors.push(candidate_failure_message(candidate, &err));
+            continue;
+        }
+        return Ok(candidate.clone());
+    }
+
+    Err(failed_candidates_error(request.canonical_url, errors))
+}
+
+pub async fn download_file_to_destination<D>(
+    downloader: &D,
+    candidates: &[ArtifactDownloadCandidate],
+    request: &DownloadFileRequest<'_>,
+) -> Result<ArtifactDownloadCandidate, ArtifactInstallError>
+where
+    D: ArtifactDownloader + ?Sized,
+{
+    require_download_candidates(candidates, request.canonical_url)?;
+    let lock_destination = request.destination.to_path_buf();
+    let _install_lock =
+        run_blocking_install(move || lock_binary_destination(&lock_destination)).await?;
+
+    let mut errors = Vec::new();
+    for candidate in candidates {
+        let expected_sha256 = request.expected_sha256.cloned();
+        let mut staged = stage_file_atomically_with_name(
+            request.destination,
+            &artifact_file_write_options(),
             Some(request.asset_name),
         )
         .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
@@ -307,6 +366,16 @@ fn binary_write_options() -> AtomicWriteOptions {
     }
 }
 
+fn artifact_file_write_options() -> AtomicWriteOptions {
+    AtomicWriteOptions {
+        overwrite_existing: true,
+        create_parent_directories: true,
+        require_non_empty: true,
+        require_executable_on_unix: false,
+        unix_mode: None,
+    }
+}
+
 const BINARY_INSTALL_LOCK_PREFIX: &str = ".binary-install-";
 const BINARY_INSTALL_LOCK_SUFFIX: &str = ".lock";
 
@@ -465,9 +534,9 @@ mod tests {
     };
 
     use super::{
-        BinaryArchiveInstallRequest, DownloadBinaryRequest, binary_install_lock_file_name,
-        download_and_install_binary_from_archive, download_binary_to_destination,
-        install_binary_from_archive,
+        BinaryArchiveInstallRequest, DownloadBinaryRequest, DownloadFileRequest,
+        binary_install_lock_file_name, download_and_install_binary_from_archive,
+        download_binary_to_destination, download_file_to_destination, install_binary_from_archive,
     };
 
     fn spawn_mock_http_server(
@@ -706,6 +775,48 @@ mod tests {
 
         assert_eq!(selected.source_label, "primary");
         assert_eq!(std::fs::read(&destination)?, binary);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_file_download_installs_non_executable_artifacts() -> Result<(), Box<dyn Error>>
+    {
+        let asset_name = "model.bin";
+        let body = b"model-bytes".to_vec();
+        let expected_sha256 = hash_sha256(&body);
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join(asset_name);
+        let canonical_url = format!("https://example.invalid/{asset_name}");
+        let downloader = StubDownloader {
+            routes: HashMap::from([(canonical_url.clone(), body.clone())]),
+        };
+
+        let selected = download_file_to_destination(
+            &downloader,
+            &[ArtifactDownloadCandidate {
+                url: canonical_url.clone(),
+                source_label: "primary".to_string(),
+            }],
+            &DownloadFileRequest {
+                canonical_url: &canonical_url,
+                destination: &destination,
+                asset_name,
+                expected_sha256: Some(&expected_sha256),
+                max_download_bytes: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(selected.source_label, "primary");
+        assert_eq!(std::fs::read(&destination)?, body);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&destination)?.permissions().mode() & 0o111,
+                0
+            );
+        }
         Ok(())
     }
 
