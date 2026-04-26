@@ -4,6 +4,7 @@ use std::io::{Read, Seek};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf};
 
+use bzip2::read::BzDecoder;
 use flate2::read::GzDecoder;
 use tar::Archive as TarArchive;
 use xz2::read::XzDecoder;
@@ -203,6 +204,9 @@ where
     match archive_format {
         BinaryArchiveFormat::TarGz => {
             walk_tar_tree(archive_format, GzDecoder::new(reader), limits, visitor)
+        }
+        BinaryArchiveFormat::TarBz2 => {
+            walk_tar_tree(archive_format, BzDecoder::new(reader), limits, visitor)
         }
         BinaryArchiveFormat::TarXz => {
             walk_tar_tree(archive_format, XzDecoder::new(reader), limits, visitor)

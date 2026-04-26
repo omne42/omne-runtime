@@ -7,6 +7,7 @@ pub const DEFAULT_MAX_ARCHIVE_SCAN_ENTRIES: u64 = 65_536;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryArchiveFormat {
     TarGz,
+    TarBz2,
     TarXz,
     Zip,
 }
@@ -15,6 +16,8 @@ impl BinaryArchiveFormat {
     pub fn from_asset_name(asset_name: &str) -> Option<Self> {
         if asset_name.ends_with(".tar.gz") {
             Some(Self::TarGz)
+        } else if asset_name.ends_with(".tar.bz2") {
+            Some(Self::TarBz2)
         } else if asset_name.ends_with(".tar.xz") {
             Some(Self::TarXz)
         } else if asset_name.ends_with(".zip") {
@@ -27,6 +30,7 @@ impl BinaryArchiveFormat {
     pub const fn label(self) -> &'static str {
         match self {
             Self::TarGz => "tar.gz",
+            Self::TarBz2 => "tar.bz2",
             Self::TarXz => "tar.xz",
             Self::Zip => "zip",
         }
@@ -247,6 +251,9 @@ where
         BinaryArchiveFormat::TarGz => {
             extract_from_tar_gz(reader, request, max_entry_bytes, max_scan_entries)
         }
+        BinaryArchiveFormat::TarBz2 => {
+            extract_from_tar_bz2(reader, request, max_entry_bytes, max_scan_entries)
+        }
         BinaryArchiveFormat::TarXz => {
             extract_from_tar_xz(reader, request, max_entry_bytes, max_scan_entries)
         }
@@ -316,6 +323,13 @@ where
 
     match archive_format {
         BinaryArchiveFormat::TarGz => extract_from_tar_gz_to_writer(
+            reader,
+            request,
+            writer,
+            max_entry_bytes,
+            max_scan_entries,
+        ),
+        BinaryArchiveFormat::TarBz2 => extract_from_tar_bz2_to_writer(
             reader,
             request,
             writer,
@@ -413,6 +427,142 @@ where
     let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
     let mut pending_match = None;
     let decoder = flate2::read::GzDecoder::new(reader);
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive.entries().map_err(|err| {
+        ExtractBinaryFromArchiveError::archive_read(archive_format, "read_entries", err.to_string())
+    })?;
+    for entry in entries {
+        let mut entry = entry.map_err(|err| {
+            ExtractBinaryFromArchiveError::archive_read(
+                archive_format,
+                "read_entry",
+                err.to_string(),
+            )
+        })?;
+        scan_budget.record_entry()?;
+        let path = entry
+            .path()
+            .map_err(|err| {
+                ExtractBinaryFromArchiveError::archive_read(
+                    archive_format,
+                    "read_entry_path",
+                    err.to_string(),
+                )
+            })?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if let Some(hint) = normalized_hint.as_deref() {
+            if path == hint {
+                ensure_tar_entry_is_regular_file(
+                    archive_format,
+                    &path,
+                    entry.header().entry_type(),
+                )?;
+                return write_matched_entry(
+                    archive_format,
+                    path,
+                    &mut entry,
+                    writer,
+                    max_entry_bytes,
+                );
+            }
+            continue;
+        }
+        if is_binary_entry_match_without_hint(&path, request.binary_name) {
+            ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
+            record_buffered_match(
+                &mut pending_match,
+                read_matched_entry(archive_format, path, &mut entry, max_entry_bytes)?,
+                archive_format,
+                request.binary_name,
+            )?;
+        }
+    }
+    write_buffered_match(
+        writer,
+        finish_buffered_match(pending_match, archive_format, request.binary_name)?,
+        archive_format,
+    )
+}
+
+fn extract_from_tar_bz2<R>(
+    reader: R,
+    request: &BinaryArchiveRequest<'_>,
+    max_entry_bytes: u64,
+    max_scan_entries: u64,
+) -> Result<ExtractedArchiveBinary, ExtractBinaryFromArchiveError>
+where
+    R: Read,
+{
+    let archive_format = BinaryArchiveFormat::TarBz2;
+    let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
+    let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
+    let mut pending_match = None;
+    let decoder = bzip2::read::BzDecoder::new(reader);
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive.entries().map_err(|err| {
+        ExtractBinaryFromArchiveError::archive_read(archive_format, "read_entries", err.to_string())
+    })?;
+    for entry in entries {
+        let mut entry = entry.map_err(|err| {
+            ExtractBinaryFromArchiveError::archive_read(
+                archive_format,
+                "read_entry",
+                err.to_string(),
+            )
+        })?;
+        scan_budget.record_entry()?;
+        let path = entry
+            .path()
+            .map_err(|err| {
+                ExtractBinaryFromArchiveError::archive_read(
+                    archive_format,
+                    "read_entry_path",
+                    err.to_string(),
+                )
+            })?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if let Some(hint) = normalized_hint.as_deref() {
+            if path == hint {
+                ensure_tar_entry_is_regular_file(
+                    archive_format,
+                    &path,
+                    entry.header().entry_type(),
+                )?;
+                return read_matched_entry(archive_format, path, &mut entry, max_entry_bytes);
+            }
+            continue;
+        }
+        if is_binary_entry_match_without_hint(&path, request.binary_name) {
+            ensure_tar_entry_is_regular_file(archive_format, &path, entry.header().entry_type())?;
+            record_buffered_match(
+                &mut pending_match,
+                read_matched_entry(archive_format, path, &mut entry, max_entry_bytes)?,
+                archive_format,
+                request.binary_name,
+            )?;
+        }
+    }
+    finish_buffered_match(pending_match, archive_format, request.binary_name)
+}
+
+fn extract_from_tar_bz2_to_writer<R, W>(
+    reader: R,
+    request: &BinaryArchiveRequest<'_>,
+    writer: &mut W,
+    max_entry_bytes: u64,
+    max_scan_entries: u64,
+) -> Result<ArchiveBinaryMatch, ExtractBinaryFromArchiveError>
+where
+    R: Read,
+    W: Write + ?Sized,
+{
+    let archive_format = BinaryArchiveFormat::TarBz2;
+    let mut scan_budget = ArchiveScanBudget::new(archive_format, max_scan_entries);
+    let normalized_hint = normalize_archive_binary_hint(request.archive_binary_hint);
+    let mut pending_match = None;
+    let decoder = bzip2::read::BzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive.entries().map_err(|err| {
         ExtractBinaryFromArchiveError::archive_read(archive_format, "read_entries", err.to_string())
@@ -949,6 +1099,7 @@ mod tests {
     #[test]
     fn supported_archive_asset_detection_matches_expected_extensions() {
         assert!(is_binary_archive_asset_name("tool.tar.gz"));
+        assert!(is_binary_archive_asset_name("tool.tar.bz2"));
         assert!(is_binary_archive_asset_name("tool.tar.xz"));
         assert!(is_binary_archive_asset_name("tool.zip"));
         assert!(!is_binary_archive_asset_name("tool.tgz"));
@@ -1011,6 +1162,23 @@ mod tests {
 
         assert_eq!(extracted.archive_path, "node-v1.0.0-linux-x64/bin/node");
         assert_eq!(extracted.bytes, b"mock-node");
+    }
+
+    #[test]
+    fn extracts_tar_bz2_binary_by_hint() {
+        let archive = make_tar_bz2_archive(&[("kws-model/bin/kws", b"mock-kws".as_slice(), 0o755)]);
+        let extracted = extract_binary_from_archive(
+            "kws-model.tar.bz2",
+            &archive,
+            &BinaryArchiveRequest {
+                binary_name: "kws",
+                archive_binary_hint: Some("kws-model/bin/kws"),
+            },
+        )
+        .expect("extract kws");
+
+        assert_eq!(extracted.archive_path, "kws-model/bin/kws");
+        assert_eq!(extracted.bytes, b"mock-kws");
     }
 
     #[test]
@@ -1521,6 +1689,22 @@ mod tests {
         }
         let encoder = builder.into_inner().expect("finalize tar.xz builder");
         encoder.finish().expect("finalize xz stream")
+    }
+
+    fn make_tar_bz2_archive(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        let encoder = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        for (path, body, mode) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(*mode);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, *path, &mut Cursor::new(*body))
+                .expect("append tar.bz2 entry");
+        }
+        let encoder = builder.into_inner().expect("finalize tar.bz2 builder");
+        encoder.finish().expect("finalize bzip2 stream")
     }
 
     fn make_repeat_tar_gz_archive(path: &str, size: usize, mode: u32, byte: u8) -> Vec<u8> {

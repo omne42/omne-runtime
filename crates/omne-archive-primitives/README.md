@@ -12,7 +12,7 @@ Low-level archive/compression primitives shared across callers.
 ## Scope
 
 - archive format detection for binary delivery assets
-- archive entry traversal for `.tar.gz`, `.tar.xz`, and `.zip`
+- archive entry traversal for `.tar.gz`, `.tar.bz2`, `.tar.xz`, and `.zip`
 - target binary matching only by exact `archive_binary_hint` or conventional `bin/<binary>` layout, with fail-closed ambiguity rejection when multiple candidates exist and no remaining product/tool identity fallback
 - extraction of the matched binary bytes from the archive, limited by the exported `DEFAULT_MAX_EXTRACTED_BINARY_BYTES` budget sized for large official single-binary releases
 - matched target validation that only accepts regular-file archive entries before reading content

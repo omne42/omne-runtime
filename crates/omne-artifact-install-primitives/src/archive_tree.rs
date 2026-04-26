@@ -54,6 +54,7 @@ pub struct ArchiveTreeInstallRequest<'a> {
 
 pub fn is_archive_tree_asset_name(asset_name: &str) -> bool {
     asset_name.ends_with(".tar.gz")
+        || asset_name.ends_with(".tar.bz2")
         || asset_name.ends_with(".tar.xz")
         || asset_name.ends_with(".zip")
 }

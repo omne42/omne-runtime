@@ -6,6 +6,7 @@ publish = false
 description = "Low-level Omne archive/compression primitives."
 
 [dependencies]
+bzip2 = "0.6"
 flate2 = "1"
 tar = "0.4"
 xz2 = "0.1"

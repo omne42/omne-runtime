@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- accept `.tar.bz2` archive-tree assets through the shared archive primitives, enabling callers to install bzip2 tar model bundles without local extraction code
 - normalize archive-tree advisory lock roots for single-component relative destinations such as
   `toolchain`, so the install path never hands an empty parent path to the ambient lock primitive
 - tighten archive-tree leaf materialization so regular files, symlinks, and hard links stage into

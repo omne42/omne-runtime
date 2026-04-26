@@ -4,7 +4,7 @@
 //!
 //! This crate owns reusable archive-format readers and target-binary extraction helpers that
 //! should not be duplicated across callers:
-//! - supported asset-format detection for `.tar.gz`, `.tar.xz`, and `.zip`
+//! - supported asset-format detection for `.tar.gz`, `.tar.bz2`, `.tar.xz`, and `.zip`
 //! - archive entry traversal with normalized path matching
 //! - target binary lookup by binary name and optional exact archive-relative hint
 //! - extraction of the matched binary bytes
