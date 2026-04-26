@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-http-kit = { version = "0.1.0", git = "https://github.com/omne42/omne_foundation.git", rev = "7de481c4f3f78ca36ad56b0cdd09dc0043f5d441" }
+http-kit = { version = "0.1.0", git = "ssh://mac@gitea-personal/omne/omne_foundation.git", rev = "7de481c4f3f78ca36ad56b0cdd09dc0043f5d441" }
 omne-archive-primitives = { path = "../omne-archive-primitives" }
 omne-fs-primitives = { path = "../omne-fs-primitives" }
 omne-integrity-primitives = { path = "../omne-integrity-primitives" }

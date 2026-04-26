@@ -12,7 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
-policy-meta = { version = "0.1.0", git = "https://github.com/omne42/omne_foundation.git", rev = "7de481c4f3f78ca36ad56b0cdd09dc0043f5d441" }
+policy-meta = { version = "0.1.0", git = "ssh://mac@gitea-personal/omne/omne_foundation.git", rev = "7de481c4f3f78ca36ad56b0cdd09dc0043f5d441" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
