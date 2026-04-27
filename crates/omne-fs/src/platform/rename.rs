@@ -5,7 +5,6 @@ use std::path::Path;
 #[derive(Debug)]
 pub(crate) enum RenameReplaceError {
     Io(std::io::Error),
-    #[allow(dead_code)]
     CommittedButUnsynced(std::io::Error),
 }
 
@@ -36,7 +35,6 @@ impl std::error::Error for RenameReplaceError {
     }
 }
 
-#[cfg(not(windows))]
 fn map_post_rename_sync(sync_result: std::io::Result<()>) -> Result<(), RenameReplaceError> {
     sync_result.map_err(RenameReplaceError::CommittedButUnsynced)
 }
@@ -116,7 +114,7 @@ pub(crate) fn rename_replace(
     if moved == 0 {
         return Err(RenameReplaceError::Io(std::io::Error::last_os_error()));
     }
-    Ok(())
+    map_post_rename_sync(Ok(()))
 }
 
 #[cfg(not(windows))]

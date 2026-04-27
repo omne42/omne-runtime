@@ -57,186 +57,146 @@ fn ensure_recursive_delete_allows_descendants(
     target_relative: &Path,
     ignore_missing: bool,
 ) -> Result<()> {
-    let max_walk_entries = u64::try_from(ctx.policy.limits.max_walk_entries).unwrap_or(u64::MAX);
-    let max_walk = ctx.policy.limits.max_walk_ms.map(Duration::from_millis);
-    let started = Instant::now();
-    let mut scanned_entries: u64 = 0;
-    scan_directory_descendants(
-        ctx,
-        target_abs,
-        target_relative,
-        ignore_missing,
-        &started,
-        max_walk,
-        max_walk_entries,
-        &mut scanned_entries,
-    )
+    RecursiveDeleteWalk::new(ctx, ignore_missing).scan_descendants(target_abs, target_relative)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn scan_directory_descendants(
-    ctx: &Context,
-    dir_abs: &Path,
-    dir_relative: &Path,
+struct RecursiveDeleteWalk<'a> {
+    ctx: &'a Context,
     ignore_missing: bool,
-    started: &Instant,
+    started: Instant,
     max_walk: Option<Duration>,
     max_walk_entries: u64,
-    scanned_entries: &mut u64,
-) -> Result<()> {
-    ensure_recursive_delete_scan_within_budget(
-        dir_relative,
-        *scanned_entries,
-        max_walk_entries,
-        started,
-        max_walk,
-    )?;
-    let entries = match fs::read_dir(dir_abs) {
-        Ok(entries) => entries,
-        Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(());
-        }
-        Err(err) => return Err(Error::io_path("read_dir", dir_relative, err)),
-    };
+    scanned_entries: u64,
+}
 
-    for entry in entries {
-        *scanned_entries = scanned_entries.saturating_add(1);
-        ensure_recursive_delete_scan_within_budget(
-            dir_relative,
-            *scanned_entries,
-            max_walk_entries,
-            started,
-            max_walk,
-        )?;
-        let entry = entry.map_err(|err| Error::io_path("read_dir", dir_relative, err))?;
-        let child_name = entry.file_name();
-        let child_relative = dir_relative.join(&child_name);
-        if ctx.redactor.is_path_denied(&child_relative) {
-            return Err(Error::SecretPathDenied(child_relative));
-        }
-
-        if entry
-            .file_type()
-            .map_err(|err| Error::io_path("file_type", &child_relative, err))?
-            .is_dir()
-        {
-            scan_directory_descendants(
-                ctx,
-                &dir_abs.join(&child_name),
-                &child_relative,
-                ignore_missing,
-                started,
-                max_walk,
-                max_walk_entries,
-                scanned_entries,
-            )?;
+impl<'a> RecursiveDeleteWalk<'a> {
+    fn new(ctx: &'a Context, ignore_missing: bool) -> Self {
+        Self {
+            ctx,
+            ignore_missing,
+            started: Instant::now(),
+            max_walk: ctx.policy.limits.max_walk_ms.map(Duration::from_millis),
+            max_walk_entries: u64::try_from(ctx.policy.limits.max_walk_entries).unwrap_or(u64::MAX),
+            scanned_entries: 0,
         }
     }
 
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn delete_directory_checked(
-    ctx: &Context,
-    dir_abs: &Path,
-    dir_relative: &Path,
-    ignore_missing: bool,
-    started: &Instant,
-    max_walk: Option<Duration>,
-    max_walk_entries: u64,
-    scanned_entries: &mut u64,
-) -> Result<()> {
-    loop {
+    fn ensure_within_budget(&self, dir_relative: &Path) -> Result<()> {
         ensure_recursive_delete_scan_within_budget(
             dir_relative,
-            *scanned_entries,
-            max_walk_entries,
-            started,
-            max_walk,
-        )?;
+            self.scanned_entries,
+            self.max_walk_entries,
+            &self.started,
+            self.max_walk,
+        )
+    }
+
+    fn count_entry(&mut self, dir_relative: &Path) -> Result<()> {
+        self.scanned_entries = self.scanned_entries.saturating_add(1);
+        self.ensure_within_budget(dir_relative)
+    }
+
+    fn scan_descendants(&mut self, dir_abs: &Path, dir_relative: &Path) -> Result<()> {
+        self.ensure_within_budget(dir_relative)?;
         let entries = match fs::read_dir(dir_abs) {
             Ok(entries) => entries,
-            Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
+            Err(err) if self.ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(());
             }
             Err(err) => return Err(Error::io_path("read_dir", dir_relative, err)),
         };
 
         for entry in entries {
-            *scanned_entries = scanned_entries.saturating_add(1);
-            ensure_recursive_delete_scan_within_budget(
-                dir_relative,
-                *scanned_entries,
-                max_walk_entries,
-                started,
-                max_walk,
-            )?;
+            self.count_entry(dir_relative)?;
             let entry = entry.map_err(|err| Error::io_path("read_dir", dir_relative, err))?;
             let child_name = entry.file_name();
             let child_relative = dir_relative.join(&child_name);
-            if ctx.redactor.is_path_denied(&child_relative) {
+            if self.ctx.redactor.is_path_denied(&child_relative) {
                 return Err(Error::SecretPathDenied(child_relative));
             }
 
-            let child_type = entry
+            if entry
                 .file_type()
-                .map_err(|err| Error::io_path("file_type", &child_relative, err))?;
-            let child_abs = dir_abs.join(&child_name);
-            if child_type.is_dir() {
-                delete_directory_checked(
-                    ctx,
-                    &child_abs,
-                    &child_relative,
-                    ignore_missing,
-                    started,
-                    max_walk,
-                    max_walk_entries,
-                    scanned_entries,
-                )?;
-                continue;
+                .map_err(|err| Error::io_path("file_type", &child_relative, err))?
+                .is_dir()
+            {
+                self.scan_descendants(&dir_abs.join(&child_name), &child_relative)?;
             }
+        }
 
-            let delete_result = if child_type.is_symlink() {
-                unlink_symlink(&child_abs)
-            } else {
-                fs::remove_file(&child_abs)
+        Ok(())
+    }
+
+    fn delete_directory_checked(&mut self, dir_abs: &Path, dir_relative: &Path) -> Result<()> {
+        loop {
+            self.ensure_within_budget(dir_relative)?;
+            let entries = match fs::read_dir(dir_abs) {
+                Ok(entries) => entries,
+                Err(err) if self.ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(());
+                }
+                Err(err) => return Err(Error::io_path("read_dir", dir_relative, err)),
             };
-            match delete_result {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    let op = if child_type.is_symlink() {
-                        "unlink_symlink"
-                    } else {
-                        "remove_file"
-                    };
-                    return Err(Error::io_path(op, &child_relative, err));
+
+            for entry in entries {
+                self.count_entry(dir_relative)?;
+                let entry = entry.map_err(|err| Error::io_path("read_dir", dir_relative, err))?;
+                let child_name = entry.file_name();
+                let child_relative = dir_relative.join(&child_name);
+                if self.ctx.redactor.is_path_denied(&child_relative) {
+                    return Err(Error::SecretPathDenied(child_relative));
+                }
+
+                let child_type = entry
+                    .file_type()
+                    .map_err(|err| Error::io_path("file_type", &child_relative, err))?;
+                let child_abs = dir_abs.join(&child_name);
+                if child_type.is_dir() {
+                    self.delete_directory_checked(&child_abs, &child_relative)?;
+                    continue;
+                }
+
+                let delete_result = if child_type.is_symlink() {
+                    unlink_symlink(&child_abs)
+                } else {
+                    fs::remove_file(&child_abs)
+                };
+                match delete_result {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        let op = if child_type.is_symlink() {
+                            "unlink_symlink"
+                        } else {
+                            "remove_file"
+                        };
+                        return Err(Error::io_path(op, &child_relative, err));
+                    }
                 }
             }
-        }
 
-        run_before_recursive_remove_dir_hook(dir_abs);
-        let mut refreshed_entries = match fs::read_dir(dir_abs) {
-            Ok(entries) => entries,
-            Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(());
+            run_before_recursive_remove_dir_hook(dir_abs);
+            let mut refreshed_entries = match fs::read_dir(dir_abs) {
+                Ok(entries) => entries,
+                Err(err) if self.ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(());
+                }
+                Err(err) => return Err(Error::io_path("read_dir", dir_relative, err)),
+            };
+            match refreshed_entries.next() {
+                Some(Ok(_)) => continue,
+                Some(Err(err)) => return Err(Error::io_path("read_dir", dir_relative, err)),
+                None => {}
             }
-            Err(err) => return Err(Error::io_path("read_dir", dir_relative, err)),
-        };
-        match refreshed_entries.next() {
-            Some(Ok(_)) => continue,
-            Some(Err(err)) => return Err(Error::io_path("read_dir", dir_relative, err)),
-            None => {}
-        }
 
-        match fs::remove_dir(dir_abs) {
-            Ok(()) => return Ok(()),
-            Err(err) if ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(());
+            match fs::remove_dir(dir_abs) {
+                Ok(()) => return Ok(()),
+                Err(err) if self.ignore_missing && err.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => continue,
+                Err(err) => return Err(Error::io_path("remove_dir", dir_relative, err)),
             }
-            Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => continue,
-            Err(err) => return Err(Error::io_path("remove_dir", dir_relative, err)),
         }
     }
 }
@@ -599,21 +559,8 @@ pub fn delete(ctx: &Context, request: DeleteRequest) -> Result<DeleteResponse> {
             &relative,
             request.ignore_missing,
         )?;
-        let started = Instant::now();
-        let max_walk = ctx.policy.limits.max_walk_ms.map(Duration::from_millis);
-        let max_walk_entries =
-            u64::try_from(ctx.policy.limits.max_walk_entries).unwrap_or(u64::MAX);
-        let mut scanned_entries: u64 = 0;
-        delete_directory_checked(
-            ctx,
-            &target,
-            &relative,
-            request.ignore_missing,
-            &started,
-            max_walk,
-            max_walk_entries,
-            &mut scanned_entries,
-        )?;
+        RecursiveDeleteWalk::new(ctx, request.ignore_missing)
+            .delete_directory_checked(&target, &relative)?;
     } else {
         if let Some(response) = ensure_parent_stable_or_missing()? {
             return Ok(response);

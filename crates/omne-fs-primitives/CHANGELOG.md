@@ -2,10 +2,16 @@
 
 ## [Unreleased]
 
+- group atomic directory replace cleanup hooks behind one test-injection trait, removing the local
+  `too_many_arguments` suppression without changing commit or rollback behavior
+- keep staged atomic file handles non-optional and clean up staged files after failed no-clobber
+  commits instead of leaving temporary entries behind
+- report staged and backup directory cleanup failures on pre-commit atomic directory replacement
+  errors instead of hiding temporary directories that may remain on disk
 - make `overwrite_existing=false` prefer kernel-backed no-clobber rename semantics where available, and otherwise fail closed when the destination already exists at commit time instead of replacing it
 - expose a structured rollback-failed error for atomic directory replacement, including the backup path that still holds the original directory when staged rename recovery cannot restore it
 - clean up staged directory trees when atomic directory replacement fails before the final rename, including backup-dir setup and existing-directory handoff errors
-- return explicit fail-closed errors instead of panicking when staged atomic file/directory handles were already consumed, and surface staged directory cleanup failures after failed directory swaps
+- return explicit fail-closed errors instead of panicking when staged atomic directory handles were already consumed, and surface staged directory cleanup failures after failed directory swaps
 - fsync staged directory trees before atomic replace so successful directory installs do not return before nested file content is durable
 - make `open_regular_file_at` use non-blocking no-follow opens so FIFOs and other special files fail closed instead of hanging callers before regular-file validation
 - report staged directory replace backup cleanup failures as post-commit errors so callers can tell the destination already switched

@@ -343,8 +343,9 @@ fn redact_url_for_error(raw: &str) -> String {
     let Ok(mut url) = reqwest::Url::parse(raw) else {
         return "<invalid-url>".to_string();
     };
-    let _ = url.set_username("");
-    let _ = url.set_password(None);
+    if url.set_username("").is_err() || url.set_password(None).is_err() {
+        return "<redacted-url>".to_string();
+    }
     url.set_query(None);
     url.set_fragment(None);
     url.to_string()
@@ -387,8 +388,8 @@ mod tests {
         ArtifactCandidateFailure, ArtifactDownloadCandidate, ArtifactDownloader,
         ArtifactInstallError, ArtifactInstallErrorDetail, ArtifactInstallErrorKind,
         candidate_failure_message, download_candidate_to_writer_with_options,
-        failed_candidates_error, redact_reqwest_error, require_download_candidates,
-        run_blocking_install,
+        failed_candidates_error, redact_reqwest_error, redact_url_for_error,
+        require_download_candidates, run_blocking_install,
     };
 
     struct RecordingDownloader {
@@ -467,6 +468,22 @@ mod tests {
                 .message()
                 .contains("https://example.invalid/demo.zip")
         );
+    }
+
+    #[test]
+    fn redacted_url_for_error_removes_credentials_query_and_fragment() {
+        let redacted = redact_url_for_error(
+            "https://user:password@example.invalid/demo.zip?token=secret#fragment",
+        );
+
+        assert_eq!(redacted, "https://example.invalid/demo.zip");
+    }
+
+    #[test]
+    fn redacted_url_for_error_fails_closed_for_cannot_be_base_urls() {
+        let redacted = redact_url_for_error("mailto:secret-token@example.invalid");
+
+        assert_eq!(redacted, "<redacted-url>");
     }
 
     #[test]

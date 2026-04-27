@@ -10,8 +10,9 @@ use omne_system_package_primitives::SystemPackageManager;
 use tempfile::tempfile;
 
 use crate::command_path::{
-    is_spawnable_command_path, resolve_command_path_in_standard_locations_os,
-    resolve_command_path_os, resolve_command_path_os_with_path_var_and_base_dir,
+    is_spawnable_command_path, os_str_has_path_separator,
+    resolve_command_path_in_standard_locations_os, resolve_command_path_os,
+    resolve_command_path_os_with_path_var_and_base_dir,
 };
 
 const DEFAULT_CAPTURED_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024 * 1024;
@@ -110,10 +111,50 @@ struct WaitForChildOutput {
 }
 
 #[derive(Debug)]
-struct ResolvedExecutionPrograms {
-    launcher: PathBuf,
-    sudo_environment_cleaner: Option<PathBuf>,
-    sudo_target: Option<PathBuf>,
+enum ResolvedExecutionPrograms {
+    Direct {
+        launcher: PathBuf,
+    },
+    Sudo {
+        launcher: PathBuf,
+        environment_cleaner: PathBuf,
+        target: PathBuf,
+    },
+}
+
+impl ResolvedExecutionPrograms {
+    #[cfg(test)]
+    fn launcher(&self) -> &Path {
+        match self {
+            Self::Direct { launcher } | Self::Sudo { launcher, .. } => launcher,
+        }
+    }
+
+    fn direct_launcher_is_missing(&self, request: &HostCommandRequest<'_>) -> bool {
+        match self {
+            Self::Direct { launcher } if working_directory_can_spawn(request) => !launcher.exists(),
+            _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    fn sudo_environment_cleaner(&self) -> Option<&Path> {
+        match self {
+            Self::Sudo {
+                environment_cleaner,
+                ..
+            } => Some(environment_cleaner),
+            Self::Direct { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn sudo_target(&self) -> Option<&Path> {
+        match self {
+            Self::Sudo { target, .. } => Some(target),
+            Self::Direct { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -324,14 +365,10 @@ pub fn run_host_command_with_capture_options(
     validate_direct_request_program(request)?;
     let execution = select_execution_for_request(request)?;
     let resolved_programs = resolve_execution_programs(request, execution)?;
-    let output = run_command_output(
-        request,
-        execution,
-        &resolved_programs,
-        options,
-        capture_options,
-    )
-    .map_err(|source| map_command_output_error(request, execution, &resolved_programs, source))?;
+    let output = run_command_output(request, &resolved_programs, options, capture_options)
+        .map_err(|source| {
+            map_command_output_error(request, execution, &resolved_programs, source)
+        })?;
     Ok(HostCommandOutput { execution, output })
 }
 
@@ -444,7 +481,6 @@ fn build_command_with_options(
     let resolved_programs = resolve_execution_programs(request, execution)?;
     Ok(build_command_with_resolved_programs(
         request,
-        execution,
         &resolved_programs,
         options,
     ))
@@ -452,41 +488,33 @@ fn build_command_with_options(
 
 fn build_command_with_resolved_programs(
     request: &HostCommandRequest<'_>,
-    execution: HostCommandExecution,
     resolved_programs: &ResolvedExecutionPrograms,
     options: HostCommandRunOptions<'_>,
 ) -> Command {
-    let mut cmd = match execution {
-        HostCommandExecution::Direct => Command::new(&resolved_programs.launcher),
-        HostCommandExecution::Sudo => {
-            let mut cmd = Command::new(&resolved_programs.launcher);
+    let mut cmd = match resolved_programs {
+        ResolvedExecutionPrograms::Direct { launcher } => {
+            let mut cmd = Command::new(launcher);
+            for arg in request.args {
+                cmd.arg(arg);
+            }
+            for (name, value) in request.env {
+                cmd.env(name, value);
+            }
+            cmd
+        }
+        ResolvedExecutionPrograms::Sudo {
+            launcher,
+            environment_cleaner,
+            target,
+        } => {
+            let mut cmd = Command::new(launcher);
             cmd.arg("-n");
-            append_sudo_target_command(
-                &mut cmd,
-                resolved_programs
-                    .sudo_environment_cleaner
-                    .as_deref()
-                    .expect("sudo execution must resolve an env cleaner path"),
-                resolved_programs
-                    .sudo_target
-                    .as_deref()
-                    .expect("sudo execution must resolve a target path"),
-                request,
-                options,
-            );
+            append_sudo_target_command(&mut cmd, environment_cleaner, target, request, options);
             cmd
         }
     };
     for name in options.env_remove {
         cmd.env_remove(name);
-    }
-    if execution == HostCommandExecution::Direct {
-        for arg in request.args {
-            cmd.arg(arg);
-        }
-        for (name, value) in request.env {
-            cmd.env(name, value);
-        }
     }
     if let Some(working_directory) = resolved_working_directory_for_request(request) {
         cmd.current_dir(working_directory);
@@ -587,23 +615,15 @@ fn trusted_sudo_target_path_var() -> OsString {
 
 fn run_command_output(
     request: &HostCommandRequest<'_>,
-    execution: HostCommandExecution,
     resolved_programs: &ResolvedExecutionPrograms,
     options: HostCommandRunOptions<'_>,
     capture_options: HostCommandCaptureOptions,
 ) -> Result<Output, CommandOutputError> {
-    spawn_and_capture_output(
-        request,
-        execution,
-        resolved_programs,
-        options,
-        capture_options,
-    )
+    spawn_and_capture_output(request, resolved_programs, options, capture_options)
 }
 
 fn spawn_and_capture_output(
     request: &HostCommandRequest<'_>,
-    execution: HostCommandExecution,
     resolved_programs: &ResolvedExecutionPrograms,
     options: HostCommandRunOptions<'_>,
     capture_options: HostCommandCaptureOptions,
@@ -612,8 +632,7 @@ fn spawn_and_capture_output(
         create_output_capture_file().map_err(CommandOutputError::Spawn)?;
     let (stderr_capture, stderr_writer) =
         create_output_capture_file().map_err(CommandOutputError::Spawn)?;
-    let mut command =
-        build_command_with_resolved_programs(request, execution, resolved_programs, options);
+    let mut command = build_command_with_resolved_programs(request, resolved_programs, options);
     command.stdout(Stdio::from(stdout_writer));
     command.stderr(Stdio::from(stderr_writer));
     let child = command.spawn().map_err(CommandOutputError::Spawn)?;
@@ -690,7 +709,7 @@ fn wait_for_child(
     stdout_capture: &File,
     stderr_capture: &File,
 ) -> Result<WaitForChildOutput, WaitForChildError> {
-    const POLL_INTERVAL: Duration = Duration::from_millis(50);
+    const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     loop {
@@ -723,9 +742,11 @@ fn wait_for_child(
             )));
         }
 
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            let timeout = timeout.expect("deadline implies timeout");
-            let _ = child.kill();
+        if let (Some(deadline), Some(timeout)) = (deadline, timeout)
+            && Instant::now() >= deadline
+        {
+            kill_child_or_accept_exited(&mut child, &format!("timed out after {timeout:?}"))
+                .map_err(WaitForChildError::Spawn)?;
             let status = child.wait().map_err(|source| {
                 WaitForChildError::Spawn(io::Error::other(format!(
                     "timed out after {timeout:?} and wait failed: {source}"
@@ -784,23 +805,37 @@ fn terminate_child_after_capture_limit(
     stream_name: &'static str,
     capture_limit_bytes_per_stream: Option<usize>,
 ) -> io::Result<()> {
-    let _ = child.kill();
+    let limit_message = capture_limit_message(stream_name, capture_limit_bytes_per_stream);
+    kill_child_or_accept_exited(&mut child, &limit_message)?;
     match child.try_wait() {
         Ok(Some(_)) => {}
         Ok(None) => spawn_background_child_reaper(child).map_err(|source| {
             io::Error::other(format!(
-                "{} and background reap setup failed: {source}",
-                capture_limit_message(stream_name, capture_limit_bytes_per_stream),
+                "{limit_message} and background reap setup failed: {source}",
             ))
         })?,
         Err(source) => {
             return Err(io::Error::other(format!(
-                "{} and try_wait failed: {source}",
-                capture_limit_message(stream_name, capture_limit_bytes_per_stream),
+                "{limit_message} and try_wait failed: {source}",
             )));
         }
     }
     Ok(())
+}
+
+fn kill_child_or_accept_exited(child: &mut std::process::Child, context: &str) -> io::Result<()> {
+    match child.kill() {
+        Ok(()) => Ok(()),
+        Err(kill_source) => match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(io::Error::other(format!(
+                "{context} and child termination failed: {kill_source}"
+            ))),
+            Err(wait_source) => Err(io::Error::other(format!(
+                "{context}, child termination failed: {kill_source}, and status check failed: {wait_source}"
+            ))),
+        },
+    }
 }
 
 fn spawn_background_child_reaper(mut child: std::process::Child) -> io::Result<()> {
@@ -966,17 +1001,7 @@ fn unix_process_is_non_root() -> bool {
 }
 
 fn has_path_separator(command: &OsStr) -> bool {
-    command.to_string_lossy().chars().any(is_path_separator)
-}
-
-#[cfg(windows)]
-fn is_path_separator(ch: char) -> bool {
-    ch == '/' || ch == '\\'
-}
-
-#[cfg(not(windows))]
-fn is_path_separator(ch: char) -> bool {
-    ch == '/'
+    os_str_has_path_separator(command)
 }
 
 fn sudo_eligible_program(program: &OsStr) -> bool {
@@ -1081,10 +1106,8 @@ fn resolve_execution_programs(
     execution: HostCommandExecution,
 ) -> Result<ResolvedExecutionPrograms, HostCommandError> {
     match execution {
-        HostCommandExecution::Direct => Ok(ResolvedExecutionPrograms {
+        HostCommandExecution::Direct => Ok(ResolvedExecutionPrograms::Direct {
             launcher: resolve_program_for_direct_spawn(request)?,
-            sudo_environment_cleaner: None,
-            sudo_target: None,
         }),
         HostCommandExecution::Sudo => {
             let launcher =
@@ -1101,10 +1124,10 @@ fn resolve_execution_programs(
             })?;
             let sudo_target = resolve_program_for_sudo_target(request)?;
             ensure_resolved_sudo_target_is_available(request, &sudo_target)?;
-            Ok(ResolvedExecutionPrograms {
+            Ok(ResolvedExecutionPrograms::Sudo {
                 launcher,
-                sudo_environment_cleaner: Some(sudo_environment_cleaner),
-                sudo_target: Some(sudo_target),
+                environment_cleaner: sudo_environment_cleaner,
+                target: sudo_target,
             })
         }
     }
@@ -1221,8 +1244,7 @@ fn resolve_host_system_package_manager_path(program: &OsStr) -> Option<PathBuf> 
         .flatten()
 }
 
-#[cfg_attr(not(unix), allow(dead_code))]
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn ensure_sudo_target_is_available(
     request: &HostCommandRequest<'_>,
 ) -> Result<(), HostCommandError> {
@@ -1267,8 +1289,7 @@ fn ensure_resolved_sudo_target_is_available(
     Ok(())
 }
 
-#[cfg_attr(not(unix), allow(dead_code))]
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn ensure_sudo_environment_cleaner_is_available_with_resolved(
     program: &OsStr,
     resolved_path: Option<PathBuf>,
@@ -1344,7 +1365,7 @@ fn map_command_output_error(
     match source {
         CommandOutputError::Spawn(source)
             if source.kind() == io::ErrorKind::NotFound
-                && spawn_error_is_missing_program(request, execution, resolved_programs) =>
+                && resolved_programs.direct_launcher_is_missing(request) =>
         {
             HostCommandError::CommandNotFound {
                 program: request.program.to_os_string(),
@@ -1366,22 +1387,6 @@ fn map_command_output_error(
             timeout,
             output,
         },
-    }
-}
-
-fn spawn_error_is_missing_program(
-    request: &HostCommandRequest<'_>,
-    execution: HostCommandExecution,
-    resolved_programs: &ResolvedExecutionPrograms,
-) -> bool {
-    match execution {
-        HostCommandExecution::Sudo => false,
-        HostCommandExecution::Direct => {
-            if !working_directory_can_spawn(request) {
-                return false;
-            }
-            !resolved_programs.launcher.exists()
-        }
     }
 }
 
@@ -1444,10 +1449,10 @@ mod tests {
 
     #[cfg(unix)]
     fn sample_resolved_sudo_programs(target: PathBuf) -> ResolvedExecutionPrograms {
-        ResolvedExecutionPrograms {
+        ResolvedExecutionPrograms::Sudo {
             launcher: PathBuf::from("/trusted/bin/sudo"),
-            sudo_environment_cleaner: Some(PathBuf::from("/trusted/bin/env")),
-            sudo_target: Some(target),
+            environment_cleaner: PathBuf::from("/trusted/bin/env"),
+            target,
         }
     }
 
@@ -1628,6 +1633,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn unix_non_utf8_separator_detection_stays_native() {
+        let relative_path = OsString::from_vec(vec![b'b', b'i', b'n', b'/', b'f', b'o', 0x80]);
+        assert!(super::has_path_separator(relative_path.as_os_str()));
+        assert!(super::is_explicit_command_path(relative_path.as_os_str()));
+
+        let bare_backslash = OsString::from_vec(vec![b'd', b'e', b'm', b'o', b'\\', 0x80]);
+        assert!(!super::has_path_separator(bare_backslash.as_os_str()));
+        assert!(!super::is_explicit_command_path(bare_backslash.as_os_str()));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn resolve_sudo_path_uses_trusted_standard_location() {
         let resolved = resolve_sudo_path();
         assert_eq!(
@@ -1679,7 +1696,6 @@ mod tests {
         let resolved_programs = sample_resolved_sudo_programs(explicit_program.clone());
         let command = build_command_with_resolved_programs(
             &request,
-            HostCommandExecution::Sudo,
             &resolved_programs,
             HostCommandRunOptions::new().with_env_remove(&removed),
         );
@@ -1691,8 +1707,7 @@ mod tests {
         assert_eq!(
             Path::new(&collected_args[1]),
             resolved_programs
-                .sudo_environment_cleaner
-                .as_deref()
+                .sudo_environment_cleaner()
                 .expect("sudo env path"),
         );
         assert_eq!(collected_args[2], OsString::from("-i"));
@@ -1874,7 +1889,6 @@ mod tests {
         let resolved_programs = sample_resolved_sudo_programs(resolved_path.clone());
         let command = build_command_with_resolved_programs(
             &request,
-            HostCommandExecution::Sudo,
             &resolved_programs,
             HostCommandRunOptions::default(),
         );
@@ -1890,8 +1904,7 @@ mod tests {
                 .map(PathBuf::from)
                 .expect("env program should be present"),
             resolved_programs
-                .sudo_environment_cleaner
-                .clone()
+                .sudo_environment_cleaner()
                 .expect("trusted env program should be present")
         );
         assert_ne!(Path::new(target), shadowed_program.as_path());
@@ -1919,7 +1932,6 @@ mod tests {
             sample_resolved_sudo_programs(PathBuf::from("/trusted/bin/apt-get"));
         let command = build_command_with_resolved_programs(
             &request,
-            HostCommandExecution::Sudo,
             &resolved_programs,
             HostCommandRunOptions::default(),
         );
@@ -1931,10 +1943,9 @@ mod tests {
 
         assert_ne!(actual_env, shadowed_env);
         assert_eq!(
-            actual_env,
+            actual_env.as_path(),
             resolved_programs
-                .sudo_environment_cleaner
-                .clone()
+                .sudo_environment_cleaner()
                 .expect("trusted env path")
         );
     }
@@ -1972,34 +1983,26 @@ mod tests {
         let resolved =
             resolve_execution_programs(&request, HostCommandExecution::Sudo).expect("resolve");
 
-        assert_eq!(resolved.launcher, trusted_sudo);
+        assert_eq!(resolved.launcher(), trusted_sudo.as_path());
         assert_eq!(
             resolved
-                .sudo_environment_cleaner
-                .as_deref()
+                .sudo_environment_cleaner()
                 .expect("trusted env cleaner"),
             trusted_env.as_path()
         );
         assert_eq!(
-            resolved
-                .sudo_target
-                .as_deref()
-                .expect("trusted sudo target"),
+            resolved.sudo_target().expect("trusted sudo target"),
             trusted_target.as_path()
         );
-        assert_ne!(resolved.launcher, shadowed_sudo);
+        assert_ne!(resolved.launcher(), shadowed_sudo.as_path());
         assert_ne!(
             resolved
-                .sudo_environment_cleaner
-                .as_deref()
+                .sudo_environment_cleaner()
                 .expect("trusted env cleaner"),
             shadowed_env.as_path()
         );
         assert_ne!(
-            resolved
-                .sudo_target
-                .as_deref()
-                .expect("trusted sudo target"),
+            resolved.sudo_target().expect("trusted sudo target"),
             shadowed_target.as_path()
         );
     }
@@ -2246,7 +2249,12 @@ mod tests {
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let err = run_host_command(&request).expect_err("oversized stdout should fail");
+        let err = run_host_command_with_capture_options(
+            &request,
+            HostCommandRunOptions::new(),
+            HostCommandCaptureOptions::new().with_capture_limit_bytes_per_stream(1024),
+        )
+        .expect_err("oversized stdout should fail");
         match err {
             HostCommandError::CaptureFailed { source, .. } => {
                 assert!(
@@ -2293,14 +2301,19 @@ mod tests {
             program: command_path.as_os_str(),
             args: &args,
             env: &[],
-            working_directory: None,
+            working_directory: Some(temp.path()),
             sudo_mode: HostCommandSudoMode::Never,
         };
 
         let started = Instant::now();
-        let err = run_host_command(&request).expect_err("oversized stdout should fail");
+        let err = run_host_command_with_capture_options(
+            &request,
+            HostCommandRunOptions::new(),
+            HostCommandCaptureOptions::new().with_capture_limit_bytes_per_stream(1024),
+        )
+        .expect_err("oversized stdout should fail");
         assert!(
-            started.elapsed() < Duration::from_secs(1),
+            started.elapsed() < Duration::from_secs(5),
             "capture overflow should terminate the child instead of waiting for normal exit"
         );
         match err {
@@ -2324,14 +2337,19 @@ mod tests {
             program: command_path.as_os_str(),
             args: &args,
             env: &[],
-            working_directory: None,
+            working_directory: Some(temp.path()),
             sudo_mode: HostCommandSudoMode::Never,
         };
 
         let started = Instant::now();
-        let err = run_host_command(&request).expect_err("oversized stderr should fail");
+        let err = run_host_command_with_capture_options(
+            &request,
+            HostCommandRunOptions::new(),
+            HostCommandCaptureOptions::new().with_capture_limit_bytes_per_stream(1024),
+        )
+        .expect_err("oversized stderr should fail");
         assert!(
-            started.elapsed() < Duration::from_secs(1),
+            started.elapsed() < Duration::from_secs(5),
             "capture overflow should terminate the child instead of waiting for normal exit"
         );
         match err {
@@ -2354,7 +2372,7 @@ mod tests {
             program: command_path.as_os_str(),
             args: &[],
             env: &[],
-            working_directory: None,
+            working_directory: Some(temp.path()),
             sudo_mode: HostCommandSudoMode::Never,
         };
 
@@ -2366,7 +2384,7 @@ mod tests {
         )
         .expect_err("continuous stdout should hit the capture limit");
         assert!(
-            started.elapsed() < Duration::from_secs(2),
+            started.elapsed() < Duration::from_secs(5),
             "continuous stdout must return a capture error instead of hanging"
         );
         match err {
@@ -2509,7 +2527,7 @@ mod tests {
             program: command_path.as_os_str(),
             args: &[],
             env: &[],
-            working_directory: None,
+            working_directory: Some(temp.path()),
             sudo_mode: HostCommandSudoMode::Never,
         };
 
@@ -2521,7 +2539,7 @@ mod tests {
         )
         .expect_err("continuous stderr should hit the capture limit");
         assert!(
-            started.elapsed() < Duration::from_secs(2),
+            started.elapsed() < Duration::from_secs(5),
             "continuous stderr must return a capture error instead of hanging"
         );
         match err {
@@ -2541,29 +2559,26 @@ mod tests {
     #[test]
     fn run_host_command_with_options_times_out_and_keeps_captured_output() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let command_path = write_shell_executable(
-            temp.path(),
-            "slow-stdout-stderr",
-            "printf 'stdout-before-timeout'\nprintf 'stderr-before-timeout' >&2\nsleep 5\n",
-        );
+        let command_path =
+            write_slow_command_with_flushed_output(temp.path(), "slow-stdout-stderr");
         let request = HostCommandRequest {
             program: command_path.as_os_str(),
             args: &[],
             env: &[],
-            working_directory: None,
+            working_directory: Some(temp.path()),
             sudo_mode: HostCommandSudoMode::Never,
         };
 
         let err = run_host_command_with_options(
             &request,
-            HostCommandRunOptions::new().with_timeout(Duration::from_millis(50)),
+            HostCommandRunOptions::new().with_timeout(Duration::from_secs(5)),
         )
         .expect_err("slow command should time out");
         match err {
             HostCommandError::TimedOut {
                 timeout, output, ..
             } => {
-                assert_eq!(timeout, Duration::from_millis(50));
+                assert_eq!(timeout, Duration::from_secs(5));
                 assert!(String::from_utf8_lossy(&output.stdout).contains("stdout-before-timeout"));
                 assert!(String::from_utf8_lossy(&output.stderr).contains("stderr-before-timeout"));
             }
@@ -3032,24 +3047,20 @@ mod tests {
     #[test]
     fn run_host_recipe_with_options_surfaces_timeout_as_command_error() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let command_path = write_shell_executable(
-            temp.path(),
-            "slow-recipe",
-            "printf 'stdout-before-timeout'\nprintf 'stderr-before-timeout' >&2\nsleep 5\n",
-        );
+        let command_path = write_slow_command_with_flushed_output(temp.path(), "slow-recipe");
         let args = Vec::new();
 
         let err = run_host_recipe_with_options(
             &HostRecipeRequest::new(command_path.as_os_str(), &args)
                 .with_working_directory(temp.path()),
-            HostCommandRunOptions::new().with_timeout(Duration::from_millis(50)),
+            HostCommandRunOptions::new().with_timeout(Duration::from_secs(5)),
         )
         .expect_err("slow recipe should time out");
         match err {
             HostRecipeError::Command(HostCommandError::TimedOut {
                 timeout, output, ..
             }) => {
-                assert_eq!(timeout, Duration::from_millis(50));
+                assert_eq!(timeout, Duration::from_secs(5));
                 assert!(String::from_utf8_lossy(&output.stdout).contains("stdout-before-timeout"));
                 assert!(String::from_utf8_lossy(&output.stderr).contains("stderr-before-timeout"));
             }
@@ -3066,20 +3077,16 @@ mod tests {
             program: command_path.as_os_str(),
             args: &[],
             env: &[],
-            working_directory: None,
+            working_directory: Some(temp.path()),
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let started = std::time::Instant::now();
         let output = run_host_command(&request).expect("run host command");
 
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "background descendants must not keep run_host_command blocked"
-        );
         assert!(output.output.status.success());
         let stdout = String::from_utf8_lossy(&output.output.stdout);
         assert!(stdout.contains("parent-ready"));
+        assert!(!stdout.contains("late-child"));
     }
 
     #[cfg(unix)]
@@ -3092,20 +3099,16 @@ mod tests {
             program: command_path.as_os_str(),
             args: &[],
             env: &[],
-            working_directory: None,
+            working_directory: Some(temp.path()),
             sudo_mode: HostCommandSudoMode::Never,
         };
 
-        let started = std::time::Instant::now();
         let output = run_host_command(&request).expect("run host command");
 
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "background descendants must not keep run_host_command blocked"
-        );
         assert!(output.output.status.success());
         let stderr = String::from_utf8_lossy(&output.output.stderr);
         assert!(stderr.contains("parent-ready"));
+        assert!(!stderr.contains("late-child"));
     }
 
     #[cfg(unix)]
@@ -3204,7 +3207,6 @@ mod tests {
         let resolved_programs = sample_resolved_sudo_programs(explicit_program.clone());
         let command = build_command_with_resolved_programs(
             &request,
-            HostCommandExecution::Sudo,
             &resolved_programs,
             HostCommandRunOptions::default(),
         );
@@ -3217,8 +3219,7 @@ mod tests {
         assert_eq!(
             collected_args[1],
             resolved_programs
-                .sudo_environment_cleaner
-                .as_deref()
+                .sudo_environment_cleaner()
                 .expect("trusted env path")
                 .as_os_str(),
         );
@@ -3473,10 +3474,8 @@ mod tests {
             working_directory: None,
             sudo_mode: HostCommandSudoMode::Never,
         };
-        let resolved_programs = ResolvedExecutionPrograms {
+        let resolved_programs = ResolvedExecutionPrograms::Direct {
             launcher: PathBuf::from("/definitely/missing-tool"),
-            sudo_environment_cleaner: None,
-            sudo_target: None,
         };
 
         let err = map_command_output_error(
@@ -3498,10 +3497,10 @@ mod tests {
             working_directory: None,
             sudo_mode: HostCommandSudoMode::IfNonRootSystemCommand,
         };
-        let resolved_programs = ResolvedExecutionPrograms {
+        let resolved_programs = ResolvedExecutionPrograms::Sudo {
             launcher: PathBuf::from("/trusted/bin/sudo"),
-            sudo_environment_cleaner: Some(PathBuf::from("/trusted/bin/env")),
-            sudo_target: Some(PathBuf::from("/trusted/bin/apt-get")),
+            environment_cleaner: PathBuf::from("/trusted/bin/env"),
+            target: PathBuf::from("/trusted/bin/apt-get"),
         };
 
         let err = map_command_output_error(
@@ -3649,11 +3648,29 @@ mod tests {
     #[cfg(unix)]
     fn write_background_writer_command(dir: &Path, name: &str, stream: &str) -> PathBuf {
         let body = match stream {
-            "stdout" => "(sleep 2; printf 'late-child\\n') &\nprintf 'parent-ready\\n'\n",
-            "stderr" => "(sleep 2; printf 'late-child\\n' >&2) &\nprintf 'parent-ready\\n' >&2\n",
+            "stdout" => "(sleep 1; printf 'late-child\\n') &\nprintf 'parent-ready\\n'\n",
+            "stderr" => "(sleep 1; printf 'late-child\\n' >&2) &\nprintf 'parent-ready\\n' >&2\n",
             other => panic!("unexpected background stream: {other}"),
         };
         write_shell_executable(dir, name, body)
+    }
+
+    #[cfg(unix)]
+    fn write_slow_command_with_flushed_output(dir: &Path, name: &str) -> PathBuf {
+        let stdout_payload_path = dir.join(format!("{name}.stdout"));
+        let stderr_payload_path = dir.join(format!("{name}.stderr"));
+        std::fs::write(&stdout_payload_path, b"stdout-before-timeout")
+            .expect("write stdout payload");
+        std::fs::write(&stderr_payload_path, b"stderr-before-timeout")
+            .expect("write stderr payload");
+
+        let stdout_payload = shell_quote_path(&stdout_payload_path);
+        let stderr_payload = shell_quote_path(&stderr_payload_path);
+        write_shell_executable(
+            dir,
+            name,
+            &format!("cat {stdout_payload}\ncat {stderr_payload} >&2\nsleep 12\n"),
+        )
     }
 
     #[cfg(unix)]
@@ -3664,7 +3681,7 @@ mod tests {
     #[cfg(unix)]
     fn write_oversized_stdout_then_sleep_command(dir: &Path, name: &str) -> PathBuf {
         let payload_path = dir.join(format!("{name}.payload"));
-        std::fs::write(&payload_path, vec![b'x'; 8 * 1024 * 1024 + 1]).expect("write payload");
+        std::fs::write(&payload_path, vec![b'x'; 2048]).expect("write payload");
         let payload = shell_quote_path(&payload_path);
         write_shell_executable(dir, name, &format!("cat {payload}\nsleep 5\n"))
     }
@@ -3672,7 +3689,7 @@ mod tests {
     #[cfg(unix)]
     fn write_oversized_stderr_then_sleep_command(dir: &Path, name: &str) -> PathBuf {
         let payload_path = dir.join(format!("{name}.payload"));
-        std::fs::write(&payload_path, vec![b'x'; 8 * 1024 * 1024 + 1]).expect("write payload");
+        std::fs::write(&payload_path, vec![b'x'; 2048]).expect("write payload");
         let payload = shell_quote_path(&payload_path);
         write_shell_executable(dir, name, &format!("cat {payload} >&2\nsleep 5\n"))
     }

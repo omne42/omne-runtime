@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- cap artifact install advisory-lock readable labels while keeping the full normalized destination
+  identity in the lock hash, so long destination file names do not create overlong lock leaves
+- make artifact download URL redaction fail closed for parsed non-hierarchical URLs whose
+  credentials cannot be cleared, so public error messages do not echo token-like path payloads
+- close staged archive-tree file handles before leaf rename and report staged-leaf cleanup failures
+  on archive entry validation/write/commit errors instead of relying only on silent drop cleanup
 - accept `.tar.bz2` archive-tree assets through the shared archive primitives, enabling callers to install bzip2 tar model bundles without local extraction code
 - normalize archive-tree advisory lock roots for single-component relative destinations such as
   `toolchain`, so the install path never hands an empty parent path to the ambient lock primitive

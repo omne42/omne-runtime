@@ -378,6 +378,7 @@ fn artifact_file_write_options() -> AtomicWriteOptions {
 
 const BINARY_INSTALL_LOCK_PREFIX: &str = ".binary-install-";
 const BINARY_INSTALL_LOCK_SUFFIX: &str = ".lock";
+const MAX_BINARY_INSTALL_LOCK_LABEL_BYTES: usize = 64;
 
 fn lock_binary_destination(
     destination: &Path,
@@ -421,6 +422,7 @@ fn sanitize_lock_component(value: &str) -> String {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => ch,
             _ => '_',
         })
+        .take(MAX_BINARY_INSTALL_LOCK_LABEL_BYTES)
         .collect()
 }
 
@@ -534,7 +536,8 @@ mod tests {
     };
 
     use super::{
-        BinaryArchiveInstallRequest, DownloadBinaryRequest, DownloadFileRequest,
+        BINARY_INSTALL_LOCK_PREFIX, BINARY_INSTALL_LOCK_SUFFIX, BinaryArchiveInstallRequest,
+        DownloadBinaryRequest, DownloadFileRequest, MAX_BINARY_INSTALL_LOCK_LABEL_BYTES,
         binary_install_lock_file_name, download_and_install_binary_from_archive,
         download_binary_to_destination, download_file_to_destination, install_binary_from_archive,
     };
@@ -1256,6 +1259,24 @@ mod tests {
             binary_install_lock_file_name(&real_root.join("tool")),
             binary_install_lock_file_name(&alias_root.join("tool"))
         );
+    }
+
+    #[test]
+    fn binary_install_lock_name_caps_readable_label_without_losing_identity_hash() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().canonicalize().expect("canonicalize tempdir");
+        let long_leaf = "界".repeat(512);
+        let first = binary_install_lock_file_name(&base.join(&long_leaf));
+        let second = binary_install_lock_file_name(&base.join(format!("{long_leaf}-other")));
+        let max_lock_name_bytes = BINARY_INSTALL_LOCK_PREFIX.len()
+            + MAX_BINARY_INSTALL_LOCK_LABEL_BYTES
+            + 1
+            + 16
+            + BINARY_INSTALL_LOCK_SUFFIX.len();
+
+        assert_ne!(first, second);
+        assert!(first.to_string_lossy().len() <= max_lock_name_bytes);
+        assert!(second.to_string_lossy().len() <= max_lock_name_bytes);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

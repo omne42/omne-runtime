@@ -40,6 +40,7 @@ pub const DEFAULT_MAX_ARCHIVE_TREE_ENTRIES: u64 =
 const MAX_ZIP_SYMLINK_TARGET_BYTES: usize = omne_archive_primitives::MAX_ZIP_SYMLINK_TARGET_BYTES;
 const ARCHIVE_TREE_INSTALL_LOCK_PREFIX: &str = ".archive-tree-install-";
 const ARCHIVE_TREE_INSTALL_LOCK_SUFFIX: &str = ".lock";
+const MAX_ARCHIVE_TREE_INSTALL_LOCK_LABEL_BYTES: usize = 64;
 const ARCHIVE_STAGED_LEAF_RETRY_LIMIT: u64 = 128;
 static ARCHIVE_STAGED_LEAF_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -255,6 +256,7 @@ fn sanitize_lock_component(value: &str) -> String {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => ch,
             _ => '_',
         })
+        .take(MAX_ARCHIVE_TREE_INSTALL_LOCK_LABEL_BYTES)
         .collect()
 }
 
@@ -613,6 +615,24 @@ impl<'a> PendingArchiveLeaf<'a> {
     fn retain(&mut self) {
         self.retained = true;
     }
+
+    fn cleanup_after_error(
+        mut self,
+        entry_path: &Path,
+        error: ArtifactInstallError,
+    ) -> ArtifactInstallError {
+        match self.directory.remove_file(&self.leaf) {
+            Ok(()) => {
+                self.retained = true;
+                error
+            }
+            Err(cleanup_err) => ArtifactInstallError::install(format!(
+                "{error}; cleanup staged archive leaf `{}` for {} failed: {cleanup_err}",
+                self.leaf.display(),
+                entry_path.display()
+            )),
+        }
+    }
 }
 
 impl Drop for PendingArchiveLeaf<'_> {
@@ -644,7 +664,11 @@ fn create_tar_symlink(
     {
         let mut staged_leaf =
             create_archive_staged_symlink(entry_path, &parent_dir, link_target, "symlink")?;
-        rename_archive_leaf(entry_path, &parent_dir, staged_leaf.leaf(), output_leaf)?;
+        if let Err(error) =
+            rename_archive_leaf(entry_path, &parent_dir, staged_leaf.leaf(), output_leaf)
+        {
+            return Err(staged_leaf.cleanup_after_error(entry_path, error));
+        }
         staged_leaf.retain();
         Ok(())
     }
@@ -777,18 +801,22 @@ fn try_create_tar_hard_link(
         "hardlink",
     )?;
     #[cfg(unix)]
-    validate_staged_hard_link_matches_source(
+    if let Err(error) = validate_staged_hard_link_matches_source(
         pending,
         &output_parent_dir,
         staged_leaf.leaf(),
         &source_identity,
-    )?;
-    rename_archive_leaf(
+    ) {
+        return Err(staged_leaf.cleanup_after_error(&pending.entry_path, error));
+    }
+    if let Err(error) = rename_archive_leaf(
         &pending.entry_path,
         &output_parent_dir,
         staged_leaf.leaf(),
         output_leaf,
-    )?;
+    ) {
+        return Err(staged_leaf.cleanup_after_error(&pending.entry_path, error));
+    }
     staged_leaf.retain();
     Ok(true)
 }
@@ -816,16 +844,32 @@ where
     ensure_replaceable_archive_output_leaf(entry_path, &parent_dir, leaf)?;
     let (mut staged_leaf, mut file) =
         create_archive_staged_regular_file(entry_path, &parent_dir, "file")?;
-    std::io::copy(reader, &mut file)
-        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    #[cfg(unix)]
-    if let Some(mode) = unix_mode {
-        file.set_permissions(fs::Permissions::from_mode(mode))
-            .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
+    if let Err(error) = std::io::copy(reader, &mut file)
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))
+    {
+        drop(file);
+        return Err(staged_leaf.cleanup_after_error(entry_path, error));
     }
-    file.flush()
-        .map_err(|err| ArtifactInstallError::install(err.to_string()))?;
-    rename_archive_leaf(entry_path, &parent_dir, staged_leaf.leaf(), leaf)?;
+    #[cfg(unix)]
+    if let Some(mode) = unix_mode
+        && let Err(error) = file
+            .set_permissions(fs::Permissions::from_mode(mode))
+            .map_err(|err| ArtifactInstallError::install(err.to_string()))
+    {
+        drop(file);
+        return Err(staged_leaf.cleanup_after_error(entry_path, error));
+    }
+    if let Err(error) = file
+        .flush()
+        .map_err(|err| ArtifactInstallError::install(err.to_string()))
+    {
+        drop(file);
+        return Err(staged_leaf.cleanup_after_error(entry_path, error));
+    }
+    drop(file);
+    if let Err(error) = rename_archive_leaf(entry_path, &parent_dir, staged_leaf.leaf(), leaf) {
+        return Err(staged_leaf.cleanup_after_error(entry_path, error));
+    }
     staged_leaf.retain();
     Ok(())
 }
@@ -1269,7 +1313,9 @@ mod tests {
     };
 
     use super::{
-        ArchiveExtractionLimits, ArchiveTreeInstallRequest, archive_tree_install_lock_file_name,
+        ARCHIVE_TREE_INSTALL_LOCK_PREFIX, ARCHIVE_TREE_INSTALL_LOCK_SUFFIX,
+        ArchiveExtractionLimits, ArchiveTreeInstallRequest,
+        MAX_ARCHIVE_TREE_INSTALL_LOCK_LABEL_BYTES, archive_tree_install_lock_file_name,
         archive_tree_install_lock_root, download_and_install_archive_tree,
         install_archive_tree_from_reader_with_limits,
     };
@@ -1818,6 +1864,24 @@ mod tests {
             archive_tree_install_lock_file_name(&real_root.join("tree")),
             archive_tree_install_lock_file_name(&alias_root.join("tree"))
         );
+    }
+
+    #[test]
+    fn archive_tree_install_lock_name_caps_readable_label_without_losing_identity_hash() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().canonicalize().expect("canonicalize tempdir");
+        let long_leaf = "界".repeat(512);
+        let first = archive_tree_install_lock_file_name(&base.join(&long_leaf));
+        let second = archive_tree_install_lock_file_name(&base.join(format!("{long_leaf}-other")));
+        let max_lock_name_bytes = ARCHIVE_TREE_INSTALL_LOCK_PREFIX.len()
+            + MAX_ARCHIVE_TREE_INSTALL_LOCK_LABEL_BYTES
+            + 1
+            + 16
+            + ARCHIVE_TREE_INSTALL_LOCK_SUFFIX.len();
+
+        assert_ne!(first, second);
+        assert!(first.to_string_lossy().len() <= max_lock_name_bytes);
+        assert!(second.to_string_lossy().len() <= max_lock_name_bytes);
     }
 
     #[cfg(unix)]

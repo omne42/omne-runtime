@@ -64,12 +64,12 @@ struct LinuxBoundExecutable {
 #[derive(Debug)]
 pub struct PreflightError {
     event: Box<ExecEvent>,
-    error: ExecError,
+    error: Box<ExecError>,
 }
 
 impl PreflightError {
     pub fn into_parts(self) -> (ExecEvent, ExecError) {
-        (*self.event, self.error)
+        (*self.event, *self.error)
     }
 }
 
@@ -470,12 +470,10 @@ impl ExecGateway {
         )
     }
 
-    #[allow(clippy::result_large_err)]
     pub fn preflight(&self, request: &ExecRequest) -> Result<ExecEvent, PreflightError> {
         self.prepare_request(request).map(|prepared| prepared.event)
     }
 
-    #[allow(clippy::result_large_err)]
     fn prepare_request(
         &self,
         request: &ExecRequest,
@@ -591,11 +589,10 @@ impl ExecGateway {
     fn deny_preflight(&self, event: ExecEvent, reason: &str, err: ExecError) -> PreflightError {
         PreflightError {
             event: Box::new(self.deny_event(event, reason)),
-            error: err,
+            error: Box::new(err),
         }
     }
 
-    #[allow(clippy::result_large_err)]
     fn prepare_audit_sink(
         &self,
         event: &ExecEvent,
@@ -4546,7 +4543,10 @@ mod tests {
         );
 
         assert_eq!(err.event.reason.as_deref(), Some("program_path_invalid"));
-        assert!(matches!(err.error, ExecError::WorkspaceRootInvalid { .. }));
+        assert!(matches!(
+            err.error.as_ref(),
+            ExecError::WorkspaceRootInvalid { .. }
+        ));
     }
 
     #[test]
@@ -4583,7 +4583,10 @@ mod tests {
         );
 
         assert_eq!(err.event.reason.as_deref(), Some("cwd_outside_workspace"));
-        assert!(matches!(err.error, ExecError::ProgramLookupFailed { .. }));
+        assert!(matches!(
+            err.error.as_ref(),
+            ExecError::ProgramLookupFailed { .. }
+        ));
     }
 
     #[test]
@@ -4624,7 +4627,7 @@ mod tests {
             Some("request_path_changed")
         );
         assert!(matches!(
-            changed.error,
+            changed.error.as_ref(),
             ExecError::RequestPathChanged { .. }
         ));
 
@@ -4641,7 +4644,7 @@ mod tests {
             Some("path_identity_unavailable")
         );
         assert!(matches!(
-            identity_unavailable.error,
+            identity_unavailable.error.as_ref(),
             ExecError::PathIdentityUnavailable { .. }
         ));
     }

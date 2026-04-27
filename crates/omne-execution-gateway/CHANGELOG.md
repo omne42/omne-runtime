@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- redact audit environment values fail-closed when their names are not valid UTF-8, and keep
+  sensitive inline argument redaction working when only the value portion is non-UTF-8, so exact
+  OS-string audit fields cannot leak secrets through encoding fallback paths
+- box the `PreflightError` error payload alongside its event payload, keeping the public
+  `into_parts()` surface unchanged while removing the need for local `result_large_err`
+  suppressions on preflight paths
+- split sandbox platform dispatch into cfg-selected helper functions, removing unreachable-code
+  suppressions while keeping unsupported platforms on the same fail-closed `None`-only path
+- remove the unused legacy `path_guard` module now that policy/request/audit file boundaries and
+  cwd/workspace ancestor checks are covered by the maintained gateway and `omne-fs-primitives`
+  paths, so the crate no longer keeps dead code alive through `allow(dead_code)`
+- share exact OS-string wire encoding between audit/request serialization and CLI request
+  deserialization through one crate helper, removing the duplicated encoder and stale
+  `allow(dead_code)` suppressions around the binary-side reuse path
 - add explicit `stdin_mode` / `stdout_mode` / `stderr_mode` fields to `ExecEvent`, so prepared
   command stdio opt-ins are reflected in the authoritative terminal execution audit record instead
   of remaining implicit runtime-only state

@@ -2,7 +2,9 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::audit::SandboxRuntimeObservation;
-use crate::error::{ExecError, ExecResult};
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+use crate::error::ExecError;
+use crate::error::ExecResult;
 use policy_meta::ExecutionIsolation;
 
 #[cfg(target_os = "linux")]
@@ -33,23 +35,7 @@ impl SandboxMonitor {
 }
 
 pub(crate) fn detect_supported_isolation() -> ExecutionIsolation {
-    #[cfg(target_os = "linux")]
-    {
-        return linux::detect_supported_isolation();
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        return macos::detect_supported_isolation();
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        return windows::detect_supported_isolation();
-    }
-
-    #[allow(unreachable_code)]
-    ExecutionIsolation::None
+    platform_supported_isolation()
 }
 
 pub(crate) fn apply_sandbox(
@@ -57,22 +43,62 @@ pub(crate) fn apply_sandbox(
     required_isolation: ExecutionIsolation,
     workspace_root: &Path,
 ) -> ExecResult<SandboxMonitor> {
-    #[cfg(target_os = "linux")]
-    {
-        return linux::apply_sandbox(command, required_isolation, workspace_root);
-    }
+    platform_apply_sandbox(command, required_isolation, workspace_root)
+}
 
-    #[cfg(target_os = "macos")]
-    {
-        return macos::apply_sandbox(command, required_isolation, workspace_root);
-    }
+#[cfg(target_os = "linux")]
+fn platform_supported_isolation() -> ExecutionIsolation {
+    linux::detect_supported_isolation()
+}
 
-    #[cfg(target_os = "windows")]
-    {
-        return windows::apply_sandbox(command, required_isolation, workspace_root);
-    }
+#[cfg(target_os = "macos")]
+fn platform_supported_isolation() -> ExecutionIsolation {
+    macos::detect_supported_isolation()
+}
 
-    #[allow(unreachable_code)]
+#[cfg(target_os = "windows")]
+fn platform_supported_isolation() -> ExecutionIsolation {
+    windows::detect_supported_isolation()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn platform_supported_isolation() -> ExecutionIsolation {
+    ExecutionIsolation::None
+}
+
+#[cfg(target_os = "linux")]
+fn platform_apply_sandbox(
+    command: &mut Command,
+    required_isolation: ExecutionIsolation,
+    workspace_root: &Path,
+) -> ExecResult<SandboxMonitor> {
+    linux::apply_sandbox(command, required_isolation, workspace_root)
+}
+
+#[cfg(target_os = "macos")]
+fn platform_apply_sandbox(
+    command: &mut Command,
+    required_isolation: ExecutionIsolation,
+    workspace_root: &Path,
+) -> ExecResult<SandboxMonitor> {
+    macos::apply_sandbox(command, required_isolation, workspace_root)
+}
+
+#[cfg(target_os = "windows")]
+fn platform_apply_sandbox(
+    command: &mut Command,
+    required_isolation: ExecutionIsolation,
+    workspace_root: &Path,
+) -> ExecResult<SandboxMonitor> {
+    windows::apply_sandbox(command, required_isolation, workspace_root)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn platform_apply_sandbox(
+    _command: &mut Command,
+    required_isolation: ExecutionIsolation,
+    _workspace_root: &Path,
+) -> ExecResult<SandboxMonitor> {
     match required_isolation {
         ExecutionIsolation::None => Ok(SandboxMonitor::none()),
         _ => Err(ExecError::Sandbox(

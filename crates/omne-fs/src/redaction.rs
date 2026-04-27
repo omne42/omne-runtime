@@ -14,7 +14,6 @@ const MAX_REDACT_REGEX_BYTES: usize = 8 * 1024;
 const MAX_RULE_PATTERNS_TOTAL_BYTES: usize = 64 * 1024;
 const MAX_REPLACEMENT_BYTES: usize = 1024;
 const MAX_REDACTED_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
-#[allow(dead_code)]
 pub(crate) const REDACTION_OUTPUT_LIMIT_MARKER: &str = "[REDACTION_OUTPUT_LIMIT_EXCEEDED]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- keep command-path and host-command separator detection on native `OsStr` values, and build
+  Windows `PATHEXT` candidates without lossy path text conversion
+- report direct-child termination failures during host-command timeout or capture-limit handling
+  instead of swallowing the kill error and continuing as if cleanup had been initiated
+- model resolved host-command launcher state as direct vs sudo variants, removing internal
+  `expect` assertions around sudo env/target resolution while keeping execution behavior unchanged
+- narrow test and platform `cfg` gates around Windows command probing, Unix sudo helpers, and
+  process-group identity fields so warning hygiene no longer depends on `allow(dead_code)`
+  suppressions
+- shorten host-command output supervision polling and make timeout regressions use flushed child
+  output, so bounded capture and timeout tests stay deterministic under normal parallel test load
 - require Windows command probes to honor `PATHEXT`, so plain files without an executable suffix are not reported as spawnable commands
 - add `std::process::Command` / PID-friendly process-tree configuration and cleanup entry points alongside the existing tokio-facing API, so callers can reuse the same Unix dedicated-process-group and Linux fail-closed cleanup semantics without binding their public boundary to `tokio::process`
 - require Linux process-tree cleanup capture to confirm the `/proc` identity is still parented by the current process (`ppid` check) so rapid PID reuse cannot arm cleanup against an unrelated process group

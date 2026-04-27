@@ -123,15 +123,31 @@ pub(crate) fn is_regular_command_path(path: &Path) -> bool {
 
 fn is_explicit_command_path(command: &OsStr) -> bool {
     let path = Path::new(command);
-    path.is_absolute() || command.to_string_lossy().chars().any(is_path_separator)
+    path.is_absolute() || os_str_has_path_separator(command)
+}
+
+#[cfg(unix)]
+pub(crate) fn os_str_has_path_separator(command: &OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    command.as_bytes().contains(&b'/')
 }
 
 #[cfg(windows)]
-fn is_path_separator(ch: char) -> bool {
-    ch == '/' || ch == '\\'
+pub(crate) fn os_str_has_path_separator(command: &OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    command
+        .encode_wide()
+        .any(|unit| unit == u16::from(b'/') || unit == u16::from(b'\\'))
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(unix), not(windows)))]
+pub(crate) fn os_str_has_path_separator(command: &OsStr) -> bool {
+    command.to_string_lossy().chars().any(is_path_separator)
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn is_path_separator(ch: char) -> bool {
     ch == '/'
 }
@@ -140,7 +156,7 @@ fn resolve_command_path_from_standard_locations<F>(command: &OsStr, predicate: F
 where
     F: Fn(&Path) -> bool + Copy,
 {
-    if command.to_string_lossy().chars().any(is_path_separator) {
+    if os_str_has_path_separator(command) {
         return None;
     }
 
@@ -184,7 +200,9 @@ where
         }
 
         for ext in windows_path_extensions() {
-            let ext_candidate = dir.join(format!("{}{}", command.to_string_lossy(), ext));
+            let mut command_with_ext = command.to_os_string();
+            command_with_ext.push(ext);
+            let ext_candidate = dir.join(command_with_ext);
             if predicate(&ext_candidate) {
                 return Some(ext_candidate);
             }
@@ -217,8 +235,7 @@ fn has_windows_spawnable_extension(path: &Path, path_extensions: &[String]) -> b
     path_extensions.iter().any(|value| value == &candidate)
 }
 
-#[cfg(any(test, windows))]
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(windows)]
 fn windows_path_extensions() -> Vec<String> {
     windows_path_extensions_from_var(std::env::var("PATHEXT").ok().as_deref())
 }
@@ -257,7 +274,9 @@ mod tests {
         resolve_command_path_or_standard_location,
     };
     #[cfg(unix)]
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
     #[cfg(unix)]
     use std::path::PathBuf;
 
@@ -427,6 +446,20 @@ mod tests {
 
         assert_eq!(resolved, Some(command_path));
         assert!(!super::is_explicit_command_path(command_name));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_non_utf8_separator_detection_stays_native() {
+        let relative_path = OsString::from_vec(vec![b'b', b'i', b'n', b'/', b'f', b'o', 0x80]);
+        assert!(super::os_str_has_path_separator(relative_path.as_os_str()));
+        assert!(super::is_explicit_command_path(relative_path.as_os_str()));
+
+        let bare_backslash = OsString::from_vec(vec![b'd', b'e', b'm', b'o', b'\\', 0x80]);
+        assert!(!super::os_str_has_path_separator(
+            bare_backslash.as_os_str()
+        ));
+        assert!(!super::is_explicit_command_path(bare_backslash.as_os_str()));
     }
 
     #[cfg(unix)]

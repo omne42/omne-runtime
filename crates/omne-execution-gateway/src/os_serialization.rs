@@ -129,7 +129,7 @@ pub(crate) enum ExactOsStringEncoding {
     PlatformDebug,
 }
 
-fn exact_os_string_value(value: &OsStr) -> ExactOsStringValue {
+pub(crate) fn exact_os_string_value(value: &OsStr) -> ExactOsStringValue {
     if let Some(text) = value.to_str() {
         return ExactOsStringValue {
             encoding: ExactOsStringEncoding::Utf8,
@@ -140,7 +140,6 @@ fn exact_os_string_value(value: &OsStr) -> ExactOsStringValue {
     non_utf8_exact_os_string_value(value)
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 enum LossyOrExactOsString {
@@ -148,7 +147,6 @@ enum LossyOrExactOsString {
     Exact(ExactOsStringValue),
 }
 
-#[allow(dead_code)]
 impl LossyOrExactOsString {
     fn into_os_string(self) -> Result<OsString, String> {
         match self {
@@ -158,10 +156,7 @@ impl LossyOrExactOsString {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn deserialize_lossy_or_exact_os_string<'de, D>(
-    deserializer: D,
-) -> Result<OsString, D::Error>
+pub fn deserialize_lossy_or_exact_os_string<'de, D>(deserializer: D) -> Result<OsString, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -170,8 +165,7 @@ where
         .map_err(D::Error::custom)
 }
 
-#[allow(dead_code)]
-pub(crate) fn deserialize_lossy_or_exact_os_strings<'de, D>(
+pub fn deserialize_lossy_or_exact_os_strings<'de, D>(
     deserializer: D,
 ) -> Result<Vec<OsString>, D::Error>
 where
@@ -184,7 +178,6 @@ where
         .map_err(D::Error::custom)
 }
 
-#[allow(dead_code)]
 fn exact_os_string_value_into_os_string(value: ExactOsStringValue) -> Result<OsString, String> {
     match value.encoding {
         ExactOsStringEncoding::Utf8 => Ok(OsString::from(value.value)),
@@ -202,7 +195,6 @@ fn exact_os_string_value_into_os_string(value: ExactOsStringValue) -> Result<OsS
 }
 
 #[cfg(unix)]
-#[allow(dead_code)]
 fn decode_unix_bytes_hex_os_string(hex: &str) -> Result<OsString, String> {
     use std::os::unix::ffi::OsStringExt;
 
@@ -210,7 +202,6 @@ fn decode_unix_bytes_hex_os_string(hex: &str) -> Result<OsString, String> {
 }
 
 #[cfg(windows)]
-#[allow(dead_code)]
 fn decode_windows_utf16_le_hex_os_string(hex: &str) -> Result<OsString, String> {
     let bytes = decode_hex(hex)?;
     let chunks = bytes.chunks_exact(2);
@@ -226,7 +217,6 @@ fn decode_windows_utf16_le_hex_os_string(hex: &str) -> Result<OsString, String> 
         .map_err(|err| format!("invalid UTF-16 exact OS string value: {err}"))
 }
 
-#[allow(dead_code)]
 fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
     if !hex.len().is_multiple_of(2) {
         return Err("hex value must contain an even number of characters".to_string());

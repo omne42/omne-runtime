@@ -7,16 +7,13 @@ use std::process::{ExitCode, ExitStatus};
 
 use omne_execution_gateway::{
     ExecError, ExecEvent, ExecGateway, ExecRequest, ExecResult, ExecutionOutcome, GatewayPolicy,
-    RequestResolution, RequestedIsolationSource, read_utf8_regular_file, requested_policy_meta,
+    RequestResolution, RequestedIsolationSource, os_serialization, read_utf8_regular_file,
+    requested_policy_meta,
 };
 use policy_meta::ExecutionIsolation;
 use serde::{Deserialize, Serialize};
 
 const MAX_REQUEST_JSON_BYTES: usize = 1024 * 1024;
-
-#[allow(dead_code)]
-#[path = "../os_serialization.rs"]
-mod os_serialization;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

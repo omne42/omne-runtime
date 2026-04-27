@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Clarified the `omne-fs` mutating-operation docs: writable roots may use `write_scope = workspace_write` or `write_scope = full_access`; the previous text incorrectly implied `workspace_write` was the only accepted mutating scope.
 
+- Removed a stale `allow(dead_code)` from the redaction output-limit marker now that grep uses the
+  marker directly, keeping the crate aligned with the workspace warning hygiene rules.
+- Grouped recursive delete traversal state into a dedicated walk context, removing local
+  `too_many_arguments` suppressions while keeping scan/delete budget checks on one path.
+- Routed every successful platform rename through the same post-commit sync result mapper, removing
+  the last dead-code suppression in the filesystem rename error model.
 - `list_dir` now spends `limits.max_walk_entries` budget while enumerating direct children, so oversized directory scans fail closed as `truncated=true` instead of walking arbitrarily many entries before applying the existing result/response caps.
 - `create_parents` no longer relies on an internal `expect(...)` when parent-identity verification
   context is unexpectedly missing; the path now fails closed with an explicit `InvalidPath`

@@ -145,7 +145,7 @@ fn configure_tokio_command_for_process_group(_command: &mut tokio::process::Comm
 #[cfg(unix)]
 #[derive(Clone, Copy, Debug)]
 struct UnixProcessGroupIdentity {
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg(target_os = "linux")]
     leader_pid: rustix::process::Pid,
     process_group_id: rustix::process::Pid,
     #[cfg(target_os = "linux")]
@@ -179,10 +179,7 @@ fn capture_unix_process_group_identity(pid: u32) -> io::Result<Option<UnixProces
             Err(error) => return Err(io::Error::from(error)),
         };
         ensure_unix_process_group_is_dedicated(leader_pid, process_group_id)?;
-        Ok(Some(UnixProcessGroupIdentity {
-            leader_pid,
-            process_group_id,
-        }))
+        Ok(Some(UnixProcessGroupIdentity { process_group_id }))
     }
 }
 

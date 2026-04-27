@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
@@ -8,7 +9,7 @@ use serde::ser::SerializeSeq;
 
 use policy_meta::ExecutionIsolation;
 
-use crate::os_serialization::{ExactOsStr, ExactOsStringEncoding, ExactOsStringValue, LossyOsStr};
+use crate::os_serialization::{ExactOsStr, ExactOsStringValue, LossyOsStr, exact_os_string_value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -233,17 +234,14 @@ fn redact_args(args: &[OsString]) -> Vec<OsString> {
             continue;
         }
 
-        let Some(text) = arg.to_str() else {
-            redacted.push(arg.clone());
-            continue;
-        };
+        let text = os_redaction_text(arg.as_os_str());
 
-        if let Some(redacted_arg) = redact_arg_inline(text) {
+        if let Some(redacted_arg) = redact_arg_inline(&text) {
             redacted.push(OsString::from(redacted_arg));
             continue;
         }
 
-        if is_sensitive_flag(text) {
+        if is_sensitive_flag(&text) {
             redacted.push(arg.clone());
             redact_next = true;
             continue;
@@ -258,13 +256,22 @@ fn redact_args(args: &[OsString]) -> Vec<OsString> {
 fn redact_env(env: &[(OsString, OsString)]) -> Vec<(OsString, OsString)> {
     env.iter()
         .map(|(name, value)| {
-            if name.to_str().map(is_sensitive_name).unwrap_or(false) {
+            if is_sensitive_env_name(name.as_os_str()) {
                 (name.clone(), OsString::from(REDACTED))
             } else {
                 (name.clone(), value.clone())
             }
         })
         .collect()
+}
+
+fn os_redaction_text(value: &OsStr) -> Cow<'_, str> {
+    value.to_string_lossy()
+}
+
+fn is_sensitive_env_name(name: &OsStr) -> bool {
+    let text = os_redaction_text(name);
+    name.to_str().is_none() || is_sensitive_name(&text)
 }
 
 fn redact_arg_inline(arg: &str) -> Option<String> {
@@ -336,59 +343,6 @@ fn is_sensitive_name(name: &str) -> bool {
         .any(|segment| SENSITIVE_TERMS.contains(&segment))
 }
 
-fn exact_os_string_value(value: &OsStr) -> ExactOsStringValue {
-    if let Some(text) = value.to_str() {
-        return ExactOsStringValue {
-            encoding: ExactOsStringEncoding::Utf8,
-            value: text.to_string(),
-        };
-    }
-
-    non_utf8_exact_os_string_value(value)
-}
-
-#[cfg(unix)]
-fn non_utf8_exact_os_string_value(value: &OsStr) -> ExactOsStringValue {
-    use std::os::unix::ffi::OsStrExt;
-
-    ExactOsStringValue {
-        encoding: ExactOsStringEncoding::UnixBytesHex,
-        value: encode_hex(value.as_bytes()),
-    }
-}
-
-#[cfg(windows)]
-fn non_utf8_exact_os_string_value(value: &OsStr) -> ExactOsStringValue {
-    use std::os::windows::ffi::OsStrExt;
-
-    let mut bytes = Vec::new();
-    for unit in value.encode_wide() {
-        bytes.extend_from_slice(&unit.to_le_bytes());
-    }
-
-    ExactOsStringValue {
-        encoding: ExactOsStringEncoding::WindowsUtf16LeHex,
-        value: encode_hex(&bytes),
-    }
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn non_utf8_exact_os_string_value(value: &OsStr) -> ExactOsStringValue {
-    ExactOsStringValue {
-        encoding: ExactOsStringEncoding::PlatformDebug,
-        value: format!("{value:?}"),
-    }
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use std::fmt::Write as _;
-        let _ = write!(&mut output, "{byte:02x}");
-    }
-    output
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -408,17 +362,23 @@ mod tests {
     }
 
     fn sample_event(args: Vec<&str>, env: Vec<(&str, &str)>) -> ExecEvent {
+        sample_event_os(
+            args.into_iter().map(OsString::from).collect(),
+            env.into_iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+                .collect(),
+        )
+    }
+
+    fn sample_event_os(args: Vec<OsString>, env: Vec<(OsString, OsString)>) -> ExecEvent {
         ExecEvent {
             decision: ExecDecision::Run,
             requested_isolation: ExecutionIsolation::BestEffort,
             requested_policy_meta: requested_policy_meta(ExecutionIsolation::BestEffort),
             supported_isolation: ExecutionIsolation::BestEffort,
             program: OsString::from("runner"),
-            args: args.into_iter().map(OsString::from).collect(),
-            env: env
-                .into_iter()
-                .map(|(name, value)| (OsString::from(name), OsString::from(value)))
-                .collect(),
+            args,
+            env,
             cwd: PathBuf::from("/tmp"),
             workspace_root: PathBuf::from("/workspace"),
             declared_mutation: false,
@@ -485,6 +445,42 @@ mod tests {
         );
         assert_eq!(value["env_exact"][0]["value"]["value"], json!(REDACTED));
         assert_eq!(value["env_exact"][1]["value"]["value"], json!("1"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exec_event_redacts_non_utf8_inline_sensitive_arguments() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let value = serde_json::to_value(sample_event_os(
+            vec![OsString::from_vec(b"--token=\xffabc".to_vec())],
+            vec![],
+        ))
+        .expect("serialize exec event");
+
+        assert_eq!(value["args"], json!([format!("--token={REDACTED}")]));
+        assert_eq!(
+            value["args_exact"][0]["value"],
+            json!(format!("--token={REDACTED}"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exec_event_redacts_non_utf8_environment_names_fail_closed() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let value = serde_json::to_value(sample_event_os(
+            vec!["deploy"].into_iter().map(OsString::from).collect(),
+            vec![(
+                OsString::from_vec(b"MODE\xff".to_vec()),
+                OsString::from("leak"),
+            )],
+        ))
+        .expect("serialize exec event");
+
+        assert_eq!(value["env"][0]["value"], json!(REDACTED));
+        assert_eq!(value["env_exact"][0]["value"]["value"], json!(REDACTED));
     }
 
     #[test]
